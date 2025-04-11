@@ -201,15 +201,3 @@ done
 for mp in "${final_mounts[@]}"; do
   echo "$mp"
 done
-
-# Optional: Generate bind mount options for a container engine (e.g., Docker)
-# Uncomment the following block to display Docker bind mount options.
-#: <<'END_OPTIONAL'
-#docker_opts=()
-#for mp in "${final_mounts[@]}"; do
-#  docker_opts+=("-v" "${mp}:${mp}")
-#done
-#echo
-#echo "Docker run options:"
-#echo "${docker_opts[@]}"
-#END_OPTIONAL
