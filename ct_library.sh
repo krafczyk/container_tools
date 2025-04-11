@@ -71,7 +71,7 @@ build_mount_args() {
         MOUNT_ARGS+=(--bind "${host}:${container}")
         ;;
     esac
-  done < <($script_dir/ct_mount_detector.sh $MOUNT_DETECTOR_ARGS)
+  done < <($script_dir/ct_mount_detector.sh ${MOUNT_DETECTOR_ARGS:=})
 }
 
 build_env_args() {
