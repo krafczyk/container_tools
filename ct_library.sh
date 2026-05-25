@@ -42,28 +42,69 @@ determine_tool_mode() {
   fi;
 }
 
+valid_bind_src() {
+  local src="$1"
+
+  [[ -n "$src" ]] || return 1
+  [[ "$src" = /* ]] || return 1
+
+  timeout 2s stat -L -- "$src" >/dev/null 2>&1 || return 1
+
+  return 0
+}
+
+bind_src_error() {
+  local src="$1"
+
+  if [[ -z "$src" ]]; then
+    echo "empty source path"
+  elif [[ "$src" != /* ]]; then
+    echo "source path is not absolute"
+  else
+    # Capture actual stat error, e.g. "No such device" / "Input/output error"
+    timeout 2s stat -L -- "$src" >/dev/null 2> >(head -n 1) || true
+  fi
+}
+
+warn_dropped_mount() {
+  local mnt="$1"
+  local reason="$2"
+
+  {
+    echo "WARNING: dropping container bind mount:"
+    echo "  requested: $mnt"
+    echo "  reason:    $reason"
+    echo "  result:    this path will NOT be visible inside the container"
+  } >&2
+}
+
 build_mount_args() {
-  # Initialize mount args array
   MOUNT_ARGS=()
 
-  # Load mount arguments from config file and environment
   CT_MOUNT_CFG="${CT_MOUNT_CFG:=${HOME}/.config/ct_mount.conf}"
-  if [ -e ${CT_MOUNT_CFG} ]; then
-    MOUNT_DETECTOR_ARGS=$($script_dir/ct_args.sh $CT_MOUNT_CFG ${MOUNT_DETECTOR_ARGS:=})
-  fi;
+  if [ -e "$CT_MOUNT_CFG" ]; then
+    MOUNT_DETECTOR_ARGS=$("$script_dir/ct_args.sh" "$CT_MOUNT_CFG" ${MOUNT_DETECTOR_ARGS:=})
+  fi
 
   while IFS= read -r mnt; do
     [[ -n "$mnt" ]] || continue
 
     if [[ "$mnt" == *:* ]]; then
-      host=$(echo "$mnt" | cut -d: -f1)
-      container=$(echo "$mnt" | cut -d: -f2-)
+      host="${mnt%%:*}"
+      container="${mnt#*:}"
     else
       host="$mnt"
       container="$mnt"
     fi
 
-    case "$TOOL" in
+    if ! valid_bind_src "$host"; then
+      reason="$(bind_src_error "$host")"
+      [[ -n "$reason" ]] || reason="source path is unavailable or stat timed out"
+      warn_dropped_mount "$mnt" "$reason"
+      continue
+    fi
+
+    case "${TOOL[0]}" in
       docker|podman)
         MOUNT_ARGS+=(--mount "type=bind,source=${host},target=${container}")
         ;;
@@ -71,7 +112,7 @@ build_mount_args() {
         MOUNT_ARGS+=(--bind "${host}:${container}")
         ;;
     esac
-  done < <($script_dir/ct_mount_detector.sh ${MOUNT_DETECTOR_ARGS:=})
+  done < <("$script_dir/ct_mount_detector.sh" ${MOUNT_DETECTOR_ARGS:=})
 }
 
 build_env_args() {
@@ -87,10 +128,13 @@ fi
 
 run_cmd() {
   if [ -n "${CT_DRY_RUN:=}" ]; then
-    echo "${CMD[@]}"
+    printf '%q ' "${CMD[@]}"
+    echo
   else
+    unset SINGULARITY_BIND SINGULARITY_BINDPATH
+    unset APPTAINER_BIND APPTAINER_BINDPATH
     exec "${CMD[@]}"
-  fi;
+  fi
 }
 
 launcher_preamble() {
