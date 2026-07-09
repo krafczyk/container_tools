@@ -78,6 +78,59 @@ warn_dropped_mount() {
   } >&2
 }
 
+append_mount_arg() {
+  local host="$1"
+  local container="$2"
+
+  case "${TOOL[0]}" in
+    docker|podman)
+      MOUNT_ARGS+=(--mount "type=bind,source=${host},target=${container}")
+      ;;
+    singularity|apptainer)
+      MOUNT_ARGS+=(--bind "${host}:${container}")
+      ;;
+  esac
+}
+
+parse_explicit_mount_args() {
+  EXPLICIT_MOUNTS=()
+  local remaining=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --ct-bind)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --ct-bind requires HOST_PATH:CONTAINER_PATH" >&2
+          return 1
+        fi
+
+        local mnt="$2"
+        local host="${mnt%%:*}"
+        local container="${mnt#*:}"
+        if [[ "$host" == "$mnt" || -z "$container" || "$container" != /* ]]; then
+          echo "Error: invalid --ct-bind '$mnt' (expected HOST_PATH:CONTAINER_PATH)" >&2
+          return 1
+        fi
+        if ! valid_bind_src "$host"; then
+          local reason
+          reason="$(bind_src_error "$host")"
+          echo "Error: invalid explicit container bind '$mnt': ${reason:-source path is unavailable}" >&2
+          return 1
+        fi
+
+        EXPLICIT_MOUNTS+=("$mnt")
+        shift 2
+        ;;
+      *)
+        remaining+=("$1")
+        shift
+        ;;
+    esac
+  done
+
+  ARGS=("${remaining[@]}")
+}
+
 build_mount_args() {
   MOUNT_ARGS=()
 
@@ -104,15 +157,17 @@ build_mount_args() {
       continue
     fi
 
-    case "${TOOL[0]}" in
-      docker|podman)
-        MOUNT_ARGS+=(--mount "type=bind,source=${host},target=${container}")
-        ;;
-      singularity|apptainer)
-        MOUNT_ARGS+=(--bind "${host}:${container}")
-        ;;
-    esac
+    append_mount_arg "$host" "$container"
   done < <("$script_dir/ct_mount_detector.sh" ${MOUNT_DETECTOR_ARGS:=})
+
+  # Explicit mounts are part of the launch contract.  They were validated by
+  # parse_explicit_mount_args(), unlike automatically detected mounts, which
+  # remain best-effort.
+  for mnt in "${EXPLICIT_MOUNTS[@]}"; do
+    host="${mnt%%:*}"
+    container="${mnt#*:}"
+    append_mount_arg "$host" "$container"
+  done
 }
 
 build_env_args() {
@@ -142,8 +197,9 @@ launcher_preamble() {
 
   shift;
 
-  # Rebuild the argument list without the tool.
-  ARGS=("$@")
+  # Rebuild the argument list without the tool and consume container-tool
+  # options before forwarding the remainder to the selected backend.
+  parse_explicit_mount_args "$@" || return 1
 
   # User details and working directory.
   USER_ID="$(id -u)"
