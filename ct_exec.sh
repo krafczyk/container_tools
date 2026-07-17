@@ -4,44 +4,42 @@
 
 set -euo pipefail
 
-script_dir=$(dirname $(realpath $0))
+script_dir=$(dirname "$(realpath "$0")")
 
-. $script_dir/ct_library.sh
+. "$script_dir/ct_library.sh"
 
 launcher_preamble "$@"
+build_payload_args exec
 
 # Launch container with proper arguments.
 case "${TOOL[0]}" in
   docker)
-    CMD=(
-      "${TOOL[@]}"
-      --user "$USER_ID:$GROUP_ID"
-      -w "$PWD_DIR"
-      "${ENV_ARGS[@]}"
-      "${MOUNT_ARGS[@]}"
-      "${ARGS[@]}"
-    )
+    if [[ -n $CT_BOOTSTRAP ]]; then
+      CMD=("${TOOL[@]}" run --rm --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
+        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
+    else
+      CMD=("${TOOL[@]}" --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
+        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
+    fi
     ;;
   podman)
-    CMD=(
-      "${TOOL[@]}"
-      --userns=keep-id
-      --user "$USER_ID:$GROUP_ID"
-      -w "$PWD_DIR"
-      "${ENV_ARGS[@]}"
-      "${MOUNT_ARGS[@]}"
-      "${ARGS[@]}"
-    )
+    if [[ -n $CT_BOOTSTRAP ]]; then
+      CMD=("${TOOL[@]}" run --rm --userns=keep-id --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
+        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
+    else
+      CMD=("${TOOL[@]}" --userns=keep-id --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
+        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
+    fi
     ;;
   singularity|apptainer)
-    BASE_ARGS+=(--pwd "$PWD_DIR")
     CMD=(
       "${TOOL[@]}"
       exec
+      --pwd "$PWD_DIR"
       "${MOUNT_ARGS[@]}"
       --env "SINGULARITYENV_USER=$(whoami)"
-      "${SUB_ARGS[@]}"
-      "${ARGS[@]}"
+      "${ENV_ARGS[@]}"
+      "${PAYLOAD_ARGS[@]}"
     )
 
     ;;
