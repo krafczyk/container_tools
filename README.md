@@ -1,7 +1,26 @@
 # Container Tools
 
-`ct_exec.sh` and `ct_shell.sh` normalize mounts and launch behavior across
-Docker, Podman, SingularityCE, and Apptainer.
+`ct_exec.sh` and `ct_shell.sh` normalize foreground mounts and launch behavior
+across Docker, Podman, SingularityCE, and Apptainer.
+
+`ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
+service that must retain its image mount after the launching command exits. It
+requires a private absolute `--ct-instance-root`, serializes first use, and keys
+the instance name to the runtime, host, active image and bootstrap identities,
+and fixed bind profile:
+
+```sh
+ct_instance_exec.sh --apptainer \
+  --ct-instance-root "$HOME/.local/share/example/container-instances" \
+  --ct-bind /host/data:/container/data \
+  --ct-bootstrap /host/bin/container-env \
+  -- image.sif command --argument
+```
+
+Later matching calls reuse the exact `instance://` profile. The helper does not
+stop instances automatically: service shutdown and runtime-instance cleanup are
+separate authority decisions. Stop an exact idle instance manually only after
+accounting for every process and caller that uses it.
 
 ## Bootstrap hooks
 
