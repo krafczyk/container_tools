@@ -22,6 +22,13 @@ stop instances automatically: service shutdown and runtime-instance cleanup are
 separate authority decisions. Stop an exact idle instance manually only after
 accounting for every process and caller that uses it.
 
+MkChad uses `ct_exec.sh` for `mkchad-opencode-server status`. This foreground
+path does not create a persistent instance or runtime state. Its host wrapper
+passes bounded runtime, selected-image, and existing-instance scalar evidence
+to the image; only the canonical managed `neovim.sif` selector is eligible for
+selected-image identity. PPC64LE images intentionally do not ship OpenCode and
+therefore do not provide this OpenCode baseline manifest contract.
+
 ## Bootstrap hooks
 
 Use `--ct-bootstrap HOST_PATH` when environment setup must run inside the
