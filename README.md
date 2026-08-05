@@ -63,3 +63,56 @@ accept shell-literal path and text characters; substitution and shell-control
 characters are rejected rather than evaluated differently by native container
 runtimes. All arguments after `--` are preserved as distinct arguments;
 bootstrap execution does not use `eval` or reconstruct a command string.
+
+## Runtime storage configuration
+
+Container tools reads optional machine-local storage defaults from
+`~/.config/ct_runtime.conf`. Override that path with `CT_RUNTIME_CFG`. The file
+is data, not shell: use one `KEY=ABSOLUTE_PATH` assignment per line, with blank
+lines and `#` comments allowed. It must be owned by the current user and not be
+group- or world-writable. Unknown or duplicate keys fail closed.
+`CT_DOCKER_BUILD_CACHE_DIR` cannot contain a comma because Buildx local-cache
+descriptors use commas as field separators. A dotfile symlink is supported when
+the file opened through it satisfies the same ownership, type, and mode checks.
+
+```text
+CT_SINGULARITY_CACHE_DIR=/data/container-cache/singularity
+CT_SINGULARITY_TMP_DIR=/data/container-tmp/singularity
+CT_DOCKER_BUILD_CACHE_DIR=/data/container-cache/docker-buildx
+CT_DOCKER_BUILD_TMP_DIR=/data/container-tmp/docker-buildx
+```
+
+Configured directories are created on first use. Existing plain directories
+must be current-user-owned and must not be group- or world-writable; safe
+directories are tightened to mode `0700`, while symlinks and previously writable
+directories fail closed. Ancestors must also be plain directories and cannot be
+group- or world-writable unless they are sticky shared roots such as `/tmp`.
+An explicit `SINGULARITY_CACHEDIR`,
+`SINGULARITY_TMPDIR`, `APPTAINER_CACHEDIR`, `APPTAINER_TMPDIR`, or `TMPDIR`
+environment value takes precedence and is not created or permission-modified.
+SingularityCE and Apptainer launchers receive their native cache and
+temporary-directory variables. Ordinary Docker and Podman launchers do not
+apply build-storage defaults.
+
+Neovim Docker build scripts use an architecture-specific Buildx local cache
+below `CT_DOCKER_BUILD_CACHE_DIR` and use `CT_DOCKER_BUILD_TMP_DIR` as the
+Docker client's build-time `TMPDIR`. Builds of one architecture serialize on a
+bounded lock. Each build imports the current cache, exports to a fresh staging
+generation, promotes that generation only after success, and removes the
+superseded generation so `mode=max` cache blobs do not grow without bound.
+`CT_DOCKER_BUILD_LOCK_TIMEOUT` changes the default 30-second lock wait;
+`CT_RUNTIME_STORAGE_TIMEOUT` changes the default 10-second deadline for
+individual storage metadata and mutation commands. Both overrides are positive
+numbers of seconds.
+
+Build integrations call `configure_docker_build_storage ARCHITECTURE`, pass the
+resulting `DOCKER_BUILD_CACHE_ARGS` array to `docker buildx build`, arrange
+`discard_docker_build_storage` on every exit path, and call
+`commit_docker_build_storage` after a successful export. These functions return
+nonzero for malformed configuration, unsafe paths, lock timeout, interrupted
+cache state that cannot be recovered, or a missing Buildx cache index.
+
+These Docker settings do not relocate persistent images and layers held by the
+Docker daemon. Configure the daemon's `data-root` and daemon-start
+`DOCKER_TMPDIR` separately when that storage must move; a client launcher cannot
+safely change an already-running daemon's storage root.
