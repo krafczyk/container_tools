@@ -117,7 +117,7 @@ pwd_covered=0
 case "$pwd_real/" in
   "$home_real/"*) pwd_covered=1 ;;
 esac
-generated_mount_arg_count=${#CT_HOST_PROJECTION_GENERATED_MOUNT_ARGS[@]}
+generated_mount_arg_count=${#CT_HOST_PROJECTION_MOUNT_ARGS[@]}
 bind_identities=()
 for ((index = 0; index < ${#MOUNT_ARGS[@]}; index++)); do
   # Generated binds have a separate semantic profile. Retaining their stat
@@ -278,10 +278,6 @@ if [[ $instance_ready -eq 0 ]]; then
   fi
   if ! rm -f -- "$pending"; then
     echo "Error: unable to clear pending persistent instance creation" >&2
-    exit 1
-  fi
-  if ! assets_unchanged; then
-    echo "Error: container image or bootstrap changed while preparing its instance" >&2
     exit 1
   fi
 fi

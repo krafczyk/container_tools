@@ -792,17 +792,11 @@ ct_host_projection_release_lock() {
 ct_host_projection_select() {
   local key=$1 refresh=$2 selector=$3
   shift 3
-  # shellcheck disable=SC2034 # This is the public result for U2 callers.
-  CT_HOST_PROJECTION_CACHE_HIT=0
   if [[ $refresh != 1 ]] && ct_host_projection_cache_read "$key"; then
-    # shellcheck disable=SC2034 # This is the public result for U2 callers.
-    CT_HOST_PROJECTION_CACHE_HIT=1
     return 0
   fi
   ct_host_projection_acquire_lock "$key" || return 1
   if [[ $refresh != 1 ]] && ct_host_projection_cache_read "$key"; then
-    # shellcheck disable=SC2034 # This is the public result for U2 callers.
-    CT_HOST_PROJECTION_CACHE_HIT=1
     ct_host_projection_release_lock
     return 0
   fi
@@ -954,7 +948,7 @@ ct_host_projection_set_none() {
 # or inherited Singularity bind variables. Its only accepted output is the
 # closed group marker; all other output is discarded.
 ct_host_projection_probe() {
-  local backend=$1 image=$2 strategy=$3 requested_group_mode=$4
+  local backend=$1 image=$2 requested_group_mode=$3
   local output status timeout_seconds remaining probe_name probe_id cleanup_status interrupted=0 group group_marker
   local -a probe=() create=() group_args=() expected_groups=()
   ct_host_projection_render_mounts "$backend" || return 2
@@ -1019,7 +1013,7 @@ ct_host_projection_probe() {
     trap 'interrupted=1' HUP INT TERM
     if probe_id=$(env -i PATH="$PATH" HOME="${HOME:-/}" \
       timeout --foreground --kill-after=2s "${timeout_seconds}s" "${create[@]}" 2>/dev/null); then
-      if [[ ! $probe_id =~ ^[A-Za-z0-9._-]+$ ]]; then
+      if ! ct_host_projection_record_scalar "$probe_id"; then
         status=2
       else
         remaining=${CT_HOST_PROJECTION_COLD_DEADLINE:-0}
@@ -1088,7 +1082,7 @@ ct_host_projection_cold_select() {
       else
         CT_HOST_PROJECTION_GROUP_MODE=keep-groups
       fi
-      if ct_host_projection_probe "$backend" "$image" direct "$CT_HOST_PROJECTION_GROUP_MODE"; then
+      if ct_host_projection_probe "$backend" "$image" "$CT_HOST_PROJECTION_GROUP_MODE"; then
         CT_HOST_PROJECTION_REASON=proven
         return 0
       else
@@ -1104,7 +1098,7 @@ ct_host_projection_cold_select() {
     *) return 1 ;;
   esac
   ct_host_projection_build_fallback || return 1
-  if ct_host_projection_probe "$backend" "$image" fallback "$CT_HOST_PROJECTION_GROUP_MODE"; then
+  if ct_host_projection_probe "$backend" "$image" "$CT_HOST_PROJECTION_GROUP_MODE"; then
     CT_HOST_PROJECTION_REASON=proven
     return 0
   else
@@ -1122,7 +1116,7 @@ ct_host_projection_cold_select() {
 # while required refuses before the payload; neither path retries a payload.
 ct_host_projection_prepare_foreground() {
   local backend=${TOOL[0]} image=${PAYLOAD_ARGS[0]:-} requested_group_mode cache_key selected=0 cold_timeout
-  CT_HOST_PROJECTION_GENERATED_MOUNT_ARGS=()
+  CT_HOST_PROJECTION_MOUNT_ARGS=()
   # shellcheck disable=SC2034 # Foreground launchers consume this shared result.
   CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS=()
   if [[ -n ${CT_HOST_PROJECTION_RUNTIME_LABEL:-} && ( $backend == docker || $backend == podman ) ]]; then
@@ -1192,8 +1186,7 @@ ct_host_projection_prepare_foreground() {
   if [[ $CT_HOST_ROOT == auto && ( $CT_HOST_PROJECTION_STRATEGY == none || $CT_HOST_PROJECTION_COMPLETE != complete ) ]]; then
     printf '%s\n' 'WARNING: host projection is incomplete; dispatching the existing foreground launch' >&2
   fi
-  CT_HOST_PROJECTION_GENERATED_MOUNT_ARGS=("${CT_HOST_PROJECTION_MOUNT_ARGS[@]}")
-  MOUNT_ARGS=("${CT_HOST_PROJECTION_GENERATED_MOUNT_ARGS[@]}" "${MOUNT_ARGS[@]}")
+  MOUNT_ARGS=("${CT_HOST_PROJECTION_MOUNT_ARGS[@]}" "${MOUNT_ARGS[@]}")
 }
 
 determine_container_tool() {

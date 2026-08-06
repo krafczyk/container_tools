@@ -7,6 +7,7 @@ set -euo pipefail
 readonly schema='container-tools.host-projection-runtime/v1'
 readonly work_root='/tmp/mkchad-v1/host-root-projection-host'
 readonly warm_sample_count=20
+readonly case_ids=(HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005 HP-HOST-006)
 script_dir=$(dirname "$(realpath "$0")")
 tool_root=$(realpath "$script_dir/..")
 source_commit=$(git -C "$tool_root" rev-parse HEAD 2>/dev/null || printf '%s' unknown)
@@ -28,13 +29,14 @@ json_string() {
 }
 
 source_manifest() {
-  local file digest
-  {
+  local file file_digest manifest_digest
+  manifest_digest=$({
     for file in ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_test.sh tests/host_projection_runtime_test.sh; do
-      digest=$(sha256sum "$tool_root/$file")
-      printf '%s\0%s\0' "$file" "${digest%% *}"
+      file_digest=$(sha256sum "$tool_root/$file")
+      printf '%s\0%s\0' "$file" "${file_digest%% *}"
     done
-  } | sha256sum | cut -d' ' -f1
+  } | sha256sum)
+  printf '%s' "${manifest_digest%% *}"
 }
 
 bounded_version() {
@@ -81,7 +83,7 @@ emit_report() {
     printf ',"strategy_condition":'; json_string "${strategy_condition:-unavailable}"
     printf ',"cleanup":'; json_string "${cleanup_overall:-not-needed}"
     printf ',"cases":['
-    for id in HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005 HP-HOST-006; do
+    for id in "${case_ids[@]}"; do
       status=${case_status[$id]:-skip}
       reason=${case_reason[$id]:-unavailable}
       elapsed=${case_elapsed[$id]:-0}
@@ -102,7 +104,7 @@ emit_report() {
 mark_all() {
   local status=$1 reason=$2
   local id
-  for id in HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005 HP-HOST-006; do
+  for id in "${case_ids[@]}"; do
     if [[ $id == HP-HOST-006 && ( ${backend:-} == docker || ${backend:-} == podman ) ]]; then
       set_case "$id" skip backend-inapplicable 0 "$empty_operations" "$empty_timings" not-needed
     else
@@ -120,7 +122,7 @@ validate_report() {
   [[ $data == *"\"source_commit\":\"$source_commit\""* ]] || return 1
   [[ $data == *"\"source_manifest\":\"$current_manifest\""* ]] || return 1
   [[ $data == *'"overall":"passed"'* || $data == *'"overall":"failed"'* || $data == *'"overall":"unavailable"'* ]] || return 1
-  for expected_id in HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005 HP-HOST-006; do
+  for expected_id in "${case_ids[@]}"; do
     [[ $data == *"\"id\":\"$expected_id\""* ]] || return 1
   done
   # Reports are generated as one compact object; reject likely raw host data.
@@ -498,7 +500,8 @@ case "$backend" in
     persistent_name=
     identity_files=("$work/persistent-instances"/*.identity)
     if [[ -f ${identity_files[0]:-} ]]; then
-      while IFS= read -r line; do [[ $line == name=mkchad-* ]] && persistent_name=${line#name=}; done < "${identity_files[0]}"
+      IFS= read -r persistent_name < "${identity_files[0]}" || true
+      persistent_name=${persistent_name#name=}
     fi
     if [[ $persistent_name =~ ^mkchad-[0-9a-f][0-9a-f][0-9a-f][0-9a-f] ]]; then
       "$runtime_path" instance stop "$persistent_name" >/dev/null 2>&1 || persistent_ok=0
