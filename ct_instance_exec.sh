@@ -51,6 +51,20 @@ if [[ ${#ARGS[@]} -lt 2 || ${ARGS[0]} != /* || ! -f ${ARGS[0]} ]]; then
   exit 1
 fi
 
+if [[ -n ${CT_DRY_RUN:-} ]]; then
+  # Persistent dry runs must not create an instance root, selection record, or
+  # pending journal. The printed command remains useful without claiming it is
+  # attached to an existing service.
+  CMD=("${TOOL[@]}" exec --pwd "$PWD_DIR" --env "SINGULARITYENV_USER=$(whoami)" \
+    "${ENV_ARGS[@]}" instance://dry-run "${PAYLOAD_ARGS[@]:1}")
+  run_cmd
+  exit 0
+fi
+
+# This consumes a memoized selection on the warm path and prepends all
+# generated binds before the instance profile is finalized or started.
+ct_host_projection_prepare_foreground
+
 instance_root=$(realpath -m -- "$instance_root")
 if [[ -e $instance_root ]]; then
   if [[ ! -d $instance_root || -L $instance_root \
@@ -103,8 +117,12 @@ pwd_covered=0
 case "$pwd_real/" in
   "$home_real/"*) pwd_covered=1 ;;
 esac
+generated_mount_arg_count=${#CT_HOST_PROJECTION_GENERATED_MOUNT_ARGS[@]}
 bind_identities=()
 for ((index = 0; index < ${#MOUNT_ARGS[@]}; index++)); do
+  # Generated binds have a separate semantic profile. Retaining their stat
+  # identity here would churn instances for harmless remount metadata changes.
+  (( index < generated_mount_arg_count )) && continue
   [[ ${MOUNT_ARGS[index]} == --bind && $((index + 1)) -lt ${#MOUNT_ARGS[@]} ]] || continue
   mount=${MOUNT_ARGS[index + 1]}
   source_path=${mount%%:*}
@@ -125,10 +143,19 @@ if [[ $pwd_covered -eq 0 ]]; then
   bind_identities+=("$pwd_real:$pwd_real:$pwd_real:$(stat -Lc '%d:%i:%F' -- "$pwd_real")")
 fi
 
+ct_host_projection_profile_digest "${TOOL[0]}"
+mapfile -t supplementary_groups < <(id -G | tr ' ' '\n' | LC_ALL=C sort -n -u)
+effective_supplementary_groups=()
+for group in "${supplementary_groups[@]}"; do
+  [[ $group == "$GROUP_ID" ]] || effective_supplementary_groups+=("$group")
+done
 profile=$(
   {
     printf '%s\0' "${TOOL[@]}" "$USER_ID" "$host_name" "$HOME" \
       "$instance_root" "$image_real" "$image_identity" "$bootstrap_identity"
+    printf '%s\0' "$CT_HOST_PROJECTION_PROFILE_VERSION" "$CT_HOST_PROJECTION_PROFILE_DIGEST"
+    printf '%s\0' "$USER_ID" "$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_MODE:-none}"
+    printf '%s\0' "${effective_supplementary_groups[@]}"
     printf '%s\0' "${MOUNT_ARGS[@]}" "${bind_identities[@]}"
   } | sha256sum
 )
@@ -146,28 +173,115 @@ if ! assets_unchanged; then
   exit 1
 fi
 
-probe=("${TOOL[@]}" exec "$instance_uri" /bin/true)
+# A matching name is not sufficient: a pre-existing instance must have been
+# started with this complete semantic profile before it can receive a payload.
 probe_instance() {
+  local expected_profile=$1 expected_nonce=${2:-}
+  # shellcheck disable=SC2016 # The instance shell must expand its own environment.
+  local -a probe=("${TOOL[@]}" exec "$instance_uri" /bin/sh -c '
+    [ "${CT_HOST_PROJECTION_PROFILE:-}" = "$1" ] || exit 42
+    [ -z "${2:-}" ] || [ "${CT_INSTANCE_CREATION_NONCE:-}" = "$2" ] || exit 42
+  ' sh "$expected_profile" "$expected_nonce")
   timeout --foreground --kill-after=1s "${probe_timeout}s" "${probe[@]}" 9>&- >/dev/null 2>&1
 }
 
-if ! probe_instance; then
+pending="$instance_root/$instance_name.pending"
+instance_ready=0
+if [[ -e $pending ]]; then
+  pending_mode=$(stat -Lc '%a' -- "$pending" 2>/dev/null || true)
+  mapfile -t pending_fields < "$pending" || true
+  if [[ $pending_mode != 600 || ${#pending_fields[@]} != 3 \
+    || ${pending_fields[0]} != "$instance_name" || ${pending_fields[1]} != "$profile" \
+    || ! ${pending_fields[2]} =~ ^[0-9a-f]{32}$ ]]; then
+    echo "Error: persistent instance pending record does not match the requested profile" >&2
+    exit 1
+  fi
+  pending_nonce=${pending_fields[2]}
+  if probe_instance "$profile" "$pending_nonce"; then
+    rm -f -- "$pending"
+    instance_ready=1
+  else
+    pending_status=$?
+    if (( pending_status == 42 )); then
+      if probe_instance "$profile"; then
+        echo "Error: persistent instance pending nonce mismatch" >&2
+      else
+        echo "Error: persistent instance profile mismatch" >&2
+      fi
+      exit 1
+    fi
+    # A dead creator leaves only this private journal entry. Removing it never
+    # signals or stops a runtime instance, so recovery cannot affect another
+    # caller's service.
+    rm -f -- "$pending"
+  fi
+fi
+
+if [[ $instance_ready -eq 0 ]]; then
+  if probe_instance "$profile"; then
+    instance_ready=1
+  else
+    probe_status=$?
+    if (( probe_status == 42 )); then
+      echo "Error: persistent instance profile mismatch" >&2
+      exit 1
+    fi
+    if (( probe_status == 124 || probe_status == 137 )); then
+      echo "Error: persistent container instance liveness check timed out" >&2
+      exit 1
+    fi
+  fi
+fi
+
+if [[ $instance_ready -eq 0 ]]; then
+  nonce=${CT_INSTANCE_CREATION_NONCE:-}
+  [[ -n $nonce ]] || nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  [[ $nonce =~ ^[0-9a-f]{32}$ ]] || {
+    echo "Error: CT_INSTANCE_CREATION_NONCE must be 32 lowercase hexadecimal characters" >&2
+    exit 1
+  }
+  pending_tmp=$(mktemp "$instance_root/.${instance_name}.pending.XXXXXX")
+  (
+    umask 077
+    printf '%s\n%s\n%s\n' "$instance_name" "$profile" "$nonce" > "$pending_tmp"
+    chmod 600 -- "$pending_tmp"
+    mv -f -- "$pending_tmp" "$pending"
+  ) || {
+    rm -f -- "$pending_tmp"
+    echo "Error: unable to record pending persistent instance creation" >&2
+    exit 1
+  }
   start=(
     "${TOOL[@]}" instance start
     "${MOUNT_ARGS[@]}"
     --env "SINGULARITYENV_USER=$user_name"
+    --env "CT_HOST_PROJECTION_PROFILE=$profile"
+    --env "CT_INSTANCE_CREATION_NONCE=$nonce"
     "${ENV_ARGS[@]}"
     "$image_real"
     "$instance_name"
   )
   start_succeeded=0
   timeout --foreground --kill-after=1s "${start_timeout}s" "${start[@]}" 9>&- 1>&2 && start_succeeded=1
-  if [[ $start_succeeded -eq 0 ]] && ! probe_instance; then
-    echo "Error: persistent container instance failed to start" >&2
+  if probe_instance "$profile" "$nonce"; then
+    :
+  else
+    probe_status=$?
+    if (( probe_status == 42 )); then
+      echo "Error: persistent instance profile mismatch" >&2
+    elif [[ $start_succeeded -eq 0 ]]; then
+      echo "Error: persistent container instance failed to start" >&2
+    else
+      echo "Error: persistent container instance did not become executable" >&2
+    fi
     exit 1
   fi
-  if ! probe_instance; then
-    echo "Error: persistent container instance did not become executable" >&2
+  if ! rm -f -- "$pending"; then
+    echo "Error: unable to clear pending persistent instance creation" >&2
+    exit 1
+  fi
+  if ! assets_unchanged; then
+    echo "Error: container image or bootstrap changed while preparing its instance" >&2
     exit 1
   fi
 fi
@@ -181,7 +295,7 @@ metadata_tmp="$metadata.tmp.$$"
 if ! (
   exec 9>&-
   umask 077
-  printf 'name=%s\nimage=%s\nidentity=%s\n' "$instance_name" "$image_real" "$image_identity" > "$metadata_tmp" \
+  printf 'name=%s\nimage=%s\nidentity=%s\nprofile=%s\n' "$instance_name" "$image_real" "$image_identity" "$profile" > "$metadata_tmp" \
     && mv -f -- "$metadata_tmp" "$metadata"
 ); then
   rm -f -- "$metadata_tmp" 9>&-

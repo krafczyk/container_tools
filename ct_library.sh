@@ -358,6 +358,7 @@ discard_docker_build_storage() {
 # Host-projection records intentionally contain only selection data. The policy
 # version changes whenever their meaning or their key material changes.
 CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v1'
+CT_HOST_PROJECTION_PROFILE_VERSION='ct-host-projection-profile-v1'
 CT_HOST_PROJECTION_RECORD_VERSION=ct-host-projection-selection-v1
 CT_HOST_PROJECTION_RECORD_MAX_BYTES=1048576
 CT_HOST_PROJECTION_RECORD_MAX_PAIRS=4096
@@ -588,14 +589,23 @@ ct_host_projection_selection_key() {
   [[ $CT_HOST_PROJECTION_SELECTION_KEY =~ ^[0-9a-f]{64}$ ]]
 }
 
-# Hash only semantic generated-bind fields for later persistent-profile callers.
+# Hash semantic generated-bind fields for persistent instance profiles. The
+# tuple deliberately excludes filesystem presentation that can change on a
+# network remount without changing the selected projection.
 ct_host_projection_profile_digest() {
-  local digest index
+  local backend=${1:-${TOOL[0]:-generic}} digest index recursion_policy
+  case "$backend" in
+    docker|podman|generic) recursion_policy=non-recursive ;;
+    singularity|apptainer) recursion_policy=runtime-default ;;
+    *) return 1 ;;
+  esac
   digest=$({
-    printf '%s\0' "$CT_HOST_PROJECTION_POLICY_VERSION" "${CT_HOST_PROJECTION_STRATEGY:-none}"
+    printf '%s\0' "$CT_HOST_PROJECTION_PROFILE_VERSION" "$CT_HOST_PROJECTION_POLICY_VERSION"
+    printf '%s\0' "${CT_HOST_PROJECTION_STRATEGY:-none}" "$recursion_policy"
     for index in "${!CT_HOST_PROJECTION_SOURCES[@]}"; do
-      printf '%s\0' "${CT_HOST_PROJECTION_SOURCES[index]}" "${CT_HOST_PROJECTION_TARGETS[index]}"
-      printf '%s\0' "${CT_HOST_PROJECTION_DESTINATIONS[index]}" writable "${CT_HOST_PROJECTION_STRATEGY:-none}"
+      printf '%s\0' "${CT_HOST_PROJECTION_STRATEGY:-none}" "${CT_HOST_PROJECTION_SOURCES[index]}"
+      printf '%s\0' "${CT_HOST_PROJECTION_TARGETS[index]}" "${CT_HOST_PROJECTION_DESTINATIONS[index]}"
+      printf '%s\0' writable "$recursion_policy"
     done
   } | sha256sum)
   CT_HOST_PROJECTION_PROFILE_DIGEST=${digest%% *}

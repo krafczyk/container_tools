@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Cumulative, operator-run evidence for foreground host-root projection. It is
-# intentionally opt-in: deterministic tests exercise this frontend with fake
-# clients, while real backend claims require the emitted host report.
+# Cumulative, operator-run evidence for host-root projection. It is intentionally
+# opt-in: deterministic tests exercise this frontend with fake clients, while
+# real backend claims, including persistent native instances, require the report.
 set -euo pipefail
 
 readonly schema='container-tools.host-projection-runtime/v1'
@@ -26,7 +26,7 @@ json_string() {
 source_manifest() {
   local file digest
   {
-    for file in ct_library.sh ct_exec.sh ct_shell.sh tests/bootstrap_test.sh tests/host_projection_test.sh tests/host_projection_runtime_test.sh; do
+    for file in ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_test.sh tests/host_projection_runtime_test.sh; do
       digest=$(sha256sum "$tool_root/$file")
       printf '%s\0%s\0' "$file" "${digest%% *}"
     done
@@ -59,13 +59,27 @@ emit_report() {
     json_string "$reason"
     printf ',"cleanup":"not-needed","cases":['
     local case_id separator=
-    for case_id in HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005; do
+    for case_id in HP-HOST-001 HP-HOST-002 HP-HOST-003 HP-HOST-004 HP-HOST-005 HP-HOST-006; do
+      case_state_for_id=$case_state
+      case_reason=$reason
+      if [[ $case_id == HP-HOST-006 ]]; then
+        case "$backend" in
+          docker|podman)
+            case_state_for_id=skip
+            case_reason='backend-inapplicable'
+            ;;
+          singularity|apptainer)
+            case_state_for_id=${persistent_status:-$case_state}
+            case_reason=${persistent_reason:-$reason}
+            ;;
+        esac
+      fi
       printf '%s{"id":' "$separator"
       json_string "$case_id"
       printf ',"status":'
-      json_string "$case_state"
+      json_string "$case_state_for_id"
       printf ',"reason":'
-      json_string "$reason"
+      json_string "$case_reason"
       printf ',"elapsed_ms":0,"operations":{"inspect":0,"probe":0,"payload":0}}'
       separator=,
     done
@@ -76,6 +90,8 @@ emit_report() {
 backend=
 image=
 work=
+persistent_status=
+persistent_reason=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help)
@@ -174,6 +190,31 @@ for launch_phase in cold warm refresh; do
     "$tool_root/ct_exec.sh" "$backend_flag" \
     "${host_root_argv[@]}" "$immutable_image" /bin/sh -c "printf x >> '$payload_path'" >/dev/null 2>&1 || status=1
 done
+
+# U3 verifies persistent behavior only against an actually requested native
+# runtime. Docker and Podman retain an explicit schema skip rather than a fake
+# success because they do not use this instance protocol.
+case "$backend" in
+  docker|podman)
+    persistent_status=skip
+    persistent_reason='backend-inapplicable'
+    ;;
+  singularity|apptainer)
+    persistent_status=pass
+    persistent_reason=passed
+    for _ in first reuse; do
+      CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" \
+        "$tool_root/ct_instance_exec.sh" "$backend_flag" \
+        --ct-instance-root "$work/persistent-instances" --ct-host-root auto \
+        "$immutable_image" /bin/sh -c "printf p >> '$payload_path'" >/dev/null 2>&1 || {
+          persistent_status=fail
+          persistent_reason=persistent-check-failed
+          status=1
+          break
+        }
+    done
+    ;;
+esac
 
 manifest_after=$(source_manifest)
 case "$backend" in

@@ -61,6 +61,27 @@ stop instances automatically: service shutdown and runtime-instance cleanup are
 separate authority decisions. Stop an exact idle instance manually only after
 accounting for every process and caller that uses it.
 
+Persistent profiles are finalized only after automatic host-projection selection
+and every generated, detected, explicit, bootstrap, and working-directory bind
+has been assembled. They include the semantic generated-bind tuple (not mount
+or inode presentation), effective UID, primary GID, sorted supplementary GIDs,
+and the selected group mode. A warm matching call performs one profile-aware
+liveness exec followed by its payload; it never reruns a capability probe or
+adds a bind to an already-running instance. Profile mismatch refuses before the
+payload and never stops an existing instance.
+
+Instance creation records a private mode-`0600` pending name/profile/nonce
+journal. Recovery adopts only an instance that reports the exact pending nonce;
+stale journal cleanup never signals or stops a runtime instance. `CT_DRY_RUN`
+prints a representative persistent exec command without creating an instance
+root, projection cache, or pending journal.
+
+The cumulative runtime runner includes `HP-HOST-006`. Docker and Podman report
+that persistent case as an explicit backend-inapplicable skip. SingularityCE
+and Apptainer run the persistent profile/reuse case against the supplied local
+runtime and report its actual pass or fail result; fixture success is not a
+backend claim.
+
 MkChad uses `ct_exec.sh` for `mkchad-opencode-server status`. This foreground
 path does not create a persistent instance or runtime state. Its host wrapper
 passes bounded runtime, selected-image, and existing-instance scalar evidence

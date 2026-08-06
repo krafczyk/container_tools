@@ -99,6 +99,43 @@ ct_host_projection_profile_digest
   printf '%s\n' 'volatile mount presentation changed the generated profile' >&2
   exit 1
 }
+direct_profile=$CT_HOST_PROJECTION_PROFILE_DIGEST
+CT_HOST_PROJECTION_DESTINATIONS[0]=/host/changed-destination
+ct_host_projection_profile_digest
+[[ $direct_profile != "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated destination did not change the semantic profile' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_DESTINATIONS[0]="/host$fixture_root"
+ct_host_projection_profile_digest
+[[ $direct_profile == "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated profile did not restore from its semantic tuple' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_TARGETS[0]="$fixture_root/alternate-target"
+ct_host_projection_profile_digest
+[[ $direct_profile != "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated resolved target did not change the semantic profile' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_TARGETS[0]="$(realpath "$fixture_root")"
+CT_HOST_PROJECTION_STRATEGY=fallback
+ct_host_projection_profile_digest
+[[ $direct_profile != "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated strategy did not change the semantic profile' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_STRATEGY=direct
+ct_host_projection_profile_digest apptainer
+[[ $direct_profile != "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated recursion policy did not change the semantic profile' >&2
+  exit 1
+}
+ct_host_projection_profile_digest docker
+[[ $direct_profile == "$CT_HOST_PROJECTION_PROFILE_DIGEST" ]] || {
+  printf '%s\n' 'generated profile changed after restoring its backend policy' >&2
+  exit 1
+}
 CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
 ct_host_projection_render_mounts docker
 [[ ${CT_HOST_PROJECTION_MOUNT_ARGS[*]} == *'bind-recursive=disabled'* ]]
@@ -124,6 +161,13 @@ ct_host_projection_selection_key docker image:one option-a numeric-supplementary
 key_a=$CT_HOST_PROJECTION_SELECTION_KEY
 ct_host_projection_selection_key docker image:one option-a numeric-supplementary
 [[ $key_a == "$CT_HOST_PROJECTION_SELECTION_KEY" ]]
+MOUNT_ARGS=(--bind "$fixture_root/data:/container/extra")
+ct_host_projection_selection_key docker image:one option-a numeric-supplementary
+[[ $key_a == "$CT_HOST_PROJECTION_SELECTION_KEY" ]] || {
+  printf '%s\n' 'an explicit bind changed the projection selection key' >&2
+  exit 1
+}
+MOUNT_ARGS=()
 CT_HOST_PROJECTION_BOOT_ID=boot-b
 ct_host_projection_selection_key docker image:one option-a numeric-supplementary
 [[ $key_a != "$CT_HOST_PROJECTION_SELECTION_KEY" ]]
@@ -469,6 +513,7 @@ runtime_report=$(PATH="/usr/bin:/bin" bash "$runner" --backend docker --image im
 runtime_status=$?
 set -e
 [[ $runtime_status == 77 && $runtime_report == *'"schema":"container-tools.host-projection-runtime/v1"'* \
+  && $runtime_report == *'"id":"HP-HOST-006","status":"skip","reason":"backend-inapplicable"'* \
   && -f "$runtime_work/report.json" ]] || {
   printf '%s\n' 'disabled runtime runner did not emit its unavailable report' >&2
   exit 1
