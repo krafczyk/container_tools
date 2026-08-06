@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2034 # The sourced library consumes fixture globals dynamically.
 set -euo pipefail
 
 work=${1:?pass /tmp/mkchad-v1/host-root-projection work directory}
@@ -516,6 +517,190 @@ set -e
   && $runtime_report == *'"id":"HP-HOST-006","status":"skip","reason":"backend-inapplicable"'* \
   && -f "$runtime_work/report.json" ]] || {
   printf '%s\n' 'disabled runtime runner did not emit its unavailable report' >&2
+  exit 1
+}
+
+# The enabled runner is exercised only through a fake local client. Its passed
+# report validates the evidence envelope, not Docker support. A missing warm
+# result must make the matrix fail instead of inheriting success from the cold
+# or first warm launch.
+runtime_fake="$work/runtime-fake"
+mkdir "$runtime_fake"
+cat > "$runtime_fake/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version) printf '%s\n' 'fake-docker 1.0' ;;
+  image)
+    [[ ${2:-} == inspect ]] || exit 64
+    if [[ -n ${MKCHAD_TEST_IMAGE_ID_FILE:-} && -f $MKCHAD_TEST_IMAGE_ID_FILE ]]; then
+      cat "$MKCHAD_TEST_IMAGE_ID_FILE"
+    else
+      printf '%s\n' 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    fi
+    ;;
+  create) printf '%s\n' fake-probe ;;
+  start) printf '%s\n' 'ct-host-projection-group=numeric' ;;
+  rm) : ;;
+  run)
+    count=0
+    [[ ! -f $MKCHAD_TEST_RUNTIME_COUNT ]] || read -r count < "$MKCHAD_TEST_RUNTIME_COUNT"
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$MKCHAD_TEST_RUNTIME_COUNT"
+    for phase in cold required refresh warm-{1..20}; do
+      [[ ${MKCHAD_TEST_SKIP_RESULT:-} == "$phase" ]] || : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
+    done
+    if [[ -n ${MKCHAD_TEST_IMAGE_ID_FILE:-} && ${MKCHAD_TEST_MUTATE_IMAGE:-} == 1 && $count == 1 ]]; then
+      printf '%s\n' 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' > "$MKCHAD_TEST_IMAGE_ID_FILE"
+    fi
+    if [[ -n ${MKCHAD_TEST_MUTATE_SOURCE:-} && $count == 1 ]]; then
+      printf '%s\n' '# fake-runtime source mutation' >> "$MKCHAD_TEST_MUTATE_SOURCE"
+    fi
+    ;;
+  *) exit 66 ;;
+esac
+EOF
+chmod 755 "$runtime_fake/docker"
+
+runtime_enabled_work="/tmp/mkchad-v1/host-root-projection-host/fake-enabled-$$"
+mkdir -p "${runtime_enabled_work%/*}"
+set +e
+runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/runtime-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_enabled_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_enabled_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 0 && $runtime_report == *'"overall":"passed"'* \
+  && $runtime_report == *'"samples":20'* && $runtime_report == *'"strategy_condition":"selected-direct"'* ]] || {
+  printf '%s\n' 'fake runtime did not satisfy the complete measured evidence matrix' >&2
+  exit 1
+}
+bash "$runner" --validate-report "$runtime_enabled_work/report.json" || {
+  printf '%s\n' 'runner rejected its exact-source report' >&2
+  exit 1
+}
+
+runtime_forced_work="/tmp/mkchad-v1/host-root-projection-host/fake-forced-$$"
+set +e
+runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/forced-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_forced_work/results" \
+  bash "$runner" --backend docker --force-fallback --image image:local --work "$runtime_forced_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 0 && $runtime_report == *'"strategy_condition":"forced-fallback"'* \
+  && $runtime_report == *'"fallback":'* ]] || {
+  printf '%s\n' 'forced fallback was not separately traced and labeled' >&2
+  exit 1
+}
+
+# A native fake accepts only the staged SIF basename during foreground probing
+# and payload execution. This is a staging/schema test, not SingularityCE
+# evidence; the report is deliberately retained only as a deterministic fixture.
+native_fake="$work/native-runtime-fake"
+mkdir "$native_fake"
+cat > "$native_fake/singularity" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --version) printf '%s\n' 'fake-singularity 1.0' ;;
+  instance) : ;;
+  exec)
+    if [[ " $* " == *' instance://'* ]]; then
+      if [[ " $* " == *' -c '* ]]; then
+        :
+      else
+        for phase in persistent-first persistent-reuse; do
+          : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
+        done
+      fi
+    elif [[ " $* " == *'ct-host-projection-group=native'* ]]; then
+      [[ " $* " == *'/image.sif'* ]] || exit 71
+      printf '%s\n' 'ct-host-projection-group=native'
+    else
+      [[ " $* " == *'/image.sif'* ]] || exit 72
+      for phase in cold required refresh warm-{1..20} persistent-first persistent-reuse; do
+        : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
+      done
+    fi
+    ;;
+  *) exit 73 ;;
+esac
+EOF
+chmod 755 "$native_fake/singularity"
+native_image="$work/local-image.sif"
+: > "$native_image"
+runtime_native_work="/tmp/mkchad-v1/host-root-projection-host/fake-native-$$"
+set +e
+runtime_report=$(PATH="$native_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  MKCHAD_TEST_RUNTIME_RESULTS="$runtime_native_work/results" \
+  bash "$runner" --backend singularity --image "$native_image" --work "$runtime_native_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 0 && $runtime_report == *'"backend":"singularity"'* \
+  && $runtime_report == *'"id":"HP-HOST-006","status":"pass"'* ]] || {
+  printf '%s\n' 'staged native SIF or persistent evidence matrix failed' >&2
+  exit 1
+}
+
+foreign_report="$work/foreign-report.json"
+source_commit=$(git -C "$root" rev-parse HEAD)
+foreign_payload=${runtime_report/\"source_commit\":\"$source_commit\"/\"source_commit\":\"foreign\"}
+printf '%s\n' "$foreign_payload" > "$foreign_report"
+if bash "$runner" --validate-report "$foreign_report"; then
+  printf '%s\n' 'runner accepted a foreign-source report' >&2
+  exit 1
+fi
+printf '%s\n' '{"schema":"container-tools.host-projection-runtime/v1"}' > "$work/malformed-report.json"
+if bash "$runner" --validate-report "$work/malformed-report.json"; then
+  printf '%s\n' 'runner accepted a malformed report' >&2
+  exit 1
+fi
+
+runtime_missing_work="/tmp/mkchad-v1/host-root-projection-host/fake-missing-$$"
+set +e
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 MKCHAD_TEST_SKIP_RESULT=warm-20 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/runtime-missing-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_missing_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_missing_work" > "$work/missing-runtime-report.json"
+runtime_status=$?
+set -e
+[[ $runtime_status == 1 && $(<"$work/missing-runtime-report.json") == *'"overall":"failed"'* ]] || {
+  printf '%s\n' 'missing warm measurement produced a passing runtime report' >&2
+  exit 1
+}
+
+runtime_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-image-mutation-$$"
+image_id_file="$work/image-id"
+set +e
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 MKCHAD_TEST_MUTATE_IMAGE=1 \
+  MKCHAD_TEST_IMAGE_ID_FILE="$image_id_file" MKCHAD_TEST_RUNTIME_COUNT="$work/mutation-count" \
+  MKCHAD_TEST_RUNTIME_RESULTS="$runtime_mutation_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_mutation_work" > "$work/mutation-runtime-report.json"
+runtime_status=$?
+set -e
+[[ $runtime_status == 1 && $(<"$work/mutation-runtime-report.json") == *'"overall":"failed"'* ]] || {
+  printf '%s\n' 'post-admission image mutation did not fail the runtime report' >&2
+  exit 1
+}
+
+# Copying the closed source set lets the fake mutate an exact launch file
+# without touching this checkout; mixed source bytes must fail the report.
+source_copy="$work/source-copy"
+mkdir -p "$source_copy/tests"
+cp "$root"/ct_library.sh "$root"/ct_exec.sh "$root"/ct_shell.sh "$root"/ct_instance_exec.sh "$source_copy"
+cp "$root"/tests/bootstrap_test.sh "$root"/tests/instance_exec_test.sh "$root"/tests/host_projection_test.sh \
+  "$root"/tests/host_projection_runtime_test.sh "$source_copy/tests"
+runtime_source_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-source-mutation-$$"
+set +e
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  MKCHAD_TEST_MUTATE_SOURCE="$source_copy/ct_exec.sh" MKCHAD_TEST_RUNTIME_COUNT="$work/source-mutation-count" \
+  MKCHAD_TEST_RUNTIME_RESULTS="$runtime_source_mutation_work/results" \
+  bash "$source_copy/tests/host_projection_runtime_test.sh" --backend docker --image image:local \
+  --work "$runtime_source_mutation_work" > "$work/source-mutation-runtime-report.json"
+runtime_status=$?
+set -e
+[[ $runtime_status == 1 && $(<"$work/source-mutation-runtime-report.json") == *'"overall":"failed"'* \
+  && $(<"$work/source-mutation-runtime-report.json") == *'"reason":"source-changed"'* ]] || {
+  printf '%s\n' 'post-dispatch source mutation did not fail the runtime report' >&2
   exit 1
 }
 

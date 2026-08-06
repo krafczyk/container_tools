@@ -27,20 +27,58 @@ their native inherited caller groups. Selection policy is launcher state, not a
 `tests/host_projection_runtime_test.sh` is the cumulative, opt-in host evidence
 runner. It never pulls images or contacts a registry. Supply one already-local
 image or absolute SIF path and a fresh work directory under the documented
-root:
+root. Run one available backend at a time:
 
 ```sh
 CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   bash tests/host_projection_runtime_test.sh \
-  --backend docker --image LOCAL_IMAGE \
+  --backend docker --image "$CT_HOST_TEST_DOCKER_IMAGE" \
   --work /tmp/mkchad-v1/host-root-projection-host/docker-RUN_ID
+
+CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  bash tests/host_projection_runtime_test.sh \
+  --backend podman --image "$CT_HOST_TEST_PODMAN_IMAGE" \
+  --work /tmp/mkchad-v1/host-root-projection-host/podman-RUN_ID
+
+CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  bash tests/host_projection_runtime_test.sh \
+  --backend singularity --image "$CT_HOST_TEST_SINGULARITY_SIF" \
+  --work /tmp/mkchad-v1/host-root-projection-host/singularity-RUN_ID
+
+CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  bash tests/host_projection_runtime_test.sh \
+  --backend apptainer --image "$CT_HOST_TEST_APPTAINER_SIF" \
+  --work /tmp/mkchad-v1/host-root-projection-host/apptainer-RUN_ID
 ```
 
 Every syntactically valid non-help invocation that can create its work directory
 emits the same redacted `container-tools.host-projection-runtime/v1` JSON object
-to stdout and `$work/report.json`. Disabled or unavailable prerequisites exit
-77 and make no runtime support claim. Real runtime execution is an operator
-handoff in this checkout; fixture results are not backend evidence.
+to stdout and `$work/report.json`. It records one cold selection, 20 warm
+samples, a required-mode check, a refresh, normalized launcher operation counts,
+and exact run-owned cleanup. Docker and Podman use the immutable local image ID;
+native backends stage the supplied SIF beneath `--work` and hash both source and
+staged bytes before and after the run. `--force-fallback` is available only for
+Docker and Podman evidence: its tracing adapter rejects the direct probe before
+creation, delegates the fallback and payload unchanged, and labels the report
+as `forced-fallback` rather than a natural rejection.
+
+Validate a returned report against the currently reviewed launcher, library,
+and test source manifest before accepting it:
+
+```sh
+bash tests/host_projection_runtime_test.sh \
+  --validate-report /tmp/mkchad-v1/host-root-projection-host/docker-RUN_ID/report.json
+```
+
+The validator rejects malformed reports and reports from a different source
+commit or manifest. Exit `0` means every applicable case passed, `1` means a
+case, source/image binding, or cleanup check failed, `2` is invalid input with
+no report, and `77` means disabled or unavailable and makes no runtime support
+claim. Docker and Podman mark persistent `HP-HOST-006` as an explicit skip;
+SingularityCE and Apptainer execute and clean up their run-owned persistent
+instance. This development environment currently has none of Docker, Podman,
+SingularityCE, or Apptainer available, so all four real-runtime claims remain
+unclaimed; deterministic fake-runtime results are not backend evidence.
 
 `ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
 service that must retain its image mount after the launching command exits. It
