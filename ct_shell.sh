@@ -16,34 +16,34 @@ ct_host_projection_prepare_foreground
 case "${TOOL[0]}" in
   docker)
     if [[ -n $CT_BOOTSTRAP ]]; then
-      CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
         "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     else
-      CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
         "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}" "$SHELL" -i)
     fi
     ;;
   podman)
     if [[ -n $CT_BOOTSTRAP ]]; then
-      CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
         "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     else
-      CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" -it --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
         "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}" "$SHELL" -i)
     fi
     ;;
   singularity|apptainer)
     if [[ -n $CT_BOOTSTRAP ]]; then
-      CMD=("${TOOL[@]}" exec --pwd "$PWD_DIR" "${MOUNT_ARGS[@]}"
+      CMD=("${CT_RUNTIME_TOOL[@]}" exec --pwd "$PWD_DIR" "${MOUNT_ARGS[@]}"
         --env "SINGULARITYENV_USER=$(whoami)" "${ENV_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     else
-      CMD=("${TOOL[@]}" shell --pwd "$PWD_DIR" "${MOUNT_ARGS[@]}"
+      CMD=("${CT_RUNTIME_TOOL[@]}" shell --pwd "$PWD_DIR" "${MOUNT_ARGS[@]}"
         --env "SINGULARITYENV_USER=$(whoami)" "${ENV_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     fi
 
     ;;
   *)
-    echo "Unsupported tool: $TOOL"
+    echo "Unsupported tool: ${TOOL[*]}"
     exit 1
     ;;
 esac

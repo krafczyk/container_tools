@@ -35,14 +35,16 @@ if [[ ${1:-} == exec && " $* " != *' instance://'* ]]; then
   printf '%s\n' 'ct-host-projection-group=native'
   exit 0
 fi
-exec 8>"$MKCHAD_TEST_CALL_LOCK"
-flock 8
-count=0
-[[ ! -f $MKCHAD_TEST_CALL_COUNT ]] || read -r count < "$MKCHAD_TEST_CALL_COUNT"
-count=$((count + 1))
-printf '%s\n' "$count" > "$MKCHAD_TEST_CALL_COUNT"
-printf '%s\n' "$@" > "$MKCHAD_TEST_CALLS/$count"
-flock -u 8
+if [[ ! ( ${MKCHAD_TEST_HIDE_INSTANCE_LIST:-} == 1 && ${1:-} == instance && ${2:-} == list ) ]]; then
+  exec 8>"$MKCHAD_TEST_CALL_LOCK"
+  flock 8
+  count=0
+  [[ ! -f $MKCHAD_TEST_CALL_COUNT ]] || read -r count < "$MKCHAD_TEST_CALL_COUNT"
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$MKCHAD_TEST_CALL_COUNT"
+  printf '%s\n' "$@" > "$MKCHAD_TEST_CALLS/$count"
+  flock -u 8
+fi
 
 if [[ ${1:-} == instance && ${2:-} == start ]]; then
   for argument in "$@"; do
@@ -65,6 +67,26 @@ if [[ ${1:-} == instance && ${2:-} == start ]]; then
   exit 0
 fi
 
+if [[ ${1:-} == instance && ${2:-} == list && ${3:-} == --json ]]; then
+  name=${4:-}
+  [[ $name =~ ^mkchad-[0-9a-f]{32}$ ]] || exit 69
+  [[ ${MKCHAD_TEST_INSTANCE_LIST_FAIL:-} != 1 ]] || exit 9
+  if [[ ${MKCHAD_TEST_DELAY_OLD_ON_LIST:-} == 1 && ! -e ${MKCHAD_TEST_DELAY_OLD_MARKER:-} ]]; then
+    : > "$MKCHAD_TEST_DELAY_OLD_MARKER"
+    printf '{"instances":[]}\n'
+    : > "$MKCHAD_TEST_INSTANCES/$name"
+    printf '%s\n' "$MKCHAD_TEST_DELAY_OLD_PROFILE" > "$MKCHAD_TEST_INSTANCES/$name.profile"
+    printf '%s\n' "$MKCHAD_TEST_DELAY_OLD_NONCE" > "$MKCHAD_TEST_INSTANCES/$name.nonce"
+    exit 0
+  fi
+  if [[ -e $MKCHAD_TEST_INSTANCES/$name ]]; then
+    printf '{"instances":[{"instance":"%s"}]}\n' "$name"
+  else
+    printf '{"instances":[]}\n'
+  fi
+  exit 0
+fi
+
 if [[ ${1:-} == exec ]]; then
   uri=
   uri_index=0
@@ -81,6 +103,11 @@ if [[ ${1:-} == exec ]]; then
   eval "command=\${$((uri_index + 1)):-}"
   if [[ $command == /bin/sh ]]; then
     [[ ${MKCHAD_TEST_HANG_PROBE:-} != 1 ]] || sleep 10
+    if [[ ${MKCHAD_TEST_HANG_PROBE_ONCE:-} == 1 && ! -e ${MKCHAD_TEST_HANG_PROBE_MARKER:-} ]]; then
+      : > "$MKCHAD_TEST_HANG_PROBE_MARKER"
+      sleep 10
+    fi
+    [[ ${MKCHAD_TEST_FAIL_PROBE:-} != 1 ]] || exit 9
     if [[ -n ${MKCHAD_TEST_MUTATE_ON_PROBE:-} && ! -e ${MKCHAD_TEST_MUTATE_MARKER:-} ]]; then
       printf 'mutated during probe\n' >> "$MKCHAD_TEST_MUTATE_ON_PROBE"
       : > "$MKCHAD_TEST_MUTATE_MARKER"
@@ -117,6 +144,7 @@ export MKCHAD_TEST_CALLS="$calls"
 export MKCHAD_TEST_CALL_COUNT="$work/call-count"
 export MKCHAD_TEST_CALL_LOCK="$work/call.lock"
 export MKCHAD_TEST_INSTANCES="$instances"
+export MKCHAD_TEST_HIDE_INSTANCE_LIST=1
 MKCHAD_TEST_GROUPS="$($real_id -G)"
 export MKCHAD_TEST_GROUPS
 
@@ -210,6 +238,25 @@ set -e
   printf '%s\n' 'second invocation did not reuse the existing instance' >&2; exit 1;
 }
 contains_line "$calls/6" "instance://$name" || { printf '%s\n' 'second invocation selected another instance' >&2; exit 1; }
+
+# A transient first liveness error cannot authorize a new pending journal while
+# the structured instance list still reports the named instance.
+calls_before=$(<"$work/call-count")
+unset MKCHAD_TEST_HIDE_INSTANCE_LIST
+set +e
+MKCHAD_TEST_FAIL_PROBE=1 invoke > /dev/null 2> "$work/transient-first-probe.err"
+transient_first_status=$?
+set -e
+transient_first_pending=("$instance_root"/*.pending)
+[[ $transient_first_status -eq 1 && $(<"$work/call-count") -eq $((calls_before + 2)) \
+  && ! -e ${transient_first_pending[0]} \
+  && $(<"$work/transient-first-probe.err") == *'unable to reconcile persistent instance liveness failure'* ]] || {
+  printf '%s\n' 'transient first liveness failure created or started conflicting state' >&2
+  exit 1
+}
+rm -f -- "$calls/$((calls_before + 1))" "$calls/$((calls_before + 2))"
+printf '%s\n' "$calls_before" > "$work/call-count"
+export MKCHAD_TEST_HIDE_INSTANCE_LIST=1
 
 set +e
 APPTAINER_BIND=/untrusted APPTAINER_MOUNT=/untrusted invoke
@@ -501,6 +548,7 @@ CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" "$helper" --apptainer \
 # Interrupted creation leaves a mode-0600 nonce journal. A later caller adopts
 # only a live instance carrying that exact nonce; a mismatched nonce is left
 # untouched and never triggers a stop operation.
+unset MKCHAD_TEST_HIDE_INSTANCE_LIST
 recovery_root="$work/recovery instance root"
 recovery_bind="$work/recovery bind"
 recovery_image="$work/recovery.sif"
@@ -568,6 +616,193 @@ set -e
   && $(<"$work/call-count") -eq $((calls_before + 2)) \
   && $(<"$work/mismatch-recovery.err") == *'pending nonce mismatch'* ]] || {
   printf '%s\n' 'pending recovery accepted or cleaned a mismatched nonce' >&2; exit 1;
+}
+
+# A pending nonce stays authoritative through an ambiguous liveness timeout. A
+# listed response preserves it until a later exact probe can adopt it.
+timeout_recovery_root="$work/timeout recovery root"
+timeout_recovery_image="$work/timeout-recovery.sif"
+: > "$timeout_recovery_image"
+timeout_recovery_invoke() {
+  "$helper" --apptainer --ct-instance-root "$timeout_recovery_root" \
+    --ct-bind "$recovery_bind:$work/timeout recovery container bind" \
+    -- "$timeout_recovery_image" /bin/fake-command recovery-timeout
+}
+set +e
+CT_INSTANCE_CREATION_NONCE=dddddddddddddddddddddddddddddddd MKCHAD_TEST_HANG_START=1 \
+  CT_INSTANCE_START_TIMEOUT=0.1 timeout_recovery_invoke >/dev/null 2>&1
+timeout_creation_status=$?
+set -e
+timeout_pending_files=("$timeout_recovery_root"/*.pending)
+timeout_pending=${timeout_pending_files[0]:-}
+[[ $timeout_creation_status -eq 1 && -n $timeout_pending && -e $timeout_pending ]] || {
+  printf '%s\n' 'timeout-recovery fixture did not retain its pending journal' >&2; exit 1;
+}
+mapfile -t timeout_pending_fields < "$timeout_pending"
+: > "$instances/${timeout_pending_fields[0]}"
+printf '%s\n' "${timeout_pending_fields[1]}" > "$instances/${timeout_pending_fields[0]}.profile"
+printf '%s\n' "${timeout_pending_fields[2]}" > "$instances/${timeout_pending_fields[0]}.nonce"
+calls_before=$(<"$work/call-count")
+timeout_probe_marker="$work/timeout-probe-marker"
+set +e
+MKCHAD_TEST_HANG_PROBE_ONCE=1 MKCHAD_TEST_HANG_PROBE_MARKER="$timeout_probe_marker" \
+  CT_INSTANCE_PROBE_TIMEOUT=0.1 timeout_recovery_invoke >/dev/null 2>&1
+timeout_recovery_status=$?
+set -e
+mapfile -t timeout_list_call < "$calls/$((calls_before + 2))"
+[[ $timeout_recovery_status -eq 1 && -e $timeout_pending \
+  && ${timeout_list_call[*]} == "instance list --json ${timeout_pending_fields[0]}" \
+  && $(<"$work/call-count") -eq $((calls_before + 2)) ]] || {
+  printf '%s\n' 'pending timeout did not retain its exact nonce authority' >&2; exit 1;
+}
+calls_before=$(<"$work/call-count")
+set +e
+timeout_recovery_invoke >/dev/null 2>&1
+timeout_retry_status=$?
+set -e
+[[ $timeout_retry_status -eq 23 && ! -e $timeout_pending \
+  && $(<"$work/call-count") -eq $((calls_before + 2)) ]] || {
+  printf '%s\n' 'responsive retry did not adopt the exact pending nonce' >&2; exit 1;
+}
+
+# A transient liveness/list failure is not absence. It leaves the original
+# journal untouched and must not start, adopt, or dispatch anything.
+transient_recovery_root="$work/transient recovery root"
+transient_recovery_image="$work/transient-recovery.sif"
+: > "$transient_recovery_image"
+transient_recovery_invoke() {
+  "$helper" --apptainer --ct-instance-root "$transient_recovery_root" \
+    --ct-bind "$recovery_bind:$work/transient recovery container bind" \
+    -- "$transient_recovery_image" /bin/fake-command recovery-transient
+}
+set +e
+CT_INSTANCE_CREATION_NONCE=eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee MKCHAD_TEST_HANG_START=1 \
+  CT_INSTANCE_START_TIMEOUT=0.1 transient_recovery_invoke >/dev/null 2>&1
+transient_creation_status=$?
+set -e
+transient_pending_files=("$transient_recovery_root"/*.pending)
+transient_pending=${transient_pending_files[0]:-}
+[[ $transient_creation_status -eq 1 && -n $transient_pending && -e $transient_pending ]] || {
+  printf '%s\n' 'transient-recovery fixture did not retain its pending journal' >&2; exit 1;
+}
+transient_pending_contents=$(<"$transient_pending")
+calls_before=$(<"$work/call-count")
+set +e
+MKCHAD_TEST_FAIL_PROBE=1 MKCHAD_TEST_INSTANCE_LIST_FAIL=1 transient_recovery_invoke \
+  >"$work/transient-recovery.out" 2>"$work/transient-recovery.err"
+transient_recovery_status=$?
+set -e
+[[ $transient_recovery_status -eq 1 && -e $transient_pending \
+  && $(<"$transient_pending") == "$transient_pending_contents" \
+  && $(<"$work/call-count") -eq $((calls_before + 2)) \
+  && $(<"$work/transient-recovery.err") == *'unable to reconcile pending persistent instance creation'* ]] || {
+  printf '%s\n' 'transient pending recovery discarded nonce authority or continued' >&2; exit 1;
+}
+
+# A delayed creator can appear immediately after a conclusive absence response.
+# The retry must retain the old nonce, so its start collision is followed by an
+# exact-nonce adoption rather than profile-only reuse or a new nonce.
+delayed_recovery_root="$work/delayed recovery root"
+delayed_recovery_image="$work/delayed-recovery.sif"
+: > "$delayed_recovery_image"
+delayed_recovery_invoke() {
+  "$helper" --apptainer --ct-instance-root "$delayed_recovery_root" \
+    --ct-bind "$recovery_bind:$work/delayed recovery container bind" \
+    -- "$delayed_recovery_image" /bin/fake-command recovery-delayed
+}
+set +e
+CT_INSTANCE_CREATION_NONCE=ffffffffffffffffffffffffffffffff MKCHAD_TEST_HANG_START=1 \
+  CT_INSTANCE_START_TIMEOUT=0.1 delayed_recovery_invoke >/dev/null 2>&1
+delayed_creation_status=$?
+set -e
+delayed_pending_files=("$delayed_recovery_root"/*.pending)
+delayed_pending=${delayed_pending_files[0]:-}
+[[ $delayed_creation_status -eq 1 && -n $delayed_pending && -e $delayed_pending ]] || {
+  printf '%s\n' 'delayed-recovery fixture did not retain its pending journal' >&2; exit 1;
+}
+mapfile -t delayed_pending_fields < "$delayed_pending"
+calls_before=$(<"$work/call-count")
+delayed_marker="$work/delayed-old-marker"
+set +e
+MKCHAD_TEST_DELAY_OLD_ON_LIST=1 MKCHAD_TEST_DELAY_OLD_MARKER="$delayed_marker" \
+  MKCHAD_TEST_DELAY_OLD_PROFILE="${delayed_pending_fields[1]}" \
+  MKCHAD_TEST_DELAY_OLD_NONCE="${delayed_pending_fields[2]}" delayed_recovery_invoke >/dev/null 2>&1
+delayed_recovery_status=$?
+set -e
+mapfile -t delayed_list_call < "$calls/$((calls_before + 2))"
+mapfile -t delayed_start_call < "$calls/$((calls_before + 3))"
+[[ $delayed_recovery_status -eq 23 && -e $delayed_marker && ! -e $delayed_pending \
+  && ${delayed_list_call[*]} == "instance list --json ${delayed_pending_fields[0]}" \
+  && ${delayed_start_call[*]} == *"CT_INSTANCE_CREATION_NONCE=${delayed_pending_fields[2]}"* \
+  && $(<"$work/call-count") -eq $((calls_before + 5)) ]] || {
+  printf '%s\n' 'delayed pending creation was not recovered with its exact nonce' >&2; exit 1;
+}
+
+# A clean empty JSON list is the only absence result that may restart a pending
+# creation; the retry remains bound to the old nonce and clears its journal only
+# after the exact probe succeeds.
+absent_recovery_root="$work/absent recovery root"
+absent_recovery_image="$work/absent-recovery.sif"
+: > "$absent_recovery_image"
+absent_recovery_invoke() {
+  "$helper" --apptainer --ct-instance-root "$absent_recovery_root" \
+    --ct-bind "$recovery_bind:$work/absent recovery container bind" \
+    -- "$absent_recovery_image" /bin/fake-command recovery-absent
+}
+set +e
+CT_INSTANCE_CREATION_NONCE=11111111111111111111111111111111 MKCHAD_TEST_HANG_START=1 \
+  CT_INSTANCE_START_TIMEOUT=0.1 absent_recovery_invoke >/dev/null 2>&1
+absent_creation_status=$?
+set -e
+absent_pending_files=("$absent_recovery_root"/*.pending)
+absent_pending=${absent_pending_files[0]:-}
+[[ $absent_creation_status -eq 1 && -n $absent_pending && -e $absent_pending ]] || {
+  printf '%s\n' 'absence-recovery fixture did not retain its pending journal' >&2; exit 1;
+}
+mapfile -t absent_pending_fields < "$absent_pending"
+calls_before=$(<"$work/call-count")
+set +e
+absent_recovery_invoke >/dev/null 2>&1
+absent_recovery_status=$?
+set -e
+mapfile -t absent_list_call < "$calls/$((calls_before + 2))"
+mapfile -t absent_start_call < "$calls/$((calls_before + 3))"
+[[ $absent_recovery_status -eq 23 && ! -e $absent_pending \
+  && ${absent_list_call[*]} == "instance list --json ${absent_pending_fields[0]}" \
+  && ${absent_start_call[*]} == *"CT_INSTANCE_CREATION_NONCE=${absent_pending_fields[2]}"* \
+  && $(<"$work/call-count") -eq $((calls_before + 5)) ]] || {
+  printf '%s\n' 'conclusive absence did not safely restart with the pending nonce' >&2; exit 1;
+}
+
+# Malformed pending journals fail before any runtime call.
+malformed_root="$work/malformed pending root"
+malformed_image="$work/malformed-pending.sif"
+: > "$malformed_image"
+malformed_invoke() {
+  "$helper" --apptainer --ct-instance-root "$malformed_root" \
+    --ct-bind "$recovery_bind:$work/malformed pending container bind" \
+    -- "$malformed_image" /bin/fake-command malformed-pending
+}
+set +e
+CT_INSTANCE_CREATION_NONCE=22222222222222222222222222222222 MKCHAD_TEST_HANG_START=1 \
+  CT_INSTANCE_START_TIMEOUT=0.1 malformed_invoke >/dev/null 2>&1
+set -e
+malformed_pending_files=("$malformed_root"/*.pending)
+malformed_pending=${malformed_pending_files[0]:-}
+[[ -n $malformed_pending && -e $malformed_pending ]] || {
+  printf '%s\n' 'malformed pending fixture did not create a journal' >&2
+  exit 1
+}
+chmod 644 -- "$malformed_pending"
+calls_before=$(<"$work/call-count")
+set +e
+malformed_invoke >/dev/null 2> "$work/malformed-pending.err"
+malformed_status=$?
+set -e
+[[ $malformed_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
+  && $(<"$work/malformed-pending.err") == *'pending record does not match'* ]] || {
+  printf '%s\n' 'malformed pending journal reached the runtime' >&2
+  exit 1
 }
 
 printf '%s\n' 'container instance executor tests passed'

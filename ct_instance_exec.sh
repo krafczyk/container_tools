@@ -55,7 +55,7 @@ if [[ -n ${CT_DRY_RUN:-} ]]; then
   # Persistent dry runs must not create an instance root, selection record, or
   # pending journal. The printed command remains useful without claiming it is
   # attached to an existing service.
-  CMD=("${TOOL[@]}" exec --pwd "$PWD_DIR" --env "SINGULARITYENV_USER=$(whoami)" \
+  CMD=("${CT_RUNTIME_TOOL[@]}" exec --pwd "$PWD_DIR" --env "SINGULARITYENV_USER=$(whoami)" \
     "${ENV_ARGS[@]}" instance://dry-run "${PAYLOAD_ARGS[@]:1}")
   run_cmd
   exit 0
@@ -178,15 +178,30 @@ fi
 probe_instance() {
   local expected_profile=$1 expected_nonce=${2:-}
   # shellcheck disable=SC2016 # The instance shell must expand its own environment.
-  local -a probe=("${TOOL[@]}" exec "$instance_uri" /bin/sh -c '
+  local -a probe=("${CT_RUNTIME_TOOL[@]}" exec "$instance_uri" /bin/sh -c '
     [ "${CT_HOST_PROJECTION_PROFILE:-}" = "$1" ] || exit 42
     [ -z "${2:-}" ] || [ "${CT_INSTANCE_CREATION_NONCE:-}" = "$2" ] || exit 42
   ' sh "$expected_profile" "$expected_nonce")
   timeout --foreground --kill-after=1s "${probe_timeout}s" "${probe[@]}" 9>&- >/dev/null 2>&1
 }
 
+# Return success only for the backend's structured empty instance list. Any
+# timeout, runtime error, malformed result, or listed instance is ambiguous and
+# cannot authorize replacement of a pending creation nonce.
+instance_is_conclusively_absent() {
+  local instances
+  if instances=$(timeout --foreground --kill-after=1s "${probe_timeout}s" \
+    "${CT_RUNTIME_TOOL[@]}" instance list --json "$instance_name" 9>&- 2>/dev/null); then
+    [[ $instances =~ ^[[:space:]]*\[[[:space:]]*\][[:space:]]*$ \
+      || $instances =~ ^[[:space:]]*\{[[:space:]]*\"instances\"[[:space:]]*:[[:space:]]*\[[[:space:]]*\][[:space:]]*\}[[:space:]]*$ ]]
+  else
+    return 1
+  fi
+}
+
 pending="$instance_root/$instance_name.pending"
 instance_ready=0
+pending_restart=0
 if [[ -e $pending ]]; then
   pending_mode=$(stat -Lc '%a' -- "$pending" 2>/dev/null || true)
   mapfile -t pending_fields < "$pending" || true
@@ -210,14 +225,17 @@ if [[ -e $pending ]]; then
       fi
       exit 1
     fi
-    # A dead creator leaves only this private journal entry. Removing it never
-    # signals or stops a runtime instance, so recovery cannot affect another
-    # caller's service.
-    rm -f -- "$pending"
+    if ! instance_is_conclusively_absent; then
+      echo "Error: unable to reconcile pending persistent instance creation" >&2
+      exit 1
+    fi
+    # A delayed first start may appear after the list result. Retain its nonce
+    # and retry the same named creation so any later adoption remains exact.
+    pending_restart=1
   fi
 fi
 
-if [[ $instance_ready -eq 0 ]]; then
+if [[ $instance_ready -eq 0 && $pending_restart -eq 0 ]]; then
   if probe_instance "$profile"; then
     instance_ready=1
   else
@@ -230,11 +248,15 @@ if [[ $instance_ready -eq 0 ]]; then
       echo "Error: persistent container instance liveness check timed out" >&2
       exit 1
     fi
+    if ! instance_is_conclusively_absent; then
+      echo "Error: unable to reconcile persistent instance liveness failure" >&2
+      exit 1
+    fi
   fi
 fi
 
 if [[ $instance_ready -eq 0 ]]; then
-  nonce=${CT_INSTANCE_CREATION_NONCE:-}
+  nonce=${pending_nonce:-${CT_INSTANCE_CREATION_NONCE:-}}
   [[ -n $nonce ]] || nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
   [[ $nonce =~ ^[0-9a-f]{32}$ ]] || {
     echo "Error: CT_INSTANCE_CREATION_NONCE must be 32 lowercase hexadecimal characters" >&2
@@ -252,7 +274,7 @@ if [[ $instance_ready -eq 0 ]]; then
     exit 1
   }
   start=(
-    "${TOOL[@]}" instance start
+    "${CT_RUNTIME_TOOL[@]}" instance start
     "${MOUNT_ARGS[@]}"
     --env "SINGULARITYENV_USER=$user_name"
     --env "CT_HOST_PROJECTION_PROFILE=$profile"
@@ -303,7 +325,7 @@ exec 9>&-
 
 # shellcheck disable=SC2034 # run_cmd consumes CMD from the sourced library.
 CMD=(
-  "${TOOL[@]}"
+  "${CT_RUNTIME_TOOL[@]}"
   exec
   --pwd "$PWD_DIR"
   --env "SINGULARITYENV_USER=$user_name"

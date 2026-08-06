@@ -376,7 +376,7 @@ ct_host_projection_unescape_mountinfo_path() {
 # Return whether a filesystem is a host kernel API that must not be projected.
 ct_host_projection_kernel_filesystem() {
   case "$1" in
-    proc|sysfs|devtmpfs|devpts|securityfs|cgroup|cgroup2|pstore|efivarfs|debugfs|tracefs|configfs|fusectl|mqueue|hugetlbfs)
+    proc|sysfs|devtmpfs|devpts|securityfs|cgroup|cgroup2|pstore|efivarfs|debugfs|tracefs|configfs|fusectl|mqueue|hugetlbfs|nsfs)
       return 0
       ;;
     *) return 1 ;;
@@ -409,17 +409,84 @@ ct_host_projection_source_eligible() {
   [[ -z $filesystem ]] || ! ct_host_projection_kernel_filesystem "$filesystem"
 }
 
+# Return whether a resolved fallback target remains outside kernel APIs. Cached
+# lexical sources may be safe while a symlink target has changed underneath an
+# excluded mount, so target validation is a required cache revalidation step.
+ct_host_projection_target_eligible() {
+  local target=$1 index mounted filesystem
+  [[ $target == /* ]] || return 1
+  ct_host_projection_kernel_path "$target" && return 1
+  for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
+    mounted=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
+    filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
+    [[ $target == "$mounted" || $target == "$mounted"/* ]] || continue
+    ct_host_projection_kernel_filesystem "$filesystem" && return 1
+  done
+  return 0
+}
+
+# Resolve one cold planning candidate without allowing a blocked metadata lookup
+# to outlive the selection's single aggregate deadline.
+ct_host_projection_remaining_until() {
+  local deadline=$1 now remaining
+  now=$(date +%s%3N) || return 124
+  remaining=$((deadline - now))
+  (( remaining > 0 )) || return 124
+  printf '%d.%03d' "$((remaining / 1000))" "$((remaining % 1000))"
+}
+
+ct_host_projection_warm_remaining() {
+  ct_host_projection_remaining_until "$CT_HOST_PROJECTION_WARM_DEADLINE_MS"
+}
+
+ct_host_projection_realpath() {
+  local source=$1 remaining
+  if [[ -n ${CT_HOST_PROJECTION_WARM_DEADLINE_MS:-} ]]; then
+    remaining=$(ct_host_projection_warm_remaining) || return 124
+    timeout --foreground --kill-after=2s "${remaining}s" realpath -e -- "$source"
+  elif [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} ]]; then
+    remaining=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
+    (( remaining > 0 )) || return 124
+    timeout --foreground --kill-after=2s "${remaining}s" realpath -e -- "$source"
+  else
+    realpath -e -- "$source"
+  fi
+}
+
 # Read one mountinfo snapshot for projection only. This does not affect the
 # existing mount detector, whose output and filtering remain authoritative for
 # regular same-path binds.
 ct_host_projection_read_mountinfo() {
   local mountinfo=${CT_HOST_PROJECTION_MOUNTINFO:-/proc/self/mountinfo}
-  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} line dash_index path filesystem
+  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} line dash_index path filesystem input output='' remaining status
   local -a fields=()
   CT_HOST_PROJECTION_MOUNT_PATHS=()
   CT_HOST_PROJECTION_MOUNT_FILESYSTEMS=()
   declare -gA CT_HOST_PROJECTION_MOUNT_TYPES=()
   [[ -r $mountinfo ]] || return 1
+  input=$mountinfo
+  if [[ -n ${CT_HOST_PROJECTION_WARM_DEADLINE_MS:-} ]]; then
+    remaining=$(ct_host_projection_warm_remaining) || return 124
+    output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-mountinfo.XXXXXX") || return 2
+    if timeout --foreground --kill-after=2s "${remaining}s" cat -- "$mountinfo" > "$output"; then
+      input=$output
+    else
+      status=$?
+      rm -f -- "$output"
+      return "$status"
+    fi
+  elif [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} ]]; then
+    remaining=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
+    (( remaining > 0 )) || return 124
+    output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-mountinfo.XXXXXX") || return 2
+    if timeout --foreground --kill-after=2s "${remaining}s" cat -- "$mountinfo" > "$output"; then
+      input=$output
+    else
+      status=$?
+      rm -f -- "$output"
+      return "$status"
+    fi
+  fi
 
   while IFS= read -r line || [[ -n $line ]]; do
     IFS=' ' read -r -a fields <<< "$line"
@@ -438,7 +505,8 @@ ct_host_projection_read_mountinfo() {
     CT_HOST_PROJECTION_MOUNT_PATHS+=("$path")
     CT_HOST_PROJECTION_MOUNT_FILESYSTEMS+=("$filesystem")
     CT_HOST_PROJECTION_MOUNT_TYPES["$path"]=$filesystem
-  done < "$mountinfo"
+  done < "$input"
+  [[ -z $output ]] || rm -f -- "$output"
 }
 
 # Populate a deterministic source/target/destination plan from associative
@@ -452,7 +520,9 @@ ct_host_projection_finalize_candidates() {
   CT_HOST_PROJECTION_DESTINATIONS=()
   CT_HOST_PROJECTION_STRATEGY=$strategy
   CT_HOST_PROJECTION_COMPLETE=${CT_HOST_PROJECTION_COMPLETE:-complete}
-  mapfile -d '' -t sorted < <(printf '%s\0' "${!CT_HOST_PROJECTION_CANDIDATES[@]}" | LC_ALL=C sort -z)
+  if (( ${#CT_HOST_PROJECTION_CANDIDATES[@]} )); then
+    mapfile -d '' -t sorted < <(printf '%s\0' "${!CT_HOST_PROJECTION_CANDIDATES[@]}" | LC_ALL=C sort -z)
+  fi
   for source in "${sorted[@]}"; do
     target=${CT_HOST_PROJECTION_CANDIDATES[$source]}
     CT_HOST_PROJECTION_SOURCES+=("$source")
@@ -467,16 +537,23 @@ ct_host_projection_finalize_candidates() {
 
 # Add one existing source to a plan, resolving directory symlinks semantically.
 ct_host_projection_add_candidate() {
-  local source=$1 filesystem=${2:-} target
+  local source=$1 filesystem=${2:-} recursive=${3:-0} target status
   ct_host_projection_source_eligible "$source" "$filesystem" || {
     CT_HOST_PROJECTION_COMPLETE=partial
     return 0
   }
-  if ! target=$(realpath -e -- "$source" 2>/dev/null); then
-    CT_HOST_PROJECTION_COMPLETE=partial
+  if target=$(ct_host_projection_realpath "$source" 2>/dev/null); then
+    if (( recursive )) && { ! ct_host_projection_target_eligible "$target" \
+      || ct_host_projection_has_excluded_descendant "$target"; }; then
+      CT_HOST_PROJECTION_COMPLETE=partial
+      return 0
+    fi
+    CT_HOST_PROJECTION_CANDIDATES["$source"]=$target
     return 0
   fi
-  CT_HOST_PROJECTION_CANDIDATES["$source"]=$target
+  status=$?
+  (( status == 124 || status == 137 )) && return "$status"
+  CT_HOST_PROJECTION_COMPLETE=partial
 }
 
 # Build the non-recursive root strategy: root plus every eligible mountpoint.
@@ -485,7 +562,7 @@ ct_host_projection_build_direct() {
   declare -gA CT_HOST_PROJECTION_CANDIDATES=()
   CT_HOST_PROJECTION_COMPLETE=complete
   ct_host_projection_read_mountinfo || return 1
-  ct_host_projection_add_candidate "$root"
+  ct_host_projection_add_candidate "$root" || return $?
   for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
     source=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
     filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
@@ -493,7 +570,7 @@ ct_host_projection_build_direct() {
     # The non-recursive root bind already excludes kernel API mounts. Their
     # deliberate exclusion is not a failed direct projection candidate.
     ct_host_projection_source_eligible "$source" "$filesystem" || continue
-    ct_host_projection_add_candidate "$source" "$filesystem"
+    ct_host_projection_add_candidate "$source" "$filesystem" || return $?
   done
   ct_host_projection_finalize_candidates direct
 }
@@ -510,27 +587,43 @@ ct_host_projection_has_excluded_descendant() {
   return 1
 }
 
+# List top-level fallback candidates without allowing directory enumeration to
+# outlive the selection's aggregate deadline.
+ct_host_projection_list_top_level() {
+  local root=$1 timeout_seconds=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1} output status
+  if [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} ]]; then
+    timeout_seconds=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
+  fi
+  [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 124
+  output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-list.XXXXXX") || return 2
+  if timeout --foreground --kill-after=2s "${timeout_seconds}s" \
+    find -H "$root" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 > "$output"; then
+    mapfile -d '' -t CT_HOST_PROJECTION_TOP_LEVEL < "$output"
+    status=0
+  else
+    status=$?
+  fi
+  rm -f -- "$output"
+  return "$status"
+}
+
 # Build the recursive fallback strategy from top-level directories/symlinks and
 # separately mounted descendants. This enumeration is cold-path only.
 ct_host_projection_build_fallback() {
-  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} glob_root source filesystem index
-  local -a top_level=()
+  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} source filesystem index
   declare -gA CT_HOST_PROJECTION_CANDIDATES=()
   CT_HOST_PROJECTION_COMPLETE=complete
   ct_host_projection_read_mountinfo || return 1
 
-  [[ $root == / ]] && glob_root= || glob_root=$root
-  for source in "$glob_root"/* "$glob_root"/.[!.]* "$glob_root"/..?*; do
-    [[ -d $source || -L $source ]] || continue
-    top_level+=("$source")
-  done
-  for source in "${top_level[@]}"; do
+  CT_HOST_PROJECTION_TOP_LEVEL=()
+  ct_host_projection_list_top_level "$root" || return $?
+  for source in "${CT_HOST_PROJECTION_TOP_LEVEL[@]}"; do
     filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$source]:-}
     if ct_host_projection_has_excluded_descendant "$source"; then
       CT_HOST_PROJECTION_COMPLETE=partial
       continue
     fi
-    ct_host_projection_add_candidate "$source" "$filesystem"
+    ct_host_projection_add_candidate "$source" "$filesystem" 1 || return $?
   done
   for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
     source=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
@@ -540,7 +633,7 @@ ct_host_projection_build_fallback() {
       CT_HOST_PROJECTION_COMPLETE=partial
       continue
     }
-    ct_host_projection_add_candidate "$source" "$filesystem"
+    ct_host_projection_add_candidate "$source" "$filesystem" 1 || return $?
   done
   ct_host_projection_finalize_candidates fallback
 }
@@ -556,24 +649,98 @@ ct_host_projection_cache_directory() {
   fi
 }
 
+# Read one bounded top-level JSON string selector from trusted client config.
+# The value is never logged or retained beyond the semantic endpoint key.
+ct_host_projection_client_json_selector() {
+  local file=$1 field=$2 data match remainder pattern
+  CT_HOST_PROJECTION_CLIENT_SELECTOR=
+  [[ ! -e $file ]] && return 0
+  [[ -f $file && -r $file && $(stat -c %s -- "$file" 2>/dev/null || printf 1048577) -le 1048576 ]] || return 1
+  data=$(<"$file")
+  pattern="\"$field\"[[:space:]]*:[[:space:]]*\"([^\"\\\\]*)\""
+  if [[ $data =~ $pattern ]]; then
+    match=${BASH_REMATCH[0]}
+    CT_HOST_PROJECTION_CLIENT_SELECTOR=${BASH_REMATCH[1]}
+    remainder=${data/"$match"/}
+    [[ $remainder != *"\"$field\""* ]] || return 1
+  elif [[ $data == *"\"$field\""* ]]; then
+    return 1
+  fi
+}
+
+# Derive the effective local-client selector without contacting a runtime. The
+# result is key material and the exact allowlisted endpoint variables are reused
+# by Docker/Podman probe commands.
+ct_host_projection_effective_endpoint() {
+  local backend=$1 allow_fixture_override=${2:-1} endpoint context machine connection context_selector connection_selector config
+  CT_HOST_PROJECTION_ENDPOINT_ENV=()
+  if [[ $allow_fixture_override == 1 && -n ${CT_HOST_PROJECTION_ENDPOINT:-} ]]; then
+    CT_HOST_PROJECTION_EFFECTIVE_ENDPOINT=$CT_HOST_PROJECTION_ENDPOINT
+    return 0
+  fi
+  case "$backend" in
+    docker)
+      endpoint=${DOCKER_HOST:-}
+      context=${DOCKER_CONTEXT:-}
+      machine=${DOCKER_MACHINE_NAME:-}
+      context_selector=implicit-default
+      if [[ -z ${DOCKER_CONTEXT+x} ]]; then
+        config=${DOCKER_CONFIG:-${HOME:-}/.docker}/config.json
+        ct_host_projection_client_json_selector "$config" currentContext || return 1
+        context=${CT_HOST_PROJECTION_CLIENT_SELECTOR:-default}
+        context_selector="persisted:$context"
+      else
+        context_selector="explicit:${context:-default}"
+      fi
+      CT_HOST_PROJECTION_EFFECTIVE_ENDPOINT="docker-context=$context_selector;docker-host=${endpoint:-default};docker-machine=${machine:-default}"
+      [[ -z $context || $context == default ]] || return 1
+      [[ -z $machine ]] || return 1
+      [[ -z $endpoint || $endpoint == unix://* || $endpoint == unix:* ]] || return 1
+      [[ -n $context ]] && CT_HOST_PROJECTION_ENDPOINT_ENV+=("DOCKER_CONTEXT=$context")
+      [[ -n $endpoint ]] && CT_HOST_PROJECTION_ENDPOINT_ENV+=("DOCKER_HOST=$endpoint")
+      ;;
+    podman)
+      endpoint=${CONTAINER_HOST:-${DOCKER_HOST:-}}
+      connection=${CONTAINER_CONNECTION:-${PODMAN_CONNECTION:-}}
+      connection_selector=implicit-default
+      if [[ -z ${CONTAINER_CONNECTION+x}${PODMAN_CONNECTION+x} ]]; then
+        config=${XDG_CONFIG_HOME:-${HOME:-}/.config}/containers/podman-connections.json
+        ct_host_projection_client_json_selector "$config" Default || return 1
+        connection=${CT_HOST_PROJECTION_CLIENT_SELECTOR:-}
+        connection_selector="persisted:${connection:-default}"
+      else
+        connection_selector="explicit:${connection:-default}"
+      fi
+      CT_HOST_PROJECTION_EFFECTIVE_ENDPOINT="podman-connection=$connection_selector;podman-host=${endpoint:-default}"
+      [[ -z $connection ]] || return 1
+      [[ -z $endpoint || $endpoint == unix://* || $endpoint == unix:* ]] || return 1
+      if [[ -n ${CONTAINER_HOST:-} ]]; then
+        CT_HOST_PROJECTION_ENDPOINT_ENV+=("CONTAINER_HOST=$CONTAINER_HOST")
+      elif [[ -n ${DOCKER_HOST:-} ]]; then
+        CT_HOST_PROJECTION_ENDPOINT_ENV+=("DOCKER_HOST=$DOCKER_HOST")
+      fi
+      ;;
+    singularity|apptainer)
+      CT_HOST_PROJECTION_EFFECTIVE_ENDPOINT=local
+      ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
 # Build a stable NUL-framed selection key without topology or invocation binds.
 ct_host_projection_selection_key() {
   local backend=$1 image=$2 projection_options=$3 requested_group_mode=$4
   local hostname=${CT_HOST_PROJECTION_HOSTNAME:-} executable=${CT_HOST_PROJECTION_EXECUTABLE:-}
-  local endpoint=${CT_HOST_PROJECTION_ENDPOINT:-} boot_id=${CT_HOST_PROJECTION_BOOT_ID:-}
+  local endpoint boot_id=${CT_HOST_PROJECTION_BOOT_ID:-}
   local uid=${CT_HOST_PROJECTION_UID:-$EUID} gid=${CT_HOST_PROJECTION_GID:-$(id -g)}
   local digest group
   local -a groups=()
   [[ -n $hostname ]] || hostname=${HOSTNAME:-$(< /etc/hostname)}
   [[ -n $executable ]] || executable=$(command -v -- "$backend" 2>/dev/null || true)
   [[ -n $executable ]] && executable=$(realpath -m -- "$executable")
-  if [[ -z $endpoint ]]; then
-    case "$backend" in
-      docker) endpoint=${DOCKER_HOST:-local} ;;
-      podman) endpoint=${CONTAINER_HOST:-${DOCKER_HOST:-local}} ;;
-      *) endpoint=local ;;
-    esac
-  fi
+  ct_host_projection_effective_endpoint "$backend" || true
+  endpoint=${CT_HOST_PROJECTION_EFFECTIVE_ENDPOINT:-local}
   [[ -n $boot_id ]] || boot_id=$(< /proc/sys/kernel/random/boot_id)
   if [[ -n ${CT_HOST_PROJECTION_GROUPS:-} ]]; then
     mapfile -t groups < <(tr ' ' '\n' <<< "$CT_HOST_PROJECTION_GROUPS" | LC_ALL=C sort -n)
@@ -702,6 +869,11 @@ ct_host_projection_cache_read() {
 # Resolve all cached fallback sources under one aggregate planning deadline.
 ct_host_projection_resolve_cached_sources() {
   local timeout_seconds=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1} output status source
+  if [[ -n ${CT_HOST_PROJECTION_WARM_DEADLINE_MS:-} ]]; then
+    timeout_seconds=$(ct_host_projection_warm_remaining) || return 124
+  elif [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} ]]; then
+    timeout_seconds=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
+  fi
   [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 2
   output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-resolve.XXXXXX") || return 2
   # shellcheck disable=SC2016 # The child must expand its own source argument.
@@ -728,19 +900,21 @@ ct_host_projection_resolve_cached_sources() {
 # Revalidate only stored fallback pairs. Auto omits lost candidates; required
 # refuses any loss. It deliberately never enumerates the projection root.
 ct_host_projection_validate_fallback() {
-  local mode=$1 index source filesystem
+  local mode=$1 index source filesystem original_completeness=${CT_HOST_PROJECTION_COMPLETE:-partial}
   local -a sources=("${CT_HOST_PROJECTION_SOURCES[@]}") targets=("${CT_HOST_PROJECTION_TARGETS[@]}")
   local -a retained_sources=() retained_targets=() retained_destinations=()
   [[ $CT_HOST_PROJECTION_STRATEGY == fallback ]] || return 1
   ct_host_projection_read_mountinfo || return 2
   ct_host_projection_resolve_cached_sources || return 2
   (( ${#CT_HOST_PROJECTION_RESOLVED_NOW[@]} == ${#sources[@]} )) || return 2
-  CT_HOST_PROJECTION_COMPLETE=complete
+  CT_HOST_PROJECTION_COMPLETE=$original_completeness
   for index in "${!sources[@]}"; do
     source=${sources[index]}
     filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$source]:-}
     if ! ct_host_projection_source_eligible "$source" "$filesystem" \
       || ct_host_projection_has_excluded_descendant "$source" \
+      || ! ct_host_projection_target_eligible "${targets[index]}" \
+      || ! ct_host_projection_target_eligible "${CT_HOST_PROJECTION_RESOLVED_NOW[index]}" \
       || [[ ${CT_HOST_PROJECTION_RESOLVED_NOW[index]} != "${targets[index]}" ]]; then
       CT_HOST_PROJECTION_COMPLETE=partial
       continue
@@ -792,6 +966,7 @@ ct_host_projection_release_lock() {
 ct_host_projection_select() {
   local key=$1 refresh=$2 selector=$3
   shift 3
+  CT_HOST_PROJECTION_SELECTION_COLD=0
   if [[ $refresh != 1 ]] && ct_host_projection_cache_read "$key"; then
     return 0
   fi
@@ -800,6 +975,7 @@ ct_host_projection_select() {
     ct_host_projection_release_lock
     return 0
   fi
+  CT_HOST_PROJECTION_SELECTION_COLD=1
   if "$selector" "$@"; then
     ct_host_projection_cache_write "$key" "$CT_HOST_PROJECTION_STRATEGY" \
       "$CT_HOST_PROJECTION_COMPLETE" "$CT_HOST_PROJECTION_GROUP_MODE" "$CT_HOST_PROJECTION_REASON" || true
@@ -841,18 +1017,11 @@ ct_host_projection_render_mounts() {
   done
 }
 
-# Return 0 only for the default local Docker/Podman client endpoint. Explicit
-# TCP, SSH, machine, and non-default socket selectors are intentionally not a
-# host projection capability because their daemon host is not this host.
+# Return 0 only for an explicitly local Docker/Podman client selector. Remote
+# contexts, connections, machine names, TCP, and SSH endpoints are rejected
+# before warm-path runtime calls.
 ct_host_projection_local_endpoint() {
-  local backend=$1 endpoint
-  case "$backend" in
-    docker) endpoint=${DOCKER_HOST:-} ;;
-    podman) endpoint=${CONTAINER_HOST:-${DOCKER_HOST:-}} ;;
-    singularity|apptainer) return 0 ;;
-    *) return 1 ;;
-  esac
-  [[ -z $endpoint || $endpoint == unix://* || $endpoint == unix:* ]]
+  ct_host_projection_effective_endpoint "$1" 0
 }
 
 # Set the least-privilege group realization used when a probe has not
@@ -882,11 +1051,25 @@ ct_host_projection_apply_group_mode() {
   esac
 }
 
+# Read one comma-delimited mount descriptor field exactly. Generated Docker and
+# Podman mount descriptors use this form, so substring matching is not safe.
+ct_host_projection_mount_field() {
+  local descriptor=$1 wanted=$2 field
+  local -a fields=()
+  IFS=, read -r -a fields <<< "$descriptor"
+  for field in "${fields[@]}"; do
+    [[ $field == "$wanted="* ]] || continue
+    CT_HOST_PROJECTION_MOUNT_FIELD=${field#*=}
+    return 0
+  done
+  return 1
+}
+
 # Reduce a generated plan against already assembled mounts. Existing equivalent
 # /host binds retain their ordering and meaning; conflicts make this generated
 # candidate incomplete rather than overwriting a caller-provided mount.
 ct_host_projection_resolve_mount_conflicts() {
-  local index candidate source destination mount_index mount descriptor existing_source
+  local index candidate source destination mount_index mount descriptor existing_source existing_destination
   local -a sources=() targets=() destinations=()
   for index in "${!CT_HOST_PROJECTION_SOURCES[@]}"; do
     source=${CT_HOST_PROJECTION_SOURCES[index]}
@@ -897,8 +1080,24 @@ ct_host_projection_resolve_mount_conflicts() {
       [[ $mount == --mount || $mount == --bind ]] || continue
       descriptor=${MOUNT_ARGS[mount_index + 1]:-}
       if [[ $mount == --mount ]]; then
-        [[ $descriptor == *"target=$destination"* || $descriptor == *"dst=$destination"* ]] || continue
-        if [[ $descriptor == *"source=$source,"* || $descriptor == *"src=$source,"* ]]; then
+        if ct_host_projection_mount_field "$descriptor" target || ct_host_projection_mount_field "$descriptor" dst; then
+          existing_destination=$CT_HOST_PROJECTION_MOUNT_FIELD
+        else
+          continue
+        fi
+        if [[ $existing_destination != "$destination" ]]; then
+          if [[ $existing_destination == "$destination"/* || $destination == "$existing_destination"/* ]]; then
+            candidate=conflict
+            break
+          fi
+          continue
+        fi
+        if ct_host_projection_mount_field "$descriptor" source || ct_host_projection_mount_field "$descriptor" src; then
+          existing_source=$CT_HOST_PROJECTION_MOUNT_FIELD
+        else
+          existing_source=
+        fi
+        if [[ $existing_source == "$source" ]]; then
           candidate=equivalent
         else
           candidate=conflict
@@ -950,8 +1149,13 @@ ct_host_projection_set_none() {
 ct_host_projection_probe() {
   local backend=$1 image=$2 requested_group_mode=$3
   local output status timeout_seconds remaining probe_name probe_id cleanup_status interrupted=0 group group_marker
-  local -a probe=() create=() group_args=() expected_groups=()
+  local cleanup_reference='' cleanup_needed=0 cleanup_owned=1 create_status ownership cleanup_deadline_ms now
+  local locality_nonce locality_file=
+  local -a probe=() create=() group_args=() expected_groups=() endpoint_env=()
+  CT_HOST_PROJECTION_PROBE_RESULT=unavailable
   ct_host_projection_render_mounts "$backend" || return 2
+  ct_host_projection_effective_endpoint "$backend" 0 || return 2
+  endpoint_env=("${CT_HOST_PROJECTION_ENDPOINT_ENV[@]}")
   timeout_seconds=${CT_HOST_PROJECTION_PROBE_TIMEOUT:-8}
   if [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} && -z ${CT_HOST_PROJECTION_PROBE_TIMEOUT:-} ]]; then
     timeout_seconds=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
@@ -984,38 +1188,58 @@ ct_host_projection_probe() {
   case "$backend" in
     docker|podman)
       probe_name="ct-host-projection-${EUID}-$$-${RANDOM}-${SECONDS}"
-      create=("${TOOL[@]}" create --name "$probe_name"
+      locality_nonce=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n') || return 2
+      locality_file=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-locality.XXXXXX") || return 2
+      [[ $locality_file != *','* ]] || { rm -f -- "$locality_file"; return 2; }
+      (umask 077; printf '%s\n' "$locality_nonce" > "$locality_file") || {
+        rm -f -- "$locality_file"
+        return 2
+      }
+      create=("${CT_RUNTIME_TOOL[@]}" create --name "$probe_name"
         --label "container-tools.host-projection.probe=$probe_name")
       [[ $backend == podman ]] && create+=(--userns=keep-id)
       # shellcheck disable=SC2016 # The probe shell expands its own positional inputs.
       create+=(--user "$USER_ID:$GROUP_ID" "${group_args[@]}"
+        --mount "type=bind,source=$locality_file,target=/.ct-host-projection-locality,readonly"
         "${CT_HOST_PROJECTION_MOUNT_ARGS[@]}" "$image" /bin/sh -c '
           test -d /host || exit 20
-          expected=$1
-          shift
+          locality=$1
+          expected=$2
+          shift 2
+          [ "$(cat /.ct-host-projection-locality)" = "$locality" ] || exit 22
           actual=" $(id -G) "
           for group; do
             case "$actual" in *" $group "*) ;; *) exit 21 ;; esac
           done
           printf "ct-host-projection-group=%s\n" "$expected"
-        ' sh "$group_marker" "${expected_groups[@]}")
+        ' sh "$locality_nonce" "$group_marker" "${expected_groups[@]}")
       ;;
     singularity|apptainer)
-      probe=("${TOOL[@]}" exec "${CT_HOST_PROJECTION_MOUNT_ARGS[@]}" "$image" /bin/sh -c '
+      probe=("${CT_RUNTIME_TOOL[@]}" exec "${CT_HOST_PROJECTION_MOUNT_ARGS[@]}" "$image" /bin/sh -c '
         test -d /host || exit 20
         printf "ct-host-projection-group=native\n"
       ')
       ;;
     *) return 2 ;;
   esac
-  output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-probe.XXXXXX") || return 2
+  output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-probe.XXXXXX") || {
+    [[ -z $locality_file ]] || rm -f -- "$locality_file"
+    return 2
+  }
+  trap 'interrupted=1' HUP INT TERM
   if [[ $backend == docker || $backend == podman ]]; then
-    trap 'interrupted=1' HUP INT TERM
     if probe_id=$(env -i PATH="$PATH" HOME="${HOME:-/}" \
-      timeout --foreground --kill-after=2s "${timeout_seconds}s" "${create[@]}" 2>/dev/null); then
-      if ! ct_host_projection_record_scalar "$probe_id"; then
-        status=2
+      "${endpoint_env[@]}" timeout --foreground --kill-after=2s "${timeout_seconds}s" "${create[@]}" 2>/dev/null); then
+      if ct_host_projection_record_scalar "$probe_id"; then
+        cleanup_reference=$probe_id
+        cleanup_needed=1
       else
+        status=2
+        cleanup_reference=$probe_name
+        cleanup_needed=1
+        cleanup_owned=0
+      fi
+      if (( cleanup_needed )) && [[ $cleanup_reference == "$probe_id" ]]; then
         remaining=${CT_HOST_PROJECTION_COLD_DEADLINE:-0}
         if (( remaining > 0 )); then
           remaining=$((remaining - SECONDS))
@@ -1025,25 +1249,54 @@ ct_host_projection_probe() {
         if (( remaining <= 0 )); then
           status=124
         elif env -i PATH="$PATH" HOME="${HOME:-/}" \
+          "${endpoint_env[@]}" \
           timeout --foreground --kill-after=2s "${remaining}s" \
-          "${TOOL[@]}" start --attach "$probe_id" > "$output" 2>/dev/null; then
+          "${CT_RUNTIME_TOOL[@]}" start --attach "$probe_id" > "$output" 2>/dev/null; then
           status=0
         else
           status=$?
         fi
-        if env -i PATH="$PATH" HOME="${HOME:-/}" \
-          timeout --foreground --kill-after=1s 2s "${TOOL[@]}" rm --force "$probe_id" >/dev/null 2>&1; then
-          cleanup_status=0
-        else
-          cleanup_status=$?
-        fi
-        (( cleanup_status == 0 )) || status=2
       fi
     else
-      status=$?
+      create_status=$?
+      status=$create_status
+      case "$create_status" in
+        # The probe contract reserves these exit codes for a completed,
+        # capability-level rejection. Other client failures are transient.
+        20|21|22) CT_HOST_PROJECTION_PROBE_RESULT=conclusive ;;
+        *)
+          cleanup_reference=$probe_name
+          cleanup_needed=1
+          cleanup_owned=0
+          ;;
+      esac
     fi
-    trap - HUP INT TERM
-    (( interrupted == 0 )) || status=2
+    if (( cleanup_needed )); then
+      now=$(date +%s%3N) || now=0
+      cleanup_deadline_ms=$((now + 2000))
+      if (( ! cleanup_owned )); then
+        if remaining=$(ct_host_projection_remaining_until "$cleanup_deadline_ms"); then
+          ownership=$(env -i PATH="$PATH" HOME="${HOME:-/}" "${endpoint_env[@]}" \
+            timeout --foreground --kill-after=1s "${remaining}s" "${CT_RUNTIME_TOOL[@]}" container inspect \
+            --format '{{ index .Config.Labels "container-tools.host-projection.probe" }}' \
+            "$probe_name" 2>/dev/null) || ownership=
+          [[ $ownership == "$probe_name" ]] && cleanup_owned=1
+        fi
+      fi
+      if ! remaining=$(ct_host_projection_remaining_until "$cleanup_deadline_ms" 2>/dev/null); then
+        remaining=
+      fi
+      if (( cleanup_owned )) && [[ -n $remaining ]] && env -i PATH="$PATH" HOME="${HOME:-/}" "${endpoint_env[@]}" \
+        timeout --foreground --kill-after=1s "${remaining}s" "${CT_RUNTIME_TOOL[@]}" rm --force "$cleanup_reference" >/dev/null 2>&1; then
+        cleanup_status=0
+      else
+        cleanup_status=1
+      fi
+      if (( cleanup_status != 0 )); then
+        CT_HOST_PROJECTION_PROBE_RESULT=terminal
+        status=2
+      fi
+    fi
   else
     if env -i PATH="$PATH" HOME="${HOME:-/}" \
       timeout --foreground --kill-after=2s "${timeout_seconds}s" "${probe[@]}" > "$output" 2>/dev/null; then
@@ -1051,6 +1304,17 @@ ct_host_projection_probe() {
     else
       status=$?
     fi
+  fi
+  trap - HUP INT TERM
+  if (( interrupted )); then
+    CT_HOST_PROJECTION_PROBE_RESULT=terminal
+    status=2
+  elif [[ ${CT_HOST_PROJECTION_PROBE_RESULT:-} != terminal ]]; then
+    case "$status" in
+      0) CT_HOST_PROJECTION_PROBE_RESULT=success ;;
+      20|21|22) CT_HOST_PROJECTION_PROBE_RESULT=conclusive ;;
+      *) CT_HOST_PROJECTION_PROBE_RESULT=unavailable ;;
+    esac
   fi
   if (( status == 0 )); then
     case "$(<"$output")" in
@@ -1064,6 +1328,7 @@ ct_host_projection_probe() {
     esac
   fi
   rm -f -- "$output"
+  [[ -z $locality_file ]] || rm -f -- "$locality_file"
   return "$status"
 }
 
@@ -1072,7 +1337,7 @@ ct_host_projection_probe() {
 # root bind and prove fallback only. Probe timeout or setup uncertainty is not
 # a conclusive `none` and is never published.
 ct_host_projection_cold_select() {
-  local backend=$1 image=$2 probe_status
+  local backend=$1 image=$2
   CT_HOST_PROJECTION_SELECTION_FAILURE=
   case "$backend" in
     docker|podman)
@@ -1085,14 +1350,12 @@ ct_host_projection_cold_select() {
       if ct_host_projection_probe "$backend" "$image" "$CT_HOST_PROJECTION_GROUP_MODE"; then
         CT_HOST_PROJECTION_REASON=proven
         return 0
-      else
-        probe_status=$?
       fi
-      if (( probe_status == 124 || probe_status == 137 || probe_status == 2 )); then
-        CT_HOST_PROJECTION_SELECTION_FAILURE=terminal
-        return 1
-      fi
-      CT_HOST_PROJECTION_GROUP_MODE=primary-only
+      case ${CT_HOST_PROJECTION_PROBE_RESULT:-unavailable} in
+        conclusive) CT_HOST_PROJECTION_GROUP_MODE=primary-only ;;
+        terminal) CT_HOST_PROJECTION_SELECTION_FAILURE=terminal; return 1 ;;
+        *) CT_HOST_PROJECTION_SELECTION_FAILURE=unavailable; return 1 ;;
+      esac
       ;;
     singularity|apptainer) CT_HOST_PROJECTION_GROUP_MODE=native-inherited ;;
     *) return 1 ;;
@@ -1101,26 +1364,29 @@ ct_host_projection_cold_select() {
   if ct_host_projection_probe "$backend" "$image" "$CT_HOST_PROJECTION_GROUP_MODE"; then
     CT_HOST_PROJECTION_REASON=proven
     return 0
-  else
-    probe_status=$?
   fi
-  if (( probe_status == 124 || probe_status == 137 || probe_status == 2 )); then
-    CT_HOST_PROJECTION_SELECTION_FAILURE=terminal
-    return 1
-  fi
-  ct_host_projection_set_none "$backend" unavailable
+  case ${CT_HOST_PROJECTION_PROBE_RESULT:-unavailable} in
+    conclusive) ct_host_projection_set_none "$backend" unavailable ;;
+    terminal) CT_HOST_PROJECTION_SELECTION_FAILURE=terminal; return 1 ;;
+    *) CT_HOST_PROJECTION_SELECTION_FAILURE=unavailable; return 1 ;;
+  esac
 }
 
 # Consume or establish a selection, render its currently usable mounts, and
-# prepend them before existing mounts. Auto degrades to the pre-existing launch
-# while required refuses before the payload; neither path retries a payload.
+# prepend them before existing mounts. Foreground dry runs leave all projection
+# state and generated argv empty; auto degrades to the pre-existing launch while
+# required refuses before the payload; neither path retries a payload.
 ct_host_projection_prepare_foreground() {
-  local backend=${TOOL[0]} image=${PAYLOAD_ARGS[0]:-} requested_group_mode cache_key selected=0 cold_timeout
+  local backend=${TOOL[0]} image=${PAYLOAD_ARGS[0]:-} requested_group_mode cache_key selected=0 cold_timeout cached_completeness
+  local plan_timeout whole fraction milliseconds now
   CT_HOST_PROJECTION_MOUNT_ARGS=()
   # shellcheck disable=SC2034 # Foreground launchers consume this shared result.
   CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS=()
+  CT_HOST_PROJECTION_GROUP_ARGS=()
+  [[ -n ${CT_DRY_RUN:-} ]] && return 0
   if [[ -n ${CT_HOST_PROJECTION_RUNTIME_LABEL:-} && ( $backend == docker || $backend == podman ) ]]; then
     [[ $CT_HOST_PROJECTION_RUNTIME_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
+    # shellcheck disable=SC2034 # ct_exec.sh and ct_shell.sh consume this argv fragment.
     CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS=(--label "container-tools.host-projection-runtime.run=$CT_HOST_PROJECTION_RUNTIME_LABEL")
   fi
   [[ ${CT_HOST_ROOT:-auto} == auto || ${CT_HOST_ROOT:-auto} == required ]] || return 1
@@ -1149,19 +1415,39 @@ ct_host_projection_prepare_foreground() {
   cache_key=$CT_HOST_PROJECTION_SELECTION_KEY
   cold_timeout=${CT_HOST_PROJECTION_COLD_TIMEOUT:-8}
   [[ $cold_timeout =~ ^[0-9]+$ && $cold_timeout != 0 ]] || return 1
-  # The lock, planning, and one-or-two aggregate probes share this foreground
-  # selection budget. Cleanup belongs to each runtime's bounded `--rm` path.
+  # The lock, planning, one-or-two aggregate probes, and cold post-selection
+  # realization share this foreground selection budget. Cleanup belongs to each
+  # runtime's bounded `--rm` path.
   CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + cold_timeout))
   if ct_host_projection_select "$cache_key" "${CT_HOST_ROOT_REFRESH:-0}" \
     ct_host_projection_cold_select "$backend" "$image"; then
     selected=1
   fi
-  unset CT_HOST_PROJECTION_COLD_DEADLINE
+  # Cache hits retain one aggregate metadata budget for current realization.
+  if [[ ${CT_HOST_PROJECTION_SELECTION_COLD:-0} != 1 ]]; then
+    plan_timeout=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1}
+    [[ $plan_timeout =~ ^[0-9]+([.][0-9]+)?$ && ! $plan_timeout =~ ^0+([.]0+)?$ ]] || return 1
+    whole=${plan_timeout%%.*}
+    fraction=${plan_timeout#*.}
+    [[ $fraction != "$plan_timeout" ]] || fraction=0
+    fraction="${fraction}000"
+    milliseconds=$((10#$whole * 1000 + 10#${fraction:0:3}))
+    (( milliseconds > 0 )) || milliseconds=1
+    now=$(date +%s%3N) || return 1
+    CT_HOST_PROJECTION_WARM_DEADLINE_MS=$((now + milliseconds))
+    unset CT_HOST_PROJECTION_COLD_DEADLINE
+  fi
   if (( selected )) && [[ $CT_HOST_PROJECTION_STRATEGY == direct ]]; then
+    cached_completeness=${CT_HOST_PROJECTION_COMPLETE:-partial}
     ct_host_projection_build_direct || selected=0
+    # A cached proof marked partial remains partial even when its current direct
+    # paths render cleanly; required mode must not promote it without refresh.
+    [[ $cached_completeness != partial ]] || CT_HOST_PROJECTION_COMPLETE=partial
   elif (( selected )) && [[ $CT_HOST_PROJECTION_STRATEGY == fallback ]]; then
     ct_host_projection_validate_fallback auto || selected=0
   fi
+  unset CT_HOST_PROJECTION_COLD_DEADLINE
+  unset CT_HOST_PROJECTION_WARM_DEADLINE_MS
   if (( ! selected )); then
     [[ ${CT_HOST_PROJECTION_SELECTION_FAILURE:-} != terminal ]] || {
       printf '%s\n' 'Error: host projection proof did not terminate with confirmed cleanup' >&2
@@ -1217,6 +1503,17 @@ determine_container_tool() {
     echo "Error: Must specify one of --docker, --podman, --singularity, or --apptainer" >&2
     return 1
   fi
+}
+
+# Use an inherited, pathless runtime adapter only for the opt-in host evidence
+# runner. Backend policy continues to use the logical TOOL family.
+prepare_runtime_tool() {
+  local fd=${CT_HOST_PROJECTION_RUNTIME_EXECUTABLE_FD:-}
+  CT_RUNTIME_TOOL=("${TOOL[@]}")
+  [[ -n $fd ]] || return 0
+  [[ ${CT_HOST_PROJECTION_RUNTIME_TEST:-} == 1 && $fd =~ ^[0-9]{1,3}$ \
+    && -r /proc/self/fd/$fd ]] || return 1
+  CT_RUNTIME_TOOL[0]="/proc/self/fd/$fd"
 }
 
 determine_tool_mode() {
@@ -1499,6 +1796,7 @@ launcher_preamble() {
     return 1
   fi
   determine_container_tool "$1" || return 1
+  prepare_runtime_tool || return 1
   case "${TOOL[0]}" in
     singularity|apptainer) configure_runtime_storage "${TOOL[0]}" || return 1 ;;
   esac

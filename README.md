@@ -18,6 +18,13 @@ launch and performs a new cold proof; a failed refresh does not consume the old
 record. Automatic launches warn and retain the existing launch behavior when a
 projection is unavailable or partial. Explicit remote Docker/Podman endpoint
 selectors are intentionally unavailable because their daemon host is not local.
+Only Docker's explicit `default` context and local Unix `DOCKER_HOST` or
+`CONTAINER_HOST` selectors are eligible; named Docker contexts, Podman
+connections, machine selectors, SSH, and TCP endpoints are unavailable.
+Persisted Docker and Podman selectors are read from their bounded client config
+when the corresponding environment selector is unset. Cold Docker/Podman proof
+also binds and verifies a private client nonce, so reaching a Unix socket alone
+does not establish that its daemon sees this host filesystem.
 
 Docker and Podman use primary-only groups unless aggregate proof conclusively
 reports a supported broader realization. SingularityCE and Apptainer retain
@@ -55,26 +62,34 @@ Every syntactically valid non-help invocation that can create its work directory
 emits the same redacted `container-tools.host-projection-runtime/v1` JSON object
 to stdout and `$work/report.json`. It records one cold selection, 20 warm
 samples, a required-mode check, a refresh, normalized launcher operation counts,
-and exact run-owned cleanup. Docker and Podman use the immutable local image ID;
+the resolved backend executable digest, and exact run-owned cleanup. Docker and
+Podman use the immutable local image ID;
 native backends stage the supplied SIF beneath `--work` and hash both source and
 staged bytes before and after the run. `--force-fallback` is available only for
 Docker and Podman evidence: its tracing adapter rejects the direct probe before
 creation, delegates the fallback and payload unchanged, and labels the report
 as `forced-fallback` rather than a natural rejection.
 
-Validate a returned report against the currently reviewed launcher, library,
-and test source manifest before accepting it:
+Validate a returned real-runtime report against the currently reviewed launcher,
+library, and test source manifest before accepting it. Validation requires the
+locally installed `jq` parser; it never installs tools or contacts a network:
 
 ```sh
 bash tests/host_projection_runtime_test.sh \
   --validate-report /tmp/mkchad-v1/host-root-projection-host/docker-RUN_ID/report.json
 ```
 
-The validator rejects malformed reports and reports from a different source
-commit or manifest. Exit `0` means every applicable case passed, `1` means a
-case, source/image binding, or cleanup check failed, `2` is invalid input with
-no report, and `77` means disabled or unavailable and makes no runtime support
-claim. Docker and Podman mark persistent `HP-HOST-006` as an explicit skip;
+The validator accepts exactly one closed JSON object with the current source
+commit and manifest, one of each case ID, backend-specific cold/refresh counts,
+20 operation-free warm samples, required and persistent operation semantics,
+and a passed host-evidence result. It rejects fixture reports, unknown fields,
+empty operation evidence, and incomplete cleanup. Deterministic fake runs are explicitly labeled
+`"evidence_kind":"fixture"` and may be checked only with the test seam
+`--validate-fixture-report`; they never substantiate a backend claim. Exit `0`
+means every applicable real-runtime case passed, `1` means a valid failed or
+unacceptable report, `2` means malformed or invalid report input, and `77`
+means the report is unavailable or `jq` is unavailable and makes no runtime
+support claim. Docker and Podman mark persistent `HP-HOST-006` as an explicit skip;
 SingularityCE and Apptainer execute and clean up their run-owned persistent
 instance. This development environment currently has none of Docker, Podman,
 SingularityCE, or Apptainer available, so all four real-runtime claims remain
@@ -110,9 +125,11 @@ payload and never stops an existing instance.
 
 Instance creation records a private mode-`0600` pending name/profile/nonce
 journal. Recovery adopts only an instance that reports the exact pending nonce;
-stale journal cleanup never signals or stops a runtime instance. `CT_DRY_RUN`
-prints a representative persistent exec command without creating an instance
-root, projection cache, or pending journal.
+ambiguous liveness or list results retain that journal. A structured empty
+backend instance list permits only a retry with the recorded nonce, and recovery
+never signals or stops a runtime instance. `CT_DRY_RUN` prints a representative
+persistent exec command without creating an instance root, projection cache, or
+pending journal.
 
 The cumulative runtime runner includes `HP-HOST-006`. Docker and Podman report
 that persistent case as an explicit backend-inapplicable skip. SingularityCE

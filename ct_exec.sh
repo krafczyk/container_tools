@@ -15,16 +15,16 @@ ct_host_projection_prepare_foreground
 # Launch container with proper arguments.
 case "${TOOL[0]}" in
   docker)
-    CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+    CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
       "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     ;;
   podman)
-    CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+    CMD=("${CT_RUNTIME_TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
       "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     ;;
   singularity|apptainer)
     CMD=(
-      "${TOOL[@]}"
+      "${CT_RUNTIME_TOOL[@]}"
       exec
       --pwd "$PWD_DIR"
       "${MOUNT_ARGS[@]}"
@@ -35,7 +35,7 @@ case "${TOOL[0]}" in
 
     ;;
   *)
-    echo "Unsupported tool: $TOOL"
+    echo "Unsupported tool: ${TOOL[*]}"
     exit 1
     ;;
 esac

@@ -21,10 +21,11 @@ mkdir -p "$work/root" "$work/cache"
 
 fixture_root="$work/root"
 mkdir -p "$fixture_root"
-mkdir -p "$fixture_root/usr" "$fixture_root/var" "$fixture_root/run" "$fixture_root/data"
+mkdir -p "$fixture_root/usr" "$fixture_root/var" "$fixture_root/run/netns" "$fixture_root/data"
 mkdir -p "$fixture_root/space dir" "$fixture_root"/$'tab\tdir' "$fixture_root"/$'slash\\dir'
 mkdir -p "$fixture_root/proc" "$fixture_root/sys" "$fixture_root/dev"
 ln -s usr "$fixture_root/bin"
+ln -s proc "$fixture_root/kernel-link"
 
 mountinfo="$work/mountinfo"
 cat > "$mountinfo" <<EOF
@@ -39,6 +40,7 @@ cat > "$mountinfo" <<EOF
 32 24 0:1 / $fixture_root/proc rw,relatime - proc proc rw
 33 24 0:2 / $fixture_root/sys rw,relatime - sysfs sysfs rw
 34 24 0:3 / $fixture_root/dev rw,relatime - devtmpfs devtmpfs rw
+35 27 0:4 / $fixture_root/run/netns rw,relatime - nsfs nsfs rw
 EOF
 
 CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
@@ -80,6 +82,7 @@ assert_contains "$fixture_root/slash\\dir"
 assert_not_contains "$fixture_root/proc"
 assert_not_contains "$fixture_root/sys"
 assert_not_contains "$fixture_root/dev"
+assert_not_contains "$fixture_root/run/netns"
 [[ ${CT_HOST_PROJECTION_DESTINATIONS[0]} == "/host$fixture_root" ]]
 previous=
 for source in "${CT_HOST_PROJECTION_SOURCES[@]}"; do
@@ -149,6 +152,8 @@ fallback_count=${#CT_HOST_PROJECTION_SOURCES[@]}
 assert_not_contains "$fixture_root/proc"
 assert_not_contains "$fixture_root/sys"
 assert_not_contains "$fixture_root/dev"
+assert_not_contains "$fixture_root/kernel-link"
+assert_not_contains "$fixture_root/run/netns"
 previous=
 for source in "${CT_HOST_PROJECTION_SOURCES[@]}"; do
   [[ -z $previous || $previous < $source ]] || {
@@ -206,15 +211,52 @@ if ct_host_projection_validate_fallback required; then
   exit 1
 fi
 
+# A previously proven partial record remains partial even when every retained
+# path currently validates. Required mode must not promote it to a payload.
+partial_key=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+CT_HOST_PROJECTION_SOURCES=("$fixture_root/bin")
+CT_HOST_PROJECTION_TARGETS=("$(realpath "$fixture_root/bin")")
+ct_host_projection_cache_write "$partial_key" fallback partial primary-only partial
+ct_host_projection_cache_read "$partial_key"
+ct_host_projection_validate_fallback auto
+[[ $CT_HOST_PROJECTION_COMPLETE == partial ]] || {
+  printf '%s\n' 'warm validation promoted a cached partial fallback record' >&2
+  exit 1
+}
+ct_host_projection_cache_read "$partial_key"
+if ct_host_projection_validate_fallback required; then
+  printf '%s\n' 'required mode promoted a cached partial fallback record' >&2
+  exit 1
+fi
+
 # The stored fallback plan is validated as one aggregate operation. A hung
 # resolver cannot multiply its deadline by the number of stored candidates.
 slow_bin="$work/slow-bin"
 mkdir "$slow_bin"
 cat > "$slow_bin/realpath" <<'EOF'
 #!/usr/bin/env bash
+if [[ ${1:-} == -m ]]; then
+  exec /usr/bin/realpath "$@"
+fi
 sleep 2
 EOF
 chmod 755 "$slow_bin/realpath"
+cat > "$slow_bin/find" <<'EOF'
+#!/usr/bin/env bash
+sleep 5
+EOF
+chmod 755 "$slow_bin/find"
+planning_started=$SECONDS
+CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 1))
+if PATH="$slow_bin:$PATH" ct_host_projection_build_fallback; then
+  printf '%s\n' 'hung top-level fallback enumeration succeeded' >&2
+  exit 1
+fi
+unset CT_HOST_PROJECTION_COLD_DEADLINE
+(( SECONDS - planning_started < 4 )) || {
+  printf '%s\n' 'top-level fallback enumeration exceeded its aggregate deadline' >&2
+  exit 1
+}
 ct_host_projection_cache_read "$key_a"
 if PATH="$slow_bin:$PATH" CT_HOST_PROJECTION_PLAN_TIMEOUT=0.1 ct_host_projection_validate_fallback auto; then
   printf '%s\n' 'hung aggregate fallback validation succeeded' >&2
@@ -230,6 +272,53 @@ ct_host_projection_cache_write "$tampered_key" fallback complete primary-only ta
 ct_host_projection_cache_read "$tampered_key"
 ct_host_projection_validate_fallback auto
 [[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 && $CT_HOST_PROJECTION_COMPLETE == partial ]]
+
+# A lexical fallback source outside an excluded subtree may resolve into one.
+# Both the stored and current targets must be rejected before rendering.
+target_key=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+rm -- "$fixture_root/bin"
+ln -s proc "$fixture_root/bin"
+CT_HOST_PROJECTION_SOURCES=("$fixture_root/bin")
+CT_HOST_PROJECTION_TARGETS=("$fixture_root/proc")
+ct_host_projection_cache_write "$target_key" fallback complete primary-only target-kernel-api
+ct_host_projection_cache_read "$target_key"
+ct_host_projection_validate_fallback auto
+[[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 && $CT_HOST_PROJECTION_COMPLETE == partial ]] || {
+  printf '%s\n' 'cached fallback target inside a kernel API filesystem was retained' >&2
+  exit 1
+}
+rm -- "$fixture_root/bin"
+ln -s usr "$fixture_root/bin"
+
+# Existing mount descriptors must compare source and destination fields exactly,
+# rather than accepting destination prefixes.
+CT_HOST_PROJECTION_SOURCES=(/host/data)
+CT_HOST_PROJECTION_TARGETS=(/host/data)
+CT_HOST_PROJECTION_DESTINATIONS=(/host/data)
+CT_HOST_PROJECTION_COMPLETE=complete
+MOUNT_ARGS=(--mount 'type=bind,source=/host/data,target=/host/data-old,bind-recursive=disabled')
+ct_host_projection_resolve_mount_conflicts
+[[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 1 && $CT_HOST_PROJECTION_COMPLETE == complete ]] || {
+  printf '%s\n' 'mount destination prefix was treated as an equivalent projection bind' >&2
+  exit 1
+}
+MOUNT_ARGS=(--mount 'type=bind,source=/host/data,target=/host/data,bind-recursive=disabled')
+ct_host_projection_resolve_mount_conflicts
+[[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 && $CT_HOST_PROJECTION_COMPLETE == complete ]] || {
+  printf '%s\n' 'exact equivalent projection bind was not retained' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_SOURCES=(/)
+CT_HOST_PROJECTION_TARGETS=(/)
+CT_HOST_PROJECTION_DESTINATIONS=(/host)
+CT_HOST_PROJECTION_COMPLETE=complete
+MOUNT_ARGS=(--mount 'type=bind,source=/other,target=/host/etc')
+ct_host_projection_resolve_mount_conflicts
+[[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 && $CT_HOST_PROJECTION_COMPLETE == partial ]] || {
+  printf '%s\n' 'nested existing host mount did not make the generated root partial' >&2
+  exit 1
+}
+MOUNT_ARGS=()
 
 # Corrupt, future, and oversized records are cache misses. Cache file mode is
 # deliberately not a validity input.
@@ -377,12 +466,42 @@ cat > "$launcher_fake/docker" <<'EOF'
 set -euo pipefail
 call_log="$(dirname "$0")/calls"
 state="$(dirname "$0")/probe-state"
+owner="$(dirname "$0")/probe-owner"
 case "${1:-}" in
   create)
     printf '%s\n' probe-create >> "$call_log"
+    printf '%s\n' "$@" > "$(dirname "$0")/probe-create-argv"
+    [[ -z ${DOCKER_HOST:-}${CONTAINER_HOST:-} ]] || printf 'create:%s:%s\n' "${DOCKER_HOST:-}" "${CONTAINER_HOST:-}" >> "$(dirname "$0")/endpoint-observed"
+    [[ -z ${CT_HOST_PROJECTION_LAUNCH_LOG:-} ]] || : > "$(dirname "$0")/payload-env-leaked"
+    name=
+    for ((index = 1; index < $#; index++)); do
+      [[ ${!index} == --name ]] || continue
+      next=$((index + 1))
+      name=${!next}
+      break
+    done
+    printf '%s\n' "$name" > "$(dirname "$0")/probe-name"
     if [[ -e $(dirname "$0")/force-direct-fail && "$*" == *bind-recursive=disabled* ]]; then
       rm -- "$(dirname "$0")/force-direct-fail"
-      exit 12
+      exit 20
+    fi
+    if [[ -e $(dirname "$0")/force-fallback-fail ]]; then
+      rm -- "$(dirname "$0")/force-fallback-fail"
+      exit 20
+    fi
+    if [[ -e $(dirname "$0")/force-transient-fail ]]; then
+      exit 9
+    fi
+    if [[ -e $(dirname "$0")/force-create-timeout ]]; then
+      : > "$state"
+      printf '%s\n' "$name" > "$owner"
+      sleep 5
+    fi
+    if [[ -e $(dirname "$0")/force-create-malformed ]]; then
+      : > "$state"
+      printf '%s\n' "$name" > "$owner"
+      printf '%s\n' 'malformed probe id'
+      exit 0
     fi
     group_mode=none
     for argument; do
@@ -393,11 +512,13 @@ case "${1:-}" in
     else
       printf '%s\n' none > "$state"
     fi
+    printf '%s\n' "$name" > "$owner"
     printf '%s\n' fake-container-id
     exit 0
     ;;
   start)
     printf '%s\n' probe-start >> "$call_log"
+    [[ -z ${DOCKER_HOST:-}${CONTAINER_HOST:-} ]] || printf 'start:%s:%s\n' "${DOCKER_HOST:-}" "${CONTAINER_HOST:-}" >> "$(dirname "$0")/endpoint-observed"
     if [[ -e $(dirname "$0")/force-start-timeout ]]; then
       sleep 5
     fi
@@ -405,10 +526,17 @@ case "${1:-}" in
     ;;
   rm)
     printf '%s\n' probe-cleanup >> "$call_log"
+    [[ -z ${DOCKER_HOST:-}${CONTAINER_HOST:-} ]] || printf 'rm:%s:%s\n' "${DOCKER_HOST:-}" "${CONTAINER_HOST:-}" >> "$(dirname "$0")/endpoint-observed"
     if [[ -e $(dirname "$0")/force-cleanup-fail ]]; then
       exit 9
     fi
-    rm -f -- "$state"
+    rm -f -- "$state" "$owner"
+    ;;
+  container)
+    [[ ${2:-} == inspect ]] || exit 64
+    printf '%s\n' inspect >> "$call_log"
+    [[ -f $owner ]] || exit 1
+    cat "$owner"
     ;;
   *)
     printf '%s\n' payload >> "$call_log"
@@ -417,6 +545,26 @@ case "${1:-}" in
 esac
 EOF
 chmod 755 "$launcher_fake/docker"
+ln -s docker "$launcher_fake/podman"
+
+# The effective endpoint selector is key material and explicit remote selectors
+# are rejected before either a warm probe or payload invocation.
+CT_HOST_PROJECTION_ENDPOINT=
+unset DOCKER_HOST DOCKER_CONTEXT DOCKER_MACHINE_NAME CONTAINER_HOST CONTAINER_CONNECTION PODMAN_CONNECTION
+ct_host_projection_selection_key docker image:local option numeric-supplementary
+selector_key=$CT_HOST_PROJECTION_SELECTION_KEY
+DOCKER_HOST=unix:///tmp/docker-one.sock ct_host_projection_selection_key docker image:local option numeric-supplementary
+[[ $selector_key != "$CT_HOST_PROJECTION_SELECTION_KEY" ]] || {
+  printf '%s\n' 'Docker Unix endpoint did not change the selection key' >&2
+  exit 1
+}
+DOCKER_CONTEXT=default ct_host_projection_selection_key docker image:local option numeric-supplementary
+[[ $selector_key != "$CT_HOST_PROJECTION_SELECTION_KEY" ]] || {
+  printf '%s\n' 'explicit Docker default context did not change the selection key' >&2
+  exit 1
+}
+unset DOCKER_HOST DOCKER_CONTEXT
+CT_HOST_PROJECTION_ENDPOINT=local
 env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
   CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
   CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
@@ -434,6 +582,10 @@ mapfile -t launch_calls < "$launcher_fake/calls"
   printf '%s\n' 'cold foreground launch did not use one managed probe and one payload' >&2
   exit 1
 }
+[[ $(<"$launcher_fake/probe-create-argv") == *'target=/.ct-host-projection-locality,readonly'* ]] || {
+  printf '%s\n' 'cold Docker probe omitted the client locality nonce bind' >&2
+  exit 1
+}
 cache_records=("$work/launcher-cache"/[0-9a-f]*)
 CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache"
 ct_host_projection_cache_read "$(basename "${cache_records[0]}")"
@@ -442,12 +594,139 @@ ct_host_projection_cache_read "$(basename "${cache_records[0]}")"
   exit 1
 }
 CT_HOST_PROJECTION_CACHE_ROOT="$work/cache"
+
 env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
   CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
   CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
 mapfile -t launch_calls < "$launcher_fake/calls"
 [[ ${launch_calls[*]} == 'probe-create probe-start probe-cleanup payload payload' ]] || {
   printf '%s\n' 'warm foreground launch created a runtime probe' >&2
+  exit 1
+}
+
+# Warm direct realization shares one metadata budget; a hanging resolver cannot
+# stall once per mounted descendant or start a new probe.
+: > "$launcher_fake/calls"
+SECONDS=0
+env HOME="$work/home" PATH="$slow_bin:$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_PLAN_TIMEOUT=0.1 CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+warm_direct_elapsed=$SECONDS
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ $warm_direct_elapsed -lt 6 && ${launch_calls[*]} == payload ]] || {
+  printf '%s\n' 'warm direct planning exceeded its metadata budget or reprobed' >&2
+  exit 1
+}
+
+# Foreground dry runs retain the normal payload, environment, and bootstrap
+# preview but must not prepare a projection, whether its cache is cold or warm.
+dry_bootstrap="$work/dry-bootstrap"
+generated_host_mount="target=/host\\,"
+printf '%s\n' '#!/usr/bin/env bash' > "$dry_bootstrap"
+chmod 755 "$dry_bootstrap"
+for dry_launcher in exec shell; do
+  for dry_cache_state in cold existing; do
+    dry_cache="$work/dry-$dry_launcher-$dry_cache_state-cache"
+    dry_cache_snapshot="$work/dry-$dry_launcher-$dry_cache_state-cache-before"
+    if [[ $dry_cache_state == existing ]]; then
+      cp -a "$work/launcher-cache" "$dry_cache"
+      cp -a "$dry_cache" "$dry_cache_snapshot"
+    fi
+    : > "$launcher_fake/calls"
+    if [[ $dry_launcher == exec ]]; then
+      dry_output=$(env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" \
+        "$root/ct_exec.sh" --docker --ct-env DRY_TEST=value --ct-bootstrap "$dry_bootstrap" -- \
+        image:local dry-command 'dry argument')
+      [[ $dry_output == *"$dry_bootstrap"*'target=/.container-tools-bootstrap'* \
+        && $dry_output == *'--env DRY_TEST=value'* \
+        && $dry_output == *'image:local /.container-tools-bootstrap dry-command dry\ argument '* ]] || {
+        printf 'exec dry-run payload preview changed: %s\n' "$dry_output" >&2
+        exit 1
+      }
+    else
+      dry_output=$(env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" \
+        "$root/ct_shell.sh" --docker --ct-env DRY_TEST=value --ct-bootstrap "$dry_bootstrap" \
+        --ct-container-shell /bin/bash -- image:local)
+      [[ $dry_output == *"$dry_bootstrap"*'target=/.container-tools-bootstrap'* \
+        && $dry_output == *'--env DRY_TEST=value'* \
+        && $dry_output == *'image:local /.container-tools-bootstrap /bin/bash -i '* ]] || {
+        printf 'shell dry-run payload preview changed: %s\n' "$dry_output" >&2
+        exit 1
+      }
+    fi
+    [[ ! -s $launcher_fake/calls && $dry_output != *"$generated_host_mount"* \
+      && $dry_output != *'target=/host/'* ]] || {
+      printf '%s dry run invoked a backend or rendered a generated host projection: %s\n' \
+        "$dry_launcher/$dry_cache_state" "$dry_output" >&2
+      exit 1
+    }
+    if [[ $dry_cache_state == cold ]]; then
+      [[ ! -e $dry_cache ]] || {
+        printf '%s\n' 'cold foreground dry run created projection state' >&2
+        exit 1
+      }
+    else
+      diff -r -- "$dry_cache_snapshot" "$dry_cache" >/dev/null || {
+        printf '%s\n' 'warm foreground dry run changed projection state' >&2
+        exit 1
+      }
+    fi
+  done
+done
+
+# A validated local Unix endpoint is retained for each Docker probe operation,
+# while no other payload environment enters the clean probe environment.
+: > "$launcher_fake/calls"
+rm -f -- "$launcher_fake/endpoint-observed"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_HOST=unix:///tmp/docker-probe.sock \
+  CT_HOST_PROJECTION_BOOT_ID=endpoint-proof CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-endpoint-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+mapfile -t endpoint_calls < "$launcher_fake/endpoint-observed"
+[[ ${endpoint_calls[*]} == 'create:unix:///tmp/docker-probe.sock: start:unix:///tmp/docker-probe.sock: rm:unix:///tmp/docker-probe.sock:' ]] || {
+  printf '%s\n' 'validated Docker endpoint was not carried into every probe operation' >&2
+  exit 1
+}
+[[ ! -e $launcher_fake/payload-env-leaked ]] || {
+  printf '%s\n' 'payload environment leaked into a Docker probe' >&2
+  exit 1
+}
+
+: > "$launcher_fake/calls"
+rm -f -- "$launcher_fake/endpoint-observed"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CONTAINER_HOST=unix:///tmp/podman-probe.sock \
+  CT_HOST_PROJECTION_BOOT_ID=podman-endpoint-proof CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-podman-endpoint-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --podman image:local command
+mapfile -t endpoint_calls < "$launcher_fake/endpoint-observed"
+[[ ${endpoint_calls[*]} == 'create::unix:///tmp/podman-probe.sock start::unix:///tmp/podman-probe.sock rm::unix:///tmp/podman-probe.sock' ]] || {
+  printf '%s\n' 'validated Podman endpoint was not carried into every probe operation' >&2
+  exit 1
+}
+[[ ! -e $launcher_fake/payload-env-leaked ]] || {
+  printf '%s\n' 'payload environment leaked into a Podman probe' >&2
+  exit 1
+}
+
+# A single aggregate cold deadline covers planning as well as probing. A hanging
+# resolver degrades an automatic launch without starting a probe or multiplying
+# a timeout per candidate.
+: > "$launcher_fake/calls"
+set +e
+SECONDS=0
+env HOME="$work/home" PATH="$slow_bin:$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=hanging-planning CT_HOST_PROJECTION_COLD_TIMEOUT=1 \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-hanging-planning-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
+  >/dev/null 2>&1
+hanging_planning_status=$?
+elapsed=$SECONDS
+set -e
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ $hanging_planning_status == 0 && $elapsed -lt 6 && ${launch_calls[*]} == payload ]] || {
+  printf '%s\n' 'hanging cold planning exceeded its aggregate deadline or started a probe' >&2
   exit 1
 }
 
@@ -465,27 +744,89 @@ mapfile -t launch_calls < "$launcher_fake/calls"
 }
 rm -f -- "$launcher_fake/force-direct-fail"
 
-# A timed-out probe or unconfirmed exact cleanup is terminal and cannot reach a
-# payload, even in automatic mode.
-for terminal_case in start-timeout cleanup-fail; do
+# A timeout with confirmed cleanup is unavailable rather than terminal, so auto
+# dispatches exactly one original payload without generated projection.
+: > "$launcher_fake/calls"
+touch "$launcher_fake/force-start-timeout"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=start-timeout CT_HOST_PROJECTION_COLD_TIMEOUT=3 \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-start-timeout-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+rm -- "$launcher_fake/force-start-timeout"
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ ${launch_calls[*]} == 'probe-create probe-start probe-cleanup payload' ]] || {
+  printf '%s\n' 'confirmed probe timeout did not dispatch one original payload' >&2
+  exit 1
+}
+
+# A create can take effect before its client times out or returns malformed
+# output. A name-based cleanup is allowed only after the generated ownership
+# label is read back; confirmed cleanup permits one automatic payload.
+for uncertain_case in create-timeout create-malformed; do
   : > "$launcher_fake/calls"
-  touch "$launcher_fake/force-$terminal_case"
-  set +e
+  touch "$launcher_fake/force-$uncertain_case"
   env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
-    CT_HOST_PROJECTION_BOOT_ID="$terminal_case" CT_HOST_PROJECTION_COLD_TIMEOUT=3 \
-    CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-$terminal_case-cache" \
-    CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
-    >/dev/null 2>&1
-  terminal_status=$?
-  set -e
-  rm -- "$launcher_fake/force-$terminal_case"
+    CT_HOST_PROJECTION_BOOT_ID="$uncertain_case" CT_HOST_PROJECTION_COLD_TIMEOUT=3 \
+    CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-$uncertain_case-cache" \
+    CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+  rm -- "$launcher_fake/force-$uncertain_case"
   mapfile -t launch_calls < "$launcher_fake/calls"
-  [[ $terminal_status != 0 && " ${launch_calls[*]} " != *' payload '* \
-    && " ${launch_calls[*]} " == *' probe-cleanup '* ]] || {
-    printf 'terminal probe case dispatched or skipped cleanup: %s\n' "$terminal_case" >&2
+  [[ ${launch_calls[*]} == 'probe-create inspect probe-cleanup payload' ]] || {
+    printf 'uncertain probe create was not cleaned before one payload: %s\n' "$uncertain_case" >&2
     exit 1
   }
 done
+
+# Only typed conclusive rejections may publish `none`. A transient create whose
+# ownership cannot be established is terminal and never removes by name.
+: > "$launcher_fake/calls"
+rm -f -- "$launcher_log"
+touch "$launcher_fake/force-transient-fail"
+transient_status=0
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=transient-failure CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-transient-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
+  >/dev/null 2>&1 || transient_status=$?
+mapfile -t launch_calls < "$launcher_fake/calls"
+transient_records=("$work/launcher-transient-cache"/[0-9a-f]*)
+[[ ${transient_status:-0} != 0 && ${launch_calls[*]} == 'probe-create inspect' \
+  && ! -e ${transient_records[0]} && ! -e $launcher_log ]] || {
+  printf '%s\n' 'unowned transient probe dispatched or removed a name collision' >&2
+  exit 1
+}
+rm -- "$launcher_fake/force-transient-fail"
+
+: > "$launcher_fake/calls"
+touch "$launcher_fake/force-direct-fail" "$launcher_fake/force-fallback-fail"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=conclusive-none CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-none-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+mapfile -t launch_calls < "$launcher_fake/calls"
+none_records=("$work/launcher-none-cache"/[0-9a-f]*)
+[[ ${launch_calls[*]} == 'probe-create probe-create payload' && -e ${none_records[0]} ]] || {
+  printf '%s\n' 'conclusive fallback rejection did not publish one reusable none record' >&2
+  exit 1
+}
+
+# Unconfirmed cleanup is terminal and cannot reach a payload, even in automatic
+# mode.
+: > "$launcher_fake/calls"
+touch "$launcher_fake/force-cleanup-fail"
+set +e
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=cleanup-fail CT_HOST_PROJECTION_COLD_TIMEOUT=3 \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cleanup-fail-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
+  >/dev/null 2>&1
+terminal_status=$?
+set -e
+rm -- "$launcher_fake/force-cleanup-fail"
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ $terminal_status != 0 && " ${launch_calls[*]} " != *' payload '* \
+  && " ${launch_calls[*]} " == *' probe-cleanup '* ]] || {
+  printf '%s\n' 'terminal probe cleanup failure dispatched or skipped cleanup' >&2
+  exit 1
+}
 rm -f -- "$launcher_log"
 set +e
 env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_HOST=tcp://remote.invalid \
@@ -497,6 +838,53 @@ set -e
   printf '%s\n' 'required remote projection dispatched a payload' >&2
   exit 1
 }
+for selector_case in docker-context podman-connection; do
+  : > "$launcher_fake/calls"
+  rm -f -- "$launcher_log"
+  set +e
+  case "$selector_case" in
+    docker-context)
+      env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_CONTEXT=remote \
+        CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-context-cache" \
+        CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker --ct-host-root required image:local command >/dev/null 2>&1
+      ;;
+    podman-connection)
+      env HOME="$work/home" PATH="$launcher_fake:$PATH" CONTAINER_CONNECTION=remote \
+        CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-connection-cache" \
+        CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --podman --ct-host-root required image:local command >/dev/null 2>&1
+      ;;
+  esac
+  selector_status=$?
+  set -e
+  mapfile -t launch_calls < "$launcher_fake/calls"
+  [[ $selector_status != 0 && ! -e $launcher_log && ${#launch_calls[@]} == 0 ]] || {
+    printf 'explicit remote selector invoked the runtime: %s\n' "$selector_case" >&2
+    exit 1
+  }
+done
+
+# Persisted client selectors are part of the effective endpoint even when no
+# selector environment variable is exported.
+mkdir -p "$work/home/.docker" "$work/home/.config/containers"
+printf '%s\n' '{"currentContext":"remote-build-host"}' > "$work/home/.docker/config.json"
+printf '%s\n' '{"Connection":{"Default":"remote-podman"}}' > "$work/home/.config/containers/podman-connections.json"
+for persisted_backend in docker podman; do
+  : > "$launcher_fake/calls"
+  rm -f -- "$launcher_log"
+  set +e
+  env -u DOCKER_CONTEXT -u DOCKER_HOST -u DOCKER_MACHINE_NAME -u DOCKER_CONFIG -u CONTAINER_CONNECTION \
+    -u PODMAN_CONNECTION -u CONTAINER_HOST -u XDG_CONFIG_HOME HOME="$work/home" PATH="$launcher_fake:$PATH" \
+    CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/persisted-$persisted_backend-cache" \
+    CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" "--$persisted_backend" \
+    --ct-host-root required image:local command >/dev/null 2>&1
+  persisted_status=$?
+  set -e
+  [[ $persisted_status != 0 && ! -s $launcher_fake/calls && ! -e $launcher_log ]] || {
+    printf 'persisted remote %s selector invoked the runtime\n' "$persisted_backend" >&2
+    exit 1
+  }
+done
+rm -f -- "$work/home/.docker/config.json" "$work/home/.config/containers/podman-connections.json"
 
 # The host evidence runner is safe to invoke by default: help and invalid CLI
 # produce no report, while a valid disabled invocation emits the closed schema
@@ -529,6 +917,16 @@ mkdir "$runtime_fake"
 cat > "$runtime_fake/docker" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+write_requested_marker() {
+  local script= target= index target_index
+  for ((index = 1; index <= $#; index++)); do
+    [[ ${!index} != -ec ]] || { target_index=$((index + 1)); script=${!target_index:-}; break; }
+  done
+  target=${script#*"host-projection-ok > '/host"}
+  target=${target%%"'"*}
+  [[ $target == "${MKCHAD_TEST_RUNTIME_RESULTS}/"* ]] || exit 74
+  [[ ${target##*/} == "${MKCHAD_TEST_SKIP_RESULT:-}" ]] || : > "$target"
+}
 case "${1:-}" in
   --version) printf '%s\n' 'fake-docker 1.0' ;;
   image)
@@ -547,14 +945,16 @@ case "${1:-}" in
     [[ ! -f $MKCHAD_TEST_RUNTIME_COUNT ]] || read -r count < "$MKCHAD_TEST_RUNTIME_COUNT"
     count=$((count + 1))
     printf '%s\n' "$count" > "$MKCHAD_TEST_RUNTIME_COUNT"
-    for phase in cold required refresh warm-{1..20}; do
-      [[ ${MKCHAD_TEST_SKIP_RESULT:-} == "$phase" ]] || : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
-    done
+    [[ -z ${MKCHAD_TEST_FORGE_OPERATIONS:-} ]] || printf '%s\n' 'probe-start:fallback' >> "$MKCHAD_TEST_FORGE_OPERATIONS"
+    write_requested_marker "$@"
     if [[ -n ${MKCHAD_TEST_IMAGE_ID_FILE:-} && ${MKCHAD_TEST_MUTATE_IMAGE:-} == 1 && $count == 1 ]]; then
       printf '%s\n' 'sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff' > "$MKCHAD_TEST_IMAGE_ID_FILE"
     fi
     if [[ -n ${MKCHAD_TEST_MUTATE_SOURCE:-} && $count == 1 ]]; then
       printf '%s\n' '# fake-runtime source mutation' >> "$MKCHAD_TEST_MUTATE_SOURCE"
+    fi
+    if [[ -n ${MKCHAD_TEST_MUTATE_ADAPTER:-} && $count == 1 ]]; then
+      printf '%s\n' '# fake-runtime adapter mutation' >> "$MKCHAD_TEST_MUTATE_ADAPTER"
     fi
     ;;
   *) exit 66 ;;
@@ -562,27 +962,100 @@ esac
 EOF
 chmod 755 "$runtime_fake/docker"
 
+runtime_unlabeled_work="/tmp/mkchad-v1/host-root-projection-host/fake-unlabeled-$$"
+set +e
+runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/unlabeled-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_unlabeled_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_unlabeled_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 77 && $runtime_report == *'"overall":"unavailable"'* \
+  && $runtime_report == *'"reason":"fixture-runtime-unlabeled"'* ]] || {
+  printf '%s\n' 'unlabeled deterministic runtime produced host evidence' >&2
+  exit 1
+}
+
 runtime_enabled_work="/tmp/mkchad-v1/host-root-projection-host/fake-enabled-$$"
 mkdir -p "${runtime_enabled_work%/*}"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
+  MKCHAD_TEST_FORGE_OPERATIONS="$runtime_enabled_work/operations.log" \
   MKCHAD_TEST_RUNTIME_COUNT="$work/runtime-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_enabled_work/results" \
   bash "$runner" --backend docker --image image:local --work "$runtime_enabled_work")
 runtime_status=$?
 set -e
 [[ $runtime_status == 0 && $runtime_report == *'"overall":"passed"'* \
-  && $runtime_report == *'"samples":20'* && $runtime_report == *'"strategy_condition":"selected-direct"'* ]] || {
+  && $runtime_report == *'"samples":20'* && $runtime_report == *'"strategy_condition":"selected-direct"'* \
+  && -s $runtime_enabled_work/operations.log ]] || {
   printf '%s\n' 'fake runtime did not satisfy the complete measured evidence matrix' >&2
   exit 1
 }
-bash "$runner" --validate-report "$runtime_enabled_work/report.json" || {
-  printf '%s\n' 'runner rejected its exact-source report' >&2
+if bash "$runner" --validate-report "$runtime_enabled_work/report.json"; then
+  printf '%s\n' 'normal validator accepted deterministic fixture evidence' >&2
+  exit 1
+fi
+bash "$runner" --validate-fixture-report "$runtime_enabled_work/report.json" || {
+  printf '%s\n' 'fixture validator rejected its exact-source report' >&2
+  exit 1
+}
+empty_evidence_report="$work/empty-evidence-report.json"
+jq '(.cases[] | select(.id != "HP-HOST-006") | .operations) = {
+  inspect:0, probe_create:0, probe_start:0, probe_cleanup:0,
+  instance_liveness:0, instance_start:0, instance_stop:0, payload:0,
+  probe_tags:{direct:0, fallback:0}
+} | (.cases[] | select(.id == "HP-HOST-004") | .phase_operations[]) = {
+  inspect:0, probe_create:0, probe_start:0, probe_cleanup:0,
+  instance_liveness:0, instance_start:0, instance_stop:0, payload:0,
+  probe_tags:{direct:0, fallback:0}
+}' "$runtime_enabled_work/report.json" > "$empty_evidence_report"
+if bash "$runner" --validate-fixture-report "$empty_evidence_report"; then
+  printf '%s\n' 'validator accepted a passed report with empty operation evidence' >&2
+  exit 1
+fi
+concatenated_report="$work/concatenated-report.json"
+printf '%s\n%s\n' "$runtime_report" "$runtime_report" > "$concatenated_report"
+set +e
+bash "$runner" --validate-fixture-report "$concatenated_report"
+concatenated_status=$?
+set -e
+[[ $concatenated_status == 2 ]] || {
+  printf '%s\n' 'validator accepted multiple top-level report objects' >&2
+  exit 1
+}
+
+runtime_abort_work="/tmp/mkchad-v1/host-root-projection-host/fake-abort-$$"
+set +e
+runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 CT_HOST_PROJECTION_RUNTIME_ABORT_AFTER_COLD=1 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/abort-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_abort_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_abort_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 1 && $runtime_report == *'"overall":"failed"'* \
+  && $runtime_report == *'"reason":"unexpected-exit"'* && -f $runtime_abort_work/report.json ]] || {
+  printf '%s\n' 'unexpected runner exit did not emit a failed report' >&2
+  exit 1
+}
+
+runtime_setup_abort_work="/tmp/mkchad-v1/host-root-projection-host/fake-setup-abort-$$"
+set +e
+runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 CT_HOST_PROJECTION_RUNTIME_ABORT_DURING_SETUP=1 \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/setup-abort-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_setup_abort_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_setup_abort_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 1 && $runtime_report == *'"overall":"failed"'* \
+  && $runtime_report == *'"reason":"unexpected-exit"'* && -f $runtime_setup_abort_work/report.json ]] || {
+  printf '%s\n' 'unexpected setup exit did not emit a failed report' >&2
   exit 1
 }
 
 runtime_forced_work="/tmp/mkchad-v1/host-root-projection-host/fake-forced-$$"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
   MKCHAD_TEST_RUNTIME_COUNT="$work/forced-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_forced_work/results" \
   bash "$runner" --backend docker --force-fallback --image image:local --work "$runtime_forced_work")
 runtime_status=$?
@@ -601,26 +1074,71 @@ mkdir "$native_fake"
 cat > "$native_fake/singularity" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+write_requested_marker() {
+  local script= target= index target_index
+  for ((index = 1; index <= $#; index++)); do
+    [[ ${!index} != -ec ]] || { target_index=$((index + 1)); script=${!target_index:-}; break; }
+  done
+  target=${script#*"host-projection-ok > '/host"}
+  target=${target%%"'"*}
+  [[ $target == "${MKCHAD_TEST_RUNTIME_RESULTS}/"* ]] || exit 74
+  : > "$target"
+}
 case "${1:-}" in
   --version) printf '%s\n' 'fake-singularity 1.0' ;;
-  instance) : ;;
+  instance)
+    case "${2:-}" in
+      start)
+        name=${!#}
+        [[ $name =~ ^mkchad-[0-9a-f]{32}$ && ! -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]] || exit 75
+        profile=
+        nonce=
+        for argument; do
+          [[ $argument != CT_HOST_PROJECTION_PROFILE=* ]] || profile=${argument#*=}
+          [[ $argument != CT_INSTANCE_CREATION_NONCE=* ]] || nonce=${argument#*=}
+        done
+        [[ $profile =~ ^[0-9a-f]{64}$ && $nonce =~ ^[0-9a-f]{32}$ ]] || exit 76
+        : > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name"
+        printf '%s\n' "$profile" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile"
+        printf '%s\n' "$nonce" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce"
+        ;;
+      stop)
+        name=${3:-}
+        [[ -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]] || exit 77
+        rm -f -- "$MKCHAD_TEST_RUNTIME_INSTANCES/$name" "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile" "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce"
+        ;;
+      list)
+        [[ ${3:-} == --json ]] || exit 78
+        name=${4:-}
+        if [[ -n $name && -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]]; then
+          printf '{"instances":[{"instance":"%s"}]}\n' "$name"
+        else
+          printf '{"instances":[]}\n'
+        fi
+        ;;
+      *) exit 78 ;;
+    esac
+    ;;
   exec)
     if [[ " $* " == *' instance://'* ]]; then
+      name=
+      for argument; do [[ $argument != instance://* ]] || { name=${argument#instance://}; break; }; done
+      [[ -n $name && -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]] || exit 79
       if [[ " $* " == *' -c '* ]]; then
-        :
-      else
-        for phase in persistent-first persistent-reuse; do
-          : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
+        for ((index = 1; index <= $#; index++)); do
+          [[ ${!index} != -c ]] || { profile_index=$((index + 3)); nonce_index=$((index + 4)); break; }
         done
+        [[ ${!profile_index:-} == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile")" \
+          && ( -z ${!nonce_index:-} || ${!nonce_index:-} == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce")" ) ]] || exit 80
+      else
+        write_requested_marker "$@"
       fi
     elif [[ " $* " == *'ct-host-projection-group=native'* ]]; then
       [[ " $* " == *'/image.sif'* ]] || exit 71
       printf '%s\n' 'ct-host-projection-group=native'
     else
       [[ " $* " == *'/image.sif'* ]] || exit 72
-      for phase in cold required refresh warm-{1..20} persistent-first persistent-reuse; do
-        : > "$MKCHAD_TEST_RUNTIME_RESULTS/$phase"
-      done
+      write_requested_marker "$@"
     fi
     ;;
   *) exit 73 ;;
@@ -632,6 +1150,7 @@ native_image="$work/local-image.sif"
 runtime_native_work="/tmp/mkchad-v1/host-root-projection-host/fake-native-$$"
 set +e
 runtime_report=$(PATH="$native_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
   MKCHAD_TEST_RUNTIME_RESULTS="$runtime_native_work/results" \
   bash "$runner" --backend singularity --image "$native_image" --work "$runtime_native_work")
 runtime_status=$?
@@ -651,14 +1170,26 @@ if bash "$runner" --validate-report "$foreign_report"; then
   exit 1
 fi
 printf '%s\n' '{"schema":"container-tools.host-projection-runtime/v1"}' > "$work/malformed-report.json"
-if bash "$runner" --validate-report "$work/malformed-report.json"; then
+set +e
+bash "$runner" --validate-report "$work/malformed-report.json"
+malformed_status=$?
+set -e
+if [[ $malformed_status != 2 ]]; then
   printf '%s\n' 'runner accepted a malformed report' >&2
   exit 1
 fi
+set +e
+bash "$runner" --validate-report "$runtime_work/report.json"
+unavailable_status=$?
+set -e
+[[ $unavailable_status == 77 ]] || {
+  printf '%s\n' 'normal validator did not preserve unavailable status' >&2
+  exit 1
+}
 
 runtime_missing_work="/tmp/mkchad-v1/host-root-projection-host/fake-missing-$$"
 set +e
-PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 MKCHAD_TEST_SKIP_RESULT=warm-20 \
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 MKCHAD_TEST_SKIP_RESULT=warm-20 \
   MKCHAD_TEST_RUNTIME_COUNT="$work/runtime-missing-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_missing_work/results" \
   bash "$runner" --backend docker --image image:local --work "$runtime_missing_work" > "$work/missing-runtime-report.json"
 runtime_status=$?
@@ -671,7 +1202,7 @@ set -e
 runtime_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-image-mutation-$$"
 image_id_file="$work/image-id"
 set +e
-PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 MKCHAD_TEST_MUTATE_IMAGE=1 \
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 MKCHAD_TEST_MUTATE_IMAGE=1 \
   MKCHAD_TEST_IMAGE_ID_FILE="$image_id_file" MKCHAD_TEST_RUNTIME_COUNT="$work/mutation-count" \
   MKCHAD_TEST_RUNTIME_RESULTS="$runtime_mutation_work/results" \
   bash "$runner" --backend docker --image image:local --work "$runtime_mutation_work" > "$work/mutation-runtime-report.json"
@@ -682,16 +1213,34 @@ set -e
   exit 1
 }
 
+# A payload can recreate the old projected adapter pathname, but later host
+# dispatches continue through the unlinked descriptor rather than that file.
+runtime_adapter_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-adapter-mutation-$$"
+set +e
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
+  MKCHAD_TEST_MUTATE_ADAPTER="$runtime_adapter_mutation_work/adapter/docker" \
+  MKCHAD_TEST_RUNTIME_COUNT="$work/adapter-mutation-count" \
+  MKCHAD_TEST_RUNTIME_RESULTS="$runtime_adapter_mutation_work/results" \
+  bash "$runner" --backend docker --image image:local --work "$runtime_adapter_mutation_work" > "$work/adapter-mutation-runtime-report.json"
+runtime_status=$?
+set -e
+[[ $runtime_status == 0 && $(<"$work/adapter-mutation-runtime-report.json") == *'"overall":"passed"'* \
+  && -s $runtime_adapter_mutation_work/adapter/docker && $(<"$work/adapter-mutation-count") -gt 1 ]] || {
+  printf '%s\n' 'projected adapter pathname influenced a later host dispatch' >&2
+  exit 1
+}
+
 # Copying the closed source set lets the fake mutate an exact launch file
 # without touching this checkout; mixed source bytes must fail the report.
 source_copy="$work/source-copy"
 mkdir -p "$source_copy/tests"
-cp "$root"/ct_library.sh "$root"/ct_exec.sh "$root"/ct_shell.sh "$root"/ct_instance_exec.sh "$source_copy"
+cp "$root"/ct_args.sh "$root"/ct_mount_detector.sh "$root"/ct_library.sh "$root"/ct_exec.sh \
+  "$root"/ct_shell.sh "$root"/ct_instance_exec.sh "$source_copy"
 cp "$root"/tests/bootstrap_test.sh "$root"/tests/instance_exec_test.sh "$root"/tests/host_projection_test.sh \
   "$root"/tests/host_projection_runtime_test.sh "$source_copy/tests"
 runtime_source_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-source-mutation-$$"
 set +e
-PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
   MKCHAD_TEST_MUTATE_SOURCE="$source_copy/ct_exec.sh" MKCHAD_TEST_RUNTIME_COUNT="$work/source-mutation-count" \
   MKCHAD_TEST_RUNTIME_RESULTS="$runtime_source_mutation_work/results" \
   bash "$source_copy/tests/host_projection_runtime_test.sh" --backend docker --image image:local \
