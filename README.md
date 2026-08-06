@@ -3,6 +3,45 @@
 `ct_exec.sh` and `ct_shell.sh` normalize foreground mounts and launch behavior
 across Docker, Podman, SingularityCE, and Apptainer.
 
+## Host-root projection
+
+Foreground launchers default to `--ct-host-root auto`. They make a bounded cold
+capability proof for an image/backend and cache only the selected strategy and,
+for fallback, its selected path plan. A warm foreground launch consumes that
+record without a runtime probe. Generated writable binds appear beneath `/host`
+and are prepended without replacing image paths or caller-provided equivalent
+`/host` mounts. Host kernel API filesystems are excluded.
+
+Use `--ct-host-root required` to refuse the payload unless the current complete
+projection is available. `--ct-host-root-refresh` ignores a warm record for one
+launch and performs a new cold proof; a failed refresh does not consume the old
+record. Automatic launches warn and retain the existing launch behavior when a
+projection is unavailable or partial. Explicit remote Docker/Podman endpoint
+selectors are intentionally unavailable because their daemon host is not local.
+
+Docker and Podman use primary-only groups unless aggregate proof conclusively
+reports a supported broader realization. SingularityCE and Apptainer retain
+their native inherited caller groups. Selection policy is launcher state, not a
+`ct_runtime.conf` or `ct_mount.conf` setting.
+
+`tests/host_projection_runtime_test.sh` is the cumulative, opt-in host evidence
+runner. It never pulls images or contacts a registry. Supply one already-local
+image or absolute SIF path and a fresh work directory under the documented
+root:
+
+```sh
+CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  bash tests/host_projection_runtime_test.sh \
+  --backend docker --image LOCAL_IMAGE \
+  --work /tmp/mkchad-v1/host-root-projection-host/docker-RUN_ID
+```
+
+Every syntactically valid non-help invocation that can create its work directory
+emits the same redacted `container-tools.host-projection-runtime/v1` JSON object
+to stdout and `$work/report.json`. Disabled or unavailable prerequisites exit
+77 and make no runtime support claim. Real runtime execution is an operator
+handoff in this checkout; fixture results are not backend evidence.
+
 `ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
 service that must retain its image mount after the launching command exits. It
 requires a private absolute `--ct-instance-root`, serializes first use, and keys

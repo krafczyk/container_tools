@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-work=${1:?pass a task-specific directory beneath /tmp/opencode-mkchad}
+work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/host-root-projection}
 root=${2:?pass the container_tools checkout}
 root=$(realpath "$root")
-[[ $work == /tmp/opencode-mkchad/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/opencode-mkchad' >&2; exit 2; }
+[[ $work == /tmp/mkchad-v1/host-root-projection/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/host-root-projection' >&2; exit 2; }
 [[ ! -e $work ]] || { printf '%s\n' 'test directory already exists' >&2; exit 2; }
 
 fake="$work/fake-bin"
@@ -20,19 +20,42 @@ exec "$@"
 EOF
 cat > "$fake/apptainer" <<'EOF'
 #!/usr/bin/env bash
+for argument; do
+  if [[ $argument == /bin/sh ]]; then
+    case "$0" in
+      *docker|*podman) printf '%s\n' 'ct-host-projection-group=none' ;;
+      *) printf '%s\n' 'ct-host-projection-group=native' ;;
+    esac
+    exit 0
+  fi
+done
 printf '%s\n' "$@" > "$CT_TEST_LOG"
 exit "${CT_TEST_STATUS:-0}"
 EOF
 cat > "$fake/docker" <<'EOF'
 #!/usr/bin/env bash
-printf '%s\n' "$@" > "$CT_TEST_LOG"
-exit "${CT_TEST_STATUS:-0}"
+case "${1:-}" in
+  create)
+    printf '%s\n' fake-container-id
+    ;;
+  start)
+    case "$0" in
+      *docker) printf '%s\n' 'ct-host-projection-group=numeric' ;;
+      *) printf '%s\n' 'ct-host-projection-group=keep' ;;
+    esac
+    ;;
+  rm) ;;
+  *)
+    printf '%s\n' "$@" > "$CT_TEST_LOG"
+    exit "${CT_TEST_STATUS:-0}"
+    ;;
+esac
 EOF
 cp "$fake/apptainer" "$fake/singularity"
 cp "$fake/docker" "$fake/podman"
 chmod 755 "$bootstrap" "$fake/apptainer" "$fake/singularity" "$fake/docker" "$fake/podman"
 
-common_env=(HOME="$home" PATH="$fake:$PATH" CT_TEST_LOG="$log" CT_MOUNT_CFG="$work/missing-mount-config")
+common_env=(HOME="$home" PATH="$fake:$PATH" CT_TEST_LOG="$log" CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/cache")
 
 env "${common_env[@]}" "$root/ct_exec.sh" --apptainer \
   --ct-env 'FEATURE=value with spaces' --ct-bootstrap "$bootstrap" -- \
@@ -109,6 +132,7 @@ set -e
 [[ $status -ne 0 && $error == *"requires '--'"* ]] || { printf '%s\n' 'ambiguous bootstrap payload was accepted' >&2; exit 1; }
 
 set +e
+# shellcheck disable=SC2016 # The literal substitution syntax must be rejected.
 error=$(env "${common_env[@]}" "$root/ct_exec.sh" --apptainer \
   --ct-env 'UNSAFE=$(date)' "$image" command 2>&1)
 status=$?

@@ -10,26 +10,17 @@ script_dir=$(dirname "$(realpath "$0")")
 
 launcher_preamble "$@"
 build_payload_args exec
+ct_host_projection_prepare_foreground
 
 # Launch container with proper arguments.
 case "${TOOL[0]}" in
   docker)
-    if [[ -n $CT_BOOTSTRAP ]]; then
-      CMD=("${TOOL[@]}" run --rm --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
-        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
-    else
-      CMD=("${TOOL[@]}" --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
-        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
-    fi
+    CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     ;;
   podman)
-    if [[ -n $CT_BOOTSTRAP ]]; then
-      CMD=("${TOOL[@]}" run --rm --userns=keep-id --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
-        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
-    else
-      CMD=("${TOOL[@]}" --userns=keep-id --user "$USER_ID:$GROUP_ID" -w "$PWD_DIR"
-        "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
-    fi
+    CMD=("${TOOL[@]}" run --rm "${CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS[@]}" --userns=keep-id --user "$USER_ID:$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_ARGS[@]}" -w "$PWD_DIR"
+      "${ENV_ARGS[@]}" "${MOUNT_ARGS[@]}" "${PAYLOAD_ARGS[@]}")
     ;;
   singularity|apptainer)
     CMD=(

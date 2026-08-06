@@ -321,4 +321,157 @@ ct_host_projection_release_lock
 CT_HOST_PROJECTION_LOCK_TIMEOUT=0.1 ct_host_projection_acquire_lock "$refresh_key"
 ct_host_projection_release_lock
 
+# Foreground launchers default to an automatic projection and normalize Docker
+# payloads to an image-first `run` invocation. U1 has no launch integration, so
+# this is intentionally the first U2 red proof.
+launcher_fake="$work/launcher-fake"
+launcher_log="$work/launcher.log"
+mkdir -p "$launcher_fake"
+cat > "$launcher_fake/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+call_log="$(dirname "$0")/calls"
+state="$(dirname "$0")/probe-state"
+case "${1:-}" in
+  create)
+    printf '%s\n' probe-create >> "$call_log"
+    if [[ -e $(dirname "$0")/force-direct-fail && "$*" == *bind-recursive=disabled* ]]; then
+      rm -- "$(dirname "$0")/force-direct-fail"
+      exit 12
+    fi
+    group_mode=none
+    for argument; do
+      [[ $argument == numeric ]] && group_mode=numeric
+    done
+    if [[ $group_mode == numeric ]]; then
+      printf '%s\n' numeric > "$state"
+    else
+      printf '%s\n' none > "$state"
+    fi
+    printf '%s\n' fake-container-id
+    exit 0
+    ;;
+  start)
+    printf '%s\n' probe-start >> "$call_log"
+    if [[ -e $(dirname "$0")/force-start-timeout ]]; then
+      sleep 5
+    fi
+    printf 'ct-host-projection-group=%s\n' "$(<"$state")"
+    ;;
+  rm)
+    printf '%s\n' probe-cleanup >> "$call_log"
+    if [[ -e $(dirname "$0")/force-cleanup-fail ]]; then
+      exit 9
+    fi
+    rm -f -- "$state"
+    ;;
+  *)
+    printf '%s\n' payload >> "$call_log"
+    printf '%s\n' "$@" > "$CT_HOST_PROJECTION_LAUNCH_LOG"
+    ;;
+esac
+EOF
+chmod 755 "$launcher_fake/docker"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+mapfile -t launch_argv < "$launcher_log"
+[[ ${launch_argv[0]} == run && ${launch_argv[1]} == --rm ]] || {
+  printf '%s\n' 'foreground Docker payload was not normalized to run --rm' >&2
+  exit 1
+}
+[[ " ${launch_argv[*]} " == *' target=/host,'* || " ${launch_argv[*]} " == *'target=/host,'* ]] || {
+  printf '%s\n' 'foreground launch omitted the default host projection' >&2
+  exit 1
+}
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ ${launch_calls[*]} == 'probe-create probe-start probe-cleanup payload' ]] || {
+  printf '%s\n' 'cold foreground launch did not use one managed probe and one payload' >&2
+  exit 1
+}
+cache_records=("$work/launcher-cache"/[0-9a-f]*)
+CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache"
+ct_host_projection_cache_read "$(basename "${cache_records[0]}")"
+[[ $CT_HOST_PROJECTION_GROUP_MODE == numeric-supplementary ]] || {
+  printf '%s\n' 'conclusive numeric supplementary group mode was not retained' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_CACHE_ROOT="$work/cache"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ ${launch_calls[*]} == 'probe-create probe-start probe-cleanup payload payload' ]] || {
+  printf '%s\n' 'warm foreground launch created a runtime probe' >&2
+  exit 1
+}
+
+# A conclusive direct rejection performs one conservative fallback aggregate,
+# cleans it exactly, and still dispatches the payload only once.
+touch "$launcher_fake/force-direct-fail"
+: > "$launcher_fake/calls"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+  CT_HOST_PROJECTION_BOOT_ID=fallback-proof CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-fallback-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+mapfile -t launch_calls < "$launcher_fake/calls"
+[[ ${launch_calls[*]} == 'probe-create probe-create probe-start probe-cleanup payload' ]] || {
+  printf '%s\n' 'fallback selection did not use exactly one direct and one managed fallback probe' >&2
+  exit 1
+}
+rm -f -- "$launcher_fake/force-direct-fail"
+
+# A timed-out probe or unconfirmed exact cleanup is terminal and cannot reach a
+# payload, even in automatic mode.
+for terminal_case in start-timeout cleanup-fail; do
+  : > "$launcher_fake/calls"
+  touch "$launcher_fake/force-$terminal_case"
+  set +e
+  env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
+    CT_HOST_PROJECTION_BOOT_ID="$terminal_case" CT_HOST_PROJECTION_COLD_TIMEOUT=3 \
+    CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-$terminal_case-cache" \
+    CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
+    >/dev/null 2>&1
+  terminal_status=$?
+  set -e
+  rm -- "$launcher_fake/force-$terminal_case"
+  mapfile -t launch_calls < "$launcher_fake/calls"
+  [[ $terminal_status != 0 && " ${launch_calls[*]} " != *' payload '* \
+    && " ${launch_calls[*]} " == *' probe-cleanup '* ]] || {
+    printf 'terminal probe case dispatched or skipped cleanup: %s\n' "$terminal_case" >&2
+    exit 1
+  }
+done
+rm -f -- "$launcher_log"
+set +e
+env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_HOST=tcp://remote.invalid \
+  CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker --ct-host-root required image:local command >/dev/null 2>&1
+required_remote_status=$?
+set -e
+[[ $required_remote_status != 0 && ! -e $launcher_log ]] || {
+  printf '%s\n' 'required remote projection dispatched a payload' >&2
+  exit 1
+}
+
+# The host evidence runner is safe to invoke by default: help and invalid CLI
+# produce no report, while a valid disabled invocation emits the closed schema
+# and records no runtime claim.
+runner="$root/tests/host_projection_runtime_test.sh"
+bash "$runner" --help >/dev/null
+if bash "$runner" --backend docker --image image:local --work "$work/not-an-approved-runtime-work" >/dev/null 2>&1; then
+  printf '%s\n' 'runtime runner accepted an unsafe work root' >&2
+  exit 1
+fi
+runtime_work="/tmp/mkchad-v1/host-root-projection-host/disabled-$$"
+[[ ! -e $runtime_work ]] || { printf '%s\n' 'runtime runner fixture already exists' >&2; exit 1; }
+set +e
+runtime_report=$(PATH="/usr/bin:/bin" bash "$runner" --backend docker --image image:local --work "$runtime_work")
+runtime_status=$?
+set -e
+[[ $runtime_status == 77 && $runtime_report == *'"schema":"container-tools.host-projection-runtime/v1"'* \
+  && -f "$runtime_work/report.json" ]] || {
+  printf '%s\n' 'disabled runtime runner did not emit its unavailable report' >&2
+  exit 1
+}
+
 printf '%s\n' 'container-tools host projection tests passed'
