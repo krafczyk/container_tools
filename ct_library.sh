@@ -355,6 +355,481 @@ discard_docker_build_storage() {
   return "$status"
 }
 
+# Host-projection records intentionally contain only selection data. The policy
+# version changes whenever their meaning or their key material changes.
+CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v1'
+CT_HOST_PROJECTION_RECORD_VERSION=ct-host-projection-selection-v1
+CT_HOST_PROJECTION_RECORD_MAX_BYTES=1048576
+CT_HOST_PROJECTION_RECORD_MAX_PAIRS=4096
+
+# Decode the octal escapes used in /proc/*/mountinfo path fields.
+ct_host_projection_unescape_mountinfo_path() {
+  local value=$1
+  value=${value//\\040/ }
+  value=${value//\\011/$'\t'}
+  value=${value//\\012/$'\n'}
+  value=${value//\\134/\\}
+  printf '%s' "$value"
+}
+
+# Return whether a filesystem is a host kernel API that must not be projected.
+ct_host_projection_kernel_filesystem() {
+  case "$1" in
+    proc|sysfs|devtmpfs|devpts|securityfs|cgroup|cgroup2|pstore|efivarfs|debugfs|tracefs|configfs|fusectl|mqueue|hugetlbfs)
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Return whether a path is inside a host kernel API namespace.
+ct_host_projection_kernel_path() {
+  local path=$1 root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} relative
+  if [[ $root == / ]]; then
+    relative=$path
+  elif [[ $path == "$root" ]]; then
+    relative=/
+  elif [[ $path == "$root"/* ]]; then
+    relative=/${path#"$root"/}
+  else
+    return 0
+  fi
+  case "$relative" in
+    /proc|/proc/*|/sys|/sys/*|/dev|/dev/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Return whether a lexical host source is eligible for generated projection.
+ct_host_projection_source_eligible() {
+  local source=$1 filesystem=${2:-}
+  [[ $source == /* ]] || return 1
+  ct_host_projection_kernel_path "$source" && return 1
+  [[ -z $filesystem ]] || ! ct_host_projection_kernel_filesystem "$filesystem"
+}
+
+# Read one mountinfo snapshot for projection only. This does not affect the
+# existing mount detector, whose output and filtering remain authoritative for
+# regular same-path binds.
+ct_host_projection_read_mountinfo() {
+  local mountinfo=${CT_HOST_PROJECTION_MOUNTINFO:-/proc/self/mountinfo}
+  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} line dash_index path filesystem
+  local -a fields=()
+  CT_HOST_PROJECTION_MOUNT_PATHS=()
+  CT_HOST_PROJECTION_MOUNT_FILESYSTEMS=()
+  declare -gA CT_HOST_PROJECTION_MOUNT_TYPES=()
+  [[ -r $mountinfo ]] || return 1
+
+  while IFS= read -r line || [[ -n $line ]]; do
+    IFS=' ' read -r -a fields <<< "$line"
+    (( ${#fields[@]} >= 7 )) || continue
+    dash_index=6
+    while (( dash_index < ${#fields[@]} )) && [[ ${fields[dash_index]} != - ]]; do
+      ((dash_index++))
+    done
+    (( dash_index + 1 < ${#fields[@]} )) || continue
+    path=$(ct_host_projection_unescape_mountinfo_path "${fields[4]}")
+    filesystem=${fields[dash_index + 1]}
+    if [[ $root != / && $path == / ]]; then
+      path=$root
+    fi
+    [[ $path == /* ]] || continue
+    CT_HOST_PROJECTION_MOUNT_PATHS+=("$path")
+    CT_HOST_PROJECTION_MOUNT_FILESYSTEMS+=("$filesystem")
+    CT_HOST_PROJECTION_MOUNT_TYPES["$path"]=$filesystem
+  done < "$mountinfo"
+}
+
+# Populate a deterministic source/target/destination plan from associative
+# candidates. All generated destinations are derived here rather than trusted
+# from a record.
+ct_host_projection_finalize_candidates() {
+  local strategy=$1 source target
+  local -a sorted=()
+  CT_HOST_PROJECTION_SOURCES=()
+  CT_HOST_PROJECTION_TARGETS=()
+  CT_HOST_PROJECTION_DESTINATIONS=()
+  CT_HOST_PROJECTION_STRATEGY=$strategy
+  CT_HOST_PROJECTION_COMPLETE=${CT_HOST_PROJECTION_COMPLETE:-complete}
+  mapfile -d '' -t sorted < <(printf '%s\0' "${!CT_HOST_PROJECTION_CANDIDATES[@]}" | LC_ALL=C sort -z)
+  for source in "${sorted[@]}"; do
+    target=${CT_HOST_PROJECTION_CANDIDATES[$source]}
+    CT_HOST_PROJECTION_SOURCES+=("$source")
+    CT_HOST_PROJECTION_TARGETS+=("$target")
+    if [[ $source == / ]]; then
+      CT_HOST_PROJECTION_DESTINATIONS+=(/host)
+    else
+      CT_HOST_PROJECTION_DESTINATIONS+=("/host$source")
+    fi
+  done
+}
+
+# Add one existing source to a plan, resolving directory symlinks semantically.
+ct_host_projection_add_candidate() {
+  local source=$1 filesystem=${2:-} target
+  ct_host_projection_source_eligible "$source" "$filesystem" || {
+    CT_HOST_PROJECTION_COMPLETE=partial
+    return 0
+  }
+  if ! target=$(realpath -e -- "$source" 2>/dev/null); then
+    CT_HOST_PROJECTION_COMPLETE=partial
+    return 0
+  fi
+  CT_HOST_PROJECTION_CANDIDATES["$source"]=$target
+}
+
+# Build the non-recursive root strategy: root plus every eligible mountpoint.
+ct_host_projection_build_direct() {
+  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} index source filesystem
+  declare -gA CT_HOST_PROJECTION_CANDIDATES=()
+  CT_HOST_PROJECTION_COMPLETE=complete
+  ct_host_projection_read_mountinfo || return 1
+  ct_host_projection_add_candidate "$root"
+  for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
+    source=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
+    filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
+    [[ $source == "$root" ]] && continue
+    ct_host_projection_add_candidate "$source" "$filesystem"
+  done
+  ct_host_projection_finalize_candidates direct
+}
+
+# Return whether a recursive fallback candidate would import an excluded mount.
+ct_host_projection_has_excluded_descendant() {
+  local source=$1 index mounted filesystem
+  for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
+    mounted=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
+    filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
+    [[ $mounted == "$source"/* ]] || continue
+    ct_host_projection_source_eligible "$mounted" "$filesystem" || return 0
+  done
+  return 1
+}
+
+# Build the recursive fallback strategy from top-level directories/symlinks and
+# separately mounted descendants. This enumeration is cold-path only.
+ct_host_projection_build_fallback() {
+  local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} source filesystem index
+  local -a top_level=()
+  declare -gA CT_HOST_PROJECTION_CANDIDATES=()
+  CT_HOST_PROJECTION_COMPLETE=complete
+  ct_host_projection_read_mountinfo || return 1
+
+  for source in "$root"/* "$root"/.[!.]* "$root"/..?*; do
+    [[ -d $source || -L $source ]] || continue
+    top_level+=("$source")
+  done
+  for source in "${top_level[@]}"; do
+    filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$source]:-}
+    if ct_host_projection_has_excluded_descendant "$source"; then
+      CT_HOST_PROJECTION_COMPLETE=partial
+      continue
+    fi
+    ct_host_projection_add_candidate "$source" "$filesystem"
+  done
+  for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
+    source=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
+    filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
+    [[ $source == "$root" ]] && continue
+    ct_host_projection_has_excluded_descendant "$source" && {
+      CT_HOST_PROJECTION_COMPLETE=partial
+      continue
+    }
+    ct_host_projection_add_candidate "$source" "$filesystem"
+  done
+  ct_host_projection_finalize_candidates fallback
+}
+
+# Return the cache directory, using node-local runtime state when available.
+ct_host_projection_cache_directory() {
+  if [[ -n ${CT_HOST_PROJECTION_CACHE_ROOT:-} ]]; then
+    printf '%s' "$CT_HOST_PROJECTION_CACHE_ROOT"
+  elif [[ -n ${XDG_RUNTIME_DIR:-} ]]; then
+    printf '%s/container-tools/host-projection-v1' "$XDG_RUNTIME_DIR"
+  else
+    printf '/tmp/container-tools-%s/host-projection-v1' "$EUID"
+  fi
+}
+
+# Build a stable NUL-framed selection key without topology or invocation binds.
+ct_host_projection_selection_key() {
+  local backend=$1 image=$2 projection_options=$3 requested_group_mode=$4
+  local hostname=${CT_HOST_PROJECTION_HOSTNAME:-} executable=${CT_HOST_PROJECTION_EXECUTABLE:-}
+  local endpoint=${CT_HOST_PROJECTION_ENDPOINT:-} boot_id=${CT_HOST_PROJECTION_BOOT_ID:-}
+  local uid=${CT_HOST_PROJECTION_UID:-$EUID} gid=${CT_HOST_PROJECTION_GID:-$(id -g)}
+  local digest group
+  local -a groups=()
+  [[ -n $hostname ]] || hostname=$(hostname)
+  [[ -n $executable ]] || executable=$(command -v -- "$backend" 2>/dev/null || true)
+  [[ -n $executable ]] && executable=$(realpath -m -- "$executable")
+  if [[ -z $endpoint ]]; then
+    case "$backend" in
+      docker) endpoint=${DOCKER_HOST:-local} ;;
+      podman) endpoint=${CONTAINER_HOST:-${DOCKER_HOST:-local}} ;;
+      *) endpoint=local ;;
+    esac
+  fi
+  [[ -n $boot_id ]] || boot_id=$(< /proc/sys/kernel/random/boot_id)
+  if [[ -n ${CT_HOST_PROJECTION_GROUPS:-} ]]; then
+    mapfile -t groups < <(tr ' ' '\n' <<< "$CT_HOST_PROJECTION_GROUPS" | LC_ALL=C sort -n)
+  else
+    mapfile -t groups < <(id -G | tr ' ' '\n' | LC_ALL=C sort -n)
+  fi
+  digest=$({
+    printf '%s\0' "$CT_HOST_PROJECTION_POLICY_VERSION" "$backend" "$hostname" "$executable" "$endpoint"
+    printf '%s\0' "$image" "$projection_options" "$uid" "$gid" "$requested_group_mode" "$boot_id"
+    for group in "${groups[@]}"; do printf '%s\0' "$group"; done
+  } | sha256sum)
+  CT_HOST_PROJECTION_SELECTION_KEY=${digest%% *}
+  [[ $CT_HOST_PROJECTION_SELECTION_KEY =~ ^[0-9a-f]{64}$ ]]
+}
+
+# Hash only semantic generated-bind fields for later persistent-profile callers.
+ct_host_projection_profile_digest() {
+  local digest index
+  digest=$({
+    printf '%s\0' "$CT_HOST_PROJECTION_POLICY_VERSION" "${CT_HOST_PROJECTION_STRATEGY:-none}"
+    for index in "${!CT_HOST_PROJECTION_SOURCES[@]}"; do
+      printf '%s\0' "${CT_HOST_PROJECTION_SOURCES[index]}" "${CT_HOST_PROJECTION_TARGETS[index]}"
+      printf '%s\0' "${CT_HOST_PROJECTION_DESTINATIONS[index]}" writable "${CT_HOST_PROJECTION_STRATEGY:-none}"
+    done
+  } | sha256sum)
+  CT_HOST_PROJECTION_PROFILE_DIGEST=${digest%% *}
+  [[ $CT_HOST_PROJECTION_PROFILE_DIGEST =~ ^[0-9a-f]{64}$ ]]
+}
+
+# Return whether a closed record scalar is safe to serialize as one field.
+ct_host_projection_record_scalar() {
+  [[ $1 =~ ^[A-Za-z0-9._-]+$ ]]
+}
+
+# Persist one selection record atomically. Fallback values contain only the
+# selected lexical/resolved pairs, never mount topology or rendered argv.
+ct_host_projection_cache_write() {
+  local key=$1 strategy=$2 completeness=$3 group_mode=$4 reason=$5
+  local directory temporary size index
+  local -a sources=("${CT_HOST_PROJECTION_SOURCES[@]:-}") targets=("${CT_HOST_PROJECTION_TARGETS[@]:-}")
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
+  case "$strategy" in direct|fallback|none) ;; *) return 1 ;; esac
+  case "$completeness" in complete|partial) ;; *) return 1 ;; esac
+  case "$group_mode" in numeric-supplementary|keep-groups|primary-only|native-inherited) ;; *) return 1 ;; esac
+  ct_host_projection_record_scalar "$reason" || return 1
+  if [[ $strategy == fallback ]]; then
+    (( ${#sources[@]} == ${#targets[@]} && ${#sources[@]} <= CT_HOST_PROJECTION_RECORD_MAX_PAIRS )) || return 1
+    for index in "${!sources[@]}"; do
+      [[ ${sources[index]} == /* && ${targets[index]} == /* ]] || return 1
+    done
+  else
+    sources=()
+    targets=()
+  fi
+  directory=$(ct_host_projection_cache_directory)
+  mkdir -p -- "$directory" || return 1
+  temporary=$(mktemp "$directory/.${key}.tmp.XXXXXX") || return 1
+  {
+    printf '%s\0' "$CT_HOST_PROJECTION_RECORD_VERSION" "$key" "$strategy" "$completeness" "$group_mode" "$reason" "${#sources[@]}"
+    for index in "${!sources[@]}"; do
+      printf '%s\0' "${sources[index]}" "${targets[index]}"
+    done
+  } > "$temporary" || {
+    rm -f -- "$temporary"
+    return 1
+  }
+  size=$(stat -c '%s' -- "$temporary") || { rm -f -- "$temporary"; return 1; }
+  (( size <= CT_HOST_PROJECTION_RECORD_MAX_BYTES )) || { rm -f -- "$temporary"; return 1; }
+  mv -f -- "$temporary" "$directory/$key"
+}
+
+# Load a bounded selection record. Errors are cache misses and leave no raw
+# record contents in globals or diagnostics.
+ct_host_projection_cache_read() {
+  local key=$1 directory file size pair_count index
+  local -a fields=()
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
+  directory=$(ct_host_projection_cache_directory)
+  file="$directory/$key"
+  [[ -f $file ]] || return 1
+  size=$(stat -c '%s' -- "$file" 2>/dev/null) || return 1
+  (( size <= CT_HOST_PROJECTION_RECORD_MAX_BYTES && size > 0 )) || return 1
+  mapfile -d '' -t fields < "$file" || return 1
+  (( ${#fields[@]} >= 7 )) || return 1
+  [[ ${fields[0]} == "$CT_HOST_PROJECTION_RECORD_VERSION" && ${fields[1]} == "$key" ]] || return 1
+  case "${fields[2]}" in direct|fallback|none) ;; *) return 1 ;; esac
+  case "${fields[3]}" in complete|partial) ;; *) return 1 ;; esac
+  case "${fields[4]}" in numeric-supplementary|keep-groups|primary-only|native-inherited) ;; *) return 1 ;; esac
+  ct_host_projection_record_scalar "${fields[5]}" || return 1
+  [[ ${fields[6]} =~ ^[0-9]+$ ]] || return 1
+  pair_count=${fields[6]}
+  (( pair_count <= CT_HOST_PROJECTION_RECORD_MAX_PAIRS )) || return 1
+  if [[ ${fields[2]} == fallback ]]; then
+    (( ${#fields[@]} == 7 + pair_count * 2 )) || return 1
+  else
+    (( pair_count == 0 && ${#fields[@]} == 7 )) || return 1
+  fi
+  CT_HOST_PROJECTION_STRATEGY=${fields[2]}
+  CT_HOST_PROJECTION_COMPLETE=${fields[3]}
+  CT_HOST_PROJECTION_GROUP_MODE=${fields[4]}
+  CT_HOST_PROJECTION_REASON=${fields[5]}
+  CT_HOST_PROJECTION_SOURCES=()
+  CT_HOST_PROJECTION_TARGETS=()
+  CT_HOST_PROJECTION_DESTINATIONS=()
+  for ((index = 0; index < pair_count; index++)); do
+    [[ ${fields[7 + index * 2]} == /* && ${fields[8 + index * 2]} == /* ]] || return 1
+    CT_HOST_PROJECTION_SOURCES+=("${fields[7 + index * 2]}")
+    CT_HOST_PROJECTION_TARGETS+=("${fields[8 + index * 2]}")
+    if [[ ${fields[7 + index * 2]} == / ]]; then
+      CT_HOST_PROJECTION_DESTINATIONS+=(/host)
+    else
+      CT_HOST_PROJECTION_DESTINATIONS+=("/host${fields[7 + index * 2]}")
+    fi
+  done
+}
+
+# Resolve all cached fallback sources under one aggregate planning deadline.
+ct_host_projection_resolve_cached_sources() {
+  local timeout_seconds=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1} output status source
+  [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 2
+  output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-resolve.XXXXXX") || return 2
+  # shellcheck disable=SC2016 # The child must expand its own source argument.
+  if timeout --foreground --kill-after=2s "${timeout_seconds}s" bash -c '
+    for source; do
+      if resolved=$(realpath -e -- "$source" 2>/dev/null); then
+        printf "%s\\0" "$resolved"
+      else
+        # Keep one slot per selected pair so absence is an omission, not a
+        # retryable aggregate planning failure.
+        printf "\\0"
+      fi
+    done
+  ' bash "${CT_HOST_PROJECTION_SOURCES[@]}" > "$output"; then
+    mapfile -d '' -t CT_HOST_PROJECTION_RESOLVED_NOW < "$output"
+    status=0
+  else
+    status=$?
+  fi
+  rm -f -- "$output"
+  return "$status"
+}
+
+# Revalidate only stored fallback pairs. Auto omits lost candidates; required
+# refuses any loss. It deliberately never enumerates the projection root.
+ct_host_projection_validate_fallback() {
+  local mode=$1 index source filesystem
+  local -a sources=("${CT_HOST_PROJECTION_SOURCES[@]}") targets=("${CT_HOST_PROJECTION_TARGETS[@]}")
+  local -a retained_sources=() retained_targets=() retained_destinations=()
+  [[ $CT_HOST_PROJECTION_STRATEGY == fallback ]] || return 1
+  ct_host_projection_read_mountinfo || return 2
+  ct_host_projection_resolve_cached_sources || return 2
+  (( ${#CT_HOST_PROJECTION_RESOLVED_NOW[@]} == ${#sources[@]} )) || return 2
+  CT_HOST_PROJECTION_COMPLETE=complete
+  for index in "${!sources[@]}"; do
+    source=${sources[index]}
+    filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$source]:-}
+    if ! ct_host_projection_source_eligible "$source" "$filesystem" \
+      || ct_host_projection_has_excluded_descendant "$source" \
+      || [[ ${CT_HOST_PROJECTION_RESOLVED_NOW[index]} != "${targets[index]}" ]]; then
+      CT_HOST_PROJECTION_COMPLETE=partial
+      continue
+    fi
+    retained_sources+=("$source")
+    retained_targets+=("${targets[index]}")
+    if [[ $source == / ]]; then
+      retained_destinations+=(/host)
+    else
+      retained_destinations+=("/host$source")
+    fi
+  done
+  CT_HOST_PROJECTION_SOURCES=("${retained_sources[@]}")
+  CT_HOST_PROJECTION_TARGETS=("${retained_targets[@]}")
+  CT_HOST_PROJECTION_DESTINATIONS=("${retained_destinations[@]}")
+  [[ $mode == auto || $CT_HOST_PROJECTION_COMPLETE == complete ]]
+}
+
+# Acquire one bounded, per-selection cold-path lock. Callers own the matching
+# release and apply auto/required policy when this returns failure.
+ct_host_projection_acquire_lock() {
+  local key=$1 timeout_seconds=${CT_HOST_PROJECTION_LOCK_TIMEOUT:-8} directory
+  [[ $key =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 1
+  directory=$(ct_host_projection_cache_directory)
+  mkdir -p -- "$directory/.locks" || return 1
+  exec {CT_HOST_PROJECTION_LOCK_FD}> "$directory/.locks/$key.lock" || return 1
+  if ! flock -w "$timeout_seconds" "$CT_HOST_PROJECTION_LOCK_FD"; then
+    exec {CT_HOST_PROJECTION_LOCK_FD}>&-
+    unset CT_HOST_PROJECTION_LOCK_FD
+    return 1
+  fi
+}
+
+# Release a lock obtained by ct_host_projection_acquire_lock.
+ct_host_projection_release_lock() {
+  [[ -n ${CT_HOST_PROJECTION_LOCK_FD:-} ]] || return 0
+  flock -u "$CT_HOST_PROJECTION_LOCK_FD" || return 1
+  exec {CT_HOST_PROJECTION_LOCK_FD}>&-
+  unset CT_HOST_PROJECTION_LOCK_FD
+}
+
+# Consume a current selection or serialize one caller-supplied cold proof. The
+# proof callback sets the selection globals and returns only after its cleanup
+# is confirmed; a failed refresh consequently leaves the old record intact.
+ct_host_projection_select() {
+  local key=$1 refresh=$2 selector=$3
+  shift 3
+  # shellcheck disable=SC2034 # This is the public result for U2 callers.
+  CT_HOST_PROJECTION_CACHE_HIT=0
+  if [[ $refresh != 1 ]] && ct_host_projection_cache_read "$key"; then
+    # shellcheck disable=SC2034 # This is the public result for U2 callers.
+    CT_HOST_PROJECTION_CACHE_HIT=1
+    return 0
+  fi
+  ct_host_projection_acquire_lock "$key" || return 1
+  if [[ $refresh != 1 ]] && ct_host_projection_cache_read "$key"; then
+    # shellcheck disable=SC2034 # This is the public result for U2 callers.
+    CT_HOST_PROJECTION_CACHE_HIT=1
+    ct_host_projection_release_lock
+    return 0
+  fi
+  if "$selector" "$@"; then
+    ct_host_projection_cache_write "$key" "$CT_HOST_PROJECTION_STRATEGY" \
+      "$CT_HOST_PROJECTION_COMPLETE" "$CT_HOST_PROJECTION_GROUP_MODE" "$CT_HOST_PROJECTION_REASON" || true
+    ct_host_projection_release_lock
+    return 0
+  fi
+  ct_host_projection_release_lock
+  return 1
+}
+
+# Render selected generated binds into backend argv fragments without exposing
+# source paths through word splitting or a serialized command line.
+ct_host_projection_render_mounts() {
+  local backend=$1 index source destination
+  CT_HOST_PROJECTION_MOUNT_ARGS=()
+  # shellcheck disable=SC2034 # This typed result is consumed by launch integration.
+  CT_HOST_PROJECTION_RENDER_FAILURE=
+  for index in "${!CT_HOST_PROJECTION_SOURCES[@]}"; do
+    source=${CT_HOST_PROJECTION_SOURCES[index]}
+    destination=${CT_HOST_PROJECTION_DESTINATIONS[index]}
+    [[ $source == /* && $destination == /host/* || $destination == /host ]] || return 1
+    case "$backend" in
+      docker)
+        CT_HOST_PROJECTION_MOUNT_ARGS+=(--mount "type=bind,source=$source,target=$destination,bind-recursive=disabled")
+        ;;
+      podman)
+        CT_HOST_PROJECTION_MOUNT_ARGS+=(--mount "type=bind,source=$source,target=$destination,bind-nonrecursive")
+        ;;
+      singularity|apptainer)
+        [[ $source != *,* && $destination != *,* ]] || {
+          # shellcheck disable=SC2034 # This typed result is consumed by launch integration.
+          CT_HOST_PROJECTION_RENDER_FAILURE=unrepresentable-path
+          return 1
+        }
+        CT_HOST_PROJECTION_MOUNT_ARGS+=(--mount "type=bind,src=$source,dst=$destination")
+        ;;
+      *) return 1 ;;
+    esac
+  done
+}
+
 determine_container_tool() {
   TOOL=()
   case "$1" in
