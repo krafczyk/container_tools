@@ -308,6 +308,22 @@ bootstrap execution does not use `eval` or reconstruct a command string.
 
 ## Runtime storage configuration
 
+`container-tools runtime exec --backend NAME -- COMMAND...` loads optional
+machine-local storage defaults and directly supervises one argv-preserved
+child. It returns the child's normal exit status, or `128 + signal` when that
+child terminates by signal. `container-tools buildx exec --architecture ARCH --
+docker buildx build ...` similarly supervises exactly one Docker Buildx child;
+it rejects caller `--cache-from` and `--cache-to` flags, inserts its generated
+cache arguments before caller build arguments, and only promotes the cache
+generation after a zero child status. A nonzero status, signal, malformed
+configuration, unsafe storage path, lock timeout, or missing cache index leaves
+the current generation intact and discards the staging generation.
+
+`container-tools mount args FILE [ARGUMENT...]` preserves the legacy
+whitespace-tokenized grouping of mount arguments, and `container-tools mount
+detect` emits the current filtered mount list with optional `--exclude-fs`,
+`--exclude-path`, and `--add-path` values.
+
 Container tools reads optional machine-local storage defaults from
 `~/.config/ct_runtime.conf`. Override that path with `CT_RUNTIME_CFG`. The file
 is data, not shell: use one `KEY=ABSOLUTE_PATH` assignment per line, with blank
@@ -344,8 +360,11 @@ generation, promotes that generation only after success, and removes the
 superseded generation so `mode=max` cache blobs do not grow without bound.
 `CT_DOCKER_BUILD_LOCK_TIMEOUT` changes the default 30-second lock wait;
 `CT_RUNTIME_STORAGE_TIMEOUT` changes the default 10-second deadline for
-individual storage metadata and mutation commands. Both overrides are positive
-numbers of seconds.
+individual storage metadata and mutation commands. The native C11 executable
+validates it before configuration, storage, or Buildx preparation and accepts
+only positive decimal seconds up to 3600; it does not apply that deadline to
+the supervised runtime or Buildx child. Both overrides are positive numbers of
+seconds.
 
 Build integrations call `configure_docker_build_storage ARCHITECTURE`, pass the
 resulting `DOCKER_BUILD_CACHE_ARGS` array to `docker buildx build`, arrange

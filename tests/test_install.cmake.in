@@ -35,7 +35,18 @@ function(expect_not_implemented)
     ERROR_VARIABLE command_error
   )
   if(NOT command_result EQUAL 70 OR NOT command_error MATCHES "not implemented")
-    message(FATAL_ERROR "bootstrap command was not a typed not-implemented result: ${ARGN}")
+    message(FATAL_ERROR "deferred command was not a typed not-implemented result: ${ARGN}")
+  endif()
+endfunction()
+
+function(expect_success)
+  execute_process(
+    COMMAND "${prefix}/bin/container-tools" ${ARGN}
+    RESULT_VARIABLE command_result
+    ERROR_VARIABLE command_error
+  )
+  if(NOT command_result EQUAL 0)
+    message(FATAL_ERROR "native command failed: ${ARGN}: ${command_error}")
   endif()
 endfunction()
 
@@ -43,10 +54,10 @@ expect_not_implemented(exec -- image command)
 expect_not_implemented(shell -- image)
 expect_not_implemented(instance exec -- image command)
 expect_not_implemented(instance identity)
-expect_not_implemented(mount detect --)
-expect_not_implemented(mount args "path with spaces")
-expect_not_implemented(runtime exec --backend docker -- docker run)
-expect_not_implemented(buildx exec --architecture x86_64 -- docker buildx build)
+expect_success(mount detect --help)
+file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add-path /two\n")
+expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)
+expect_success(runtime exec --backend podman -- /bin/true)
 expect_not_implemented(host exec -- command)
 expect_not_implemented(host doctor --json)
 

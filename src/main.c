@@ -1,6 +1,11 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "cli.h"
+#include "buildx.h"
+#include "config.h"
+#include "mount.h"
 #include "package.h"
+#include "process.h"
+#include "storage.h"
 
 #include "package_identity.h"
 
@@ -47,6 +52,33 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
   return CT_EXIT_NOT_IMPLEMENTED;
 }
 
+static int ct_runtime_exec(int argument_count, char **arguments)
+{
+  struct ct_runtime_config config;
+  const char *backend = NULL;
+  int separator = -1;
+  int index;
+
+  for (index = 0; index < argument_count; ++index) {
+    if (strcmp(arguments[index], "--backend") == 0 && backend == NULL &&
+        index + 1 < argument_count) {
+      backend = arguments[++index];
+    } else if (strcmp(arguments[index], "--") == 0) {
+      separator = index;
+      break;
+    } else {
+      return CT_EXIT_USAGE;
+    }
+  }
+  if (backend == NULL || separator < 0 || separator + 1 >= argument_count ||
+      ct_runtime_config_load_environment(&config) != CT_CONFIG_OK ||
+      ct_storage_select_runtime(backend, &config) != 0) {
+    (void)fputs("container-tools: runtime exec: invalid storage configuration\n", stderr);
+    return 1;
+  }
+  return ct_process_run(arguments + separator + 1, NULL, 0U);
+}
+
 int main(int argument_count, char **arguments)
 {
   struct ct_cli parsed;
@@ -77,6 +109,18 @@ int main(int argument_count, char **arguments)
                     CT_BUILD_IDENTITY);
     }
     return 0;
+  }
+  if (parsed.command == CT_COMMAND_RUNTIME_EXEC) {
+    return ct_runtime_exec(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_BUILDX_EXEC) {
+    return ct_buildx_exec_command(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_MOUNT_ARGS) {
+    return ct_mount_args_command(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_MOUNT_DETECT) {
+    return ct_mount_detect_command(argument_count - 3, arguments + 3);
   }
   (void)fprintf(stderr, "container-tools: not implemented: %s\n",
                 ct_command_name(parsed.command));
