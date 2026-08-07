@@ -97,9 +97,9 @@ unclaimed; deterministic fake-runtime results are not backend evidence.
 
 `ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
 service that must retain its image mount after the launching command exits. It
-requires a private absolute `--ct-instance-root`, serializes first use, and keys
-the instance name to the runtime, host, active image and bootstrap identities,
-and fixed bind profile:
+requires a private absolute `--ct-instance-root` without colon, comma, or
+newline, serializes first use, and keys the instance name to the runtime, host,
+active image and bootstrap identities, and fixed bind profile:
 
 ```sh
 ct_instance_exec.sh --apptainer \
@@ -124,12 +124,19 @@ adds a bind to an already-running instance. Profile mismatch refuses before the
 payload and never stops an existing instance.
 
 Instance creation records a private mode-`0600` pending name/profile/nonce
-journal. Recovery adopts only an instance that reports the exact pending nonce;
-ambiguous liveness or list results retain that journal. A structured empty
-backend instance list permits only a retry with the recorded nonce, and recovery
-never signals or stops a runtime instance. `CT_DRY_RUN` prints a representative
-persistent exec command without creating an instance root, projection cache, or
-pending journal.
+journal and binds it read-only at a fixed internal identity path. After the
+instance verifies the pinned record, the host path is unlinked while the
+instance mount retains the original bytes. Recovery adopts only an instance
+that exposes the exact pending nonce; ambiguous liveness or list results retain
+that journal. A structured empty backend instance list permits only a retry
+with the recorded nonce, and recovery never signals or stops a runtime
+instance. `CT_DRY_RUN` prints a representative persistent exec command without
+creating an instance root, projection cache, or pending journal.
+
+`/.container-tools-instance-identity` is reserved for this internal read-only
+record and cannot be an explicit bind destination. Identity-transport version
+changes select a new instance profile rather than attempting to adopt an
+instance created under an older verification contract.
 
 The cumulative runtime runner includes `HP-HOST-006`. Docker and Podman report
 that persistent case as an explicit backend-inapplicable skip. SingularityCE

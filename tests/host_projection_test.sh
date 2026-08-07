@@ -1089,18 +1089,22 @@ case "${1:-}" in
   instance)
     case "${2:-}" in
       start)
+        args=("$@")
         name=${!#}
         [[ $name =~ ^mkchad-[0-9a-f]{32}$ && ! -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]] || exit 75
-        profile=
-        nonce=
-        for argument; do
-          [[ $argument != CT_HOST_PROJECTION_PROFILE=* ]] || profile=${argument#*=}
-          [[ $argument != CT_INSTANCE_CREATION_NONCE=* ]] || nonce=${argument#*=}
+        identity_source=
+        for ((index = 0; index < ${#args[@]} - 1; index++)); do
+          if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-identity:ro ]]; then
+            identity_source=${args[index + 1]%:/.container-tools-instance-identity:ro}
+            break
+          fi
         done
-        [[ $profile =~ ^[0-9a-f]{64}$ && $nonce =~ ^[0-9a-f]{32}$ ]] || exit 76
+        mapfile -t identity_fields 2>/dev/null < "$identity_source" || exit 76
+        [[ ${#identity_fields[@]} == 3 && ${identity_fields[0]} == "$name" \
+          && ${identity_fields[1]} =~ ^[0-9a-f]{64}$ && ${identity_fields[2]} =~ ^[0-9a-f]{32}$ ]] || exit 76
         : > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name"
-        printf '%s\n' "$profile" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile"
-        printf '%s\n' "$nonce" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce"
+        printf '%s\n' "${identity_fields[1]}" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile"
+        printf '%s\n' "${identity_fields[2]}" > "$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce"
         ;;
       stop)
         name=${3:-}
@@ -1125,11 +1129,11 @@ case "${1:-}" in
       for argument; do [[ $argument != instance://* ]] || { name=${argument#instance://}; break; }; done
       [[ -n $name && -e $MKCHAD_TEST_RUNTIME_INSTANCES/$name ]] || exit 79
       if [[ " $* " == *' -c '* ]]; then
-        for ((index = 1; index <= $#; index++)); do
-          [[ ${!index} != -c ]] || { profile_index=$((index + 3)); nonce_index=$((index + 4)); break; }
-        done
-        [[ ${!profile_index:-} == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile")" \
-          && ( -z ${!nonce_index:-} || ${!nonce_index:-} == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce")" ) ]] || exit 80
+        [[ "$*" == *'/.container-tools-instance-identity'* ]] || exit 80
+        expected_profile=${@: -2:1}
+        expected_nonce=${!#}
+        [[ $expected_profile == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.profile")" \
+          && ( -z $expected_nonce || $expected_nonce == "$(<"$MKCHAD_TEST_RUNTIME_INSTANCES/$name.nonce")" ) ]] || exit 80
       else
         write_requested_marker "$@"
       fi

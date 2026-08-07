@@ -449,15 +449,20 @@ case "${1:-}" in
     if [[ ${2:-} == start ]]; then
       kind=instance-start
       if [[ -e /proc/self/fd/$capture_fd ]]; then
+        args=("$@")
         name=${!#}
-        profile=
-        nonce=
-        for argument; do
-          [[ $argument != CT_HOST_PROJECTION_PROFILE=* ]] || profile=${argument#*=}
-          [[ $argument != CT_INSTANCE_CREATION_NONCE=* ]] || nonce=${argument#*=}
+        identity_source=
+        for ((index = 0; index < ${#args[@]} - 1; index++)); do
+          if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-identity:ro ]]; then
+            identity_source=${args[index + 1]%:/.container-tools-instance-identity:ro}
+            break
+          fi
         done
-        if [[ $name =~ ^mkchad-[0-9a-f]{32}$ && $profile =~ ^[0-9a-f]{64}$ && $nonce =~ ^[0-9a-f]{32}$ ]]; then
-          printf '%s %s %s\n' "$name" "$profile" "$nonce" >&"$capture_fd"
+        mapfile -t identity_fields 2>/dev/null < "$identity_source" || identity_fields=()
+        if [[ ${#identity_fields[@]} == 3 && $name =~ ^mkchad-[0-9a-f]{32}$ \
+          && ${identity_fields[0]} == "$name" && ${identity_fields[1]} =~ ^[0-9a-f]{64}$ \
+          && ${identity_fields[2]} =~ ^[0-9a-f]{32}$ ]]; then
+          printf '%s %s %s\n' "$name" "${identity_fields[1]}" "${identity_fields[2]}" >&"$capture_fd"
         fi
       fi
     elif [[ ${2:-} == stop ]]; then
@@ -554,10 +559,14 @@ cleanup_owned_instance() {
   [[ -n ${owned_instance_name:-} ]] || return 0
   verify_dispatch_integrity || return 1
   [[ $evidence_kind != fixture ]] || fixture_environment=(env "MKCHAD_TEST_RUNTIME_INSTANCES=$work/native-instances")
-  # shellcheck disable=SC2016 # The instance shell expands its own environment.
+  # shellcheck disable=SC2016 # The instance shell reads its pinned identity record.
   "${fixture_environment[@]}" timeout --foreground --kill-after=1s 2s "$runtime_path" exec "instance://$owned_instance_name" /bin/sh -c '
-    [ "${CT_HOST_PROJECTION_PROFILE:-}" = "$1" ] && [ "${CT_INSTANCE_CREATION_NONCE:-}" = "$2" ]
-  ' sh "$owned_instance_profile" "$owned_instance_nonce" >/dev/null 2>&1 || return 1
+    exec 3</.container-tools-instance-identity || exit 42
+    IFS= read -r actual_name <&3 || exit 42
+    IFS= read -r actual_profile <&3 || exit 42
+    IFS= read -r actual_nonce <&3 || exit 42
+    [ "$actual_name" = "$1" ] && [ "$actual_profile" = "$2" ] && [ "$actual_nonce" = "$3" ]
+  ' sh "$owned_instance_name" "$owned_instance_profile" "$owned_instance_nonce" >/dev/null 2>&1 || return 1
   "${fixture_environment[@]}" timeout --foreground --kill-after=1s 2s "$runtime_path" instance stop "$owned_instance_name" >/dev/null 2>&1
 }
 

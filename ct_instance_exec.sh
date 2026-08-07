@@ -8,6 +8,8 @@ script_dir=$(dirname "$(realpath "$0")")
 lock_timeout=${CT_INSTANCE_LOCK_TIMEOUT:-10}
 probe_timeout=${CT_INSTANCE_PROBE_TIMEOUT:-5}
 start_timeout=${CT_INSTANCE_START_TIMEOUT:-30}
+instance_profile_version=ct-instance-profile-v2
+identity_path=/.container-tools-instance-identity
 
 . "$script_dir/ct_library.sh"
 
@@ -25,8 +27,8 @@ fi
 instance_root=$2
 shift 2
 
-if [[ $instance_root != /* || $instance_root == *$'\n'* ]]; then
-  echo "Error: --ct-instance-root requires an absolute path without newlines" >&2
+if [[ $instance_root != /* || $instance_root == *:* || $instance_root == *,* || $instance_root == *$'\n'* ]]; then
+  echo "Error: --ct-instance-root requires an absolute path without colon, comma, or newline" >&2
   exit 1
 fi
 
@@ -128,6 +130,10 @@ for ((index = 0; index < ${#MOUNT_ARGS[@]}; index++)); do
   source_path=${mount%%:*}
   destination=${mount#*:}
   destination=${destination%%:*}
+  if [[ $destination == "$identity_path" ]]; then
+    echo "Error: container bind destination is reserved for persistent instance identity: $identity_path" >&2
+    exit 1
+  fi
   source_real=$(realpath -- "$source_path")
   source_identity=$(stat -Lc '%d:%i:%F' -- "$source_real")
   bind_identities+=("$mount:$source_real:$source_identity")
@@ -153,6 +159,7 @@ profile=$(
   {
     printf '%s\0' "${TOOL[@]}" "$USER_ID" "$host_name" "$HOME" \
       "$instance_root" "$image_real" "$image_identity" "$bootstrap_identity"
+    printf '%s\0' "$instance_profile_version"
     printf '%s\0' "$CT_HOST_PROJECTION_PROFILE_VERSION" "$CT_HOST_PROJECTION_PROFILE_DIGEST"
     printf '%s\0' "$USER_ID" "$GROUP_ID" "${CT_HOST_PROJECTION_GROUP_MODE:-none}"
     printf '%s\0' "${effective_supplementary_groups[@]}"
@@ -177,11 +184,16 @@ fi
 # started with this complete semantic profile before it can receive a payload.
 probe_instance() {
   local expected_profile=$1 expected_nonce=${2:-}
-  # shellcheck disable=SC2016 # The instance shell must expand its own environment.
+  # shellcheck disable=SC2016 # The instance shell reads its pinned identity record.
   local -a probe=("${CT_RUNTIME_TOOL[@]}" exec "$instance_uri" /bin/sh -c '
-    [ "${CT_HOST_PROJECTION_PROFILE:-}" = "$1" ] || exit 42
-    [ -z "${2:-}" ] || [ "${CT_INSTANCE_CREATION_NONCE:-}" = "$2" ] || exit 42
-  ' sh "$expected_profile" "$expected_nonce")
+    exec 3</.container-tools-instance-identity || exit 42
+    IFS= read -r actual_name <&3 || exit 42
+    IFS= read -r actual_profile <&3 || exit 42
+    IFS= read -r actual_nonce <&3 || exit 42
+    [ "$actual_name" = "$1" ] || exit 42
+    [ "$actual_profile" = "$2" ] || exit 42
+    [ -z "${3:-}" ] || [ "$actual_nonce" = "$3" ] || exit 42
+  ' sh "$instance_name" "$expected_profile" "$expected_nonce")
   timeout --foreground --kill-after=1s "${probe_timeout}s" "${probe[@]}" 9>&- >/dev/null 2>&1
 }
 
@@ -276,9 +288,8 @@ if [[ $instance_ready -eq 0 ]]; then
   start=(
     "${CT_RUNTIME_TOOL[@]}" instance start
     "${MOUNT_ARGS[@]}"
+    --bind "$pending:$identity_path:ro"
     --env "SINGULARITYENV_USER=$user_name"
-    --env "CT_HOST_PROJECTION_PROFILE=$profile"
-    --env "CT_INSTANCE_CREATION_NONCE=$nonce"
     "${ENV_ARGS[@]}"
     "$image_real"
     "$instance_name"

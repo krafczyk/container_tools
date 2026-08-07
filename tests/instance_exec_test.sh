@@ -47,23 +47,27 @@ if [[ ! ( ${MKCHAD_TEST_HIDE_INSTANCE_LIST:-} == 1 && ${1:-} == instance && ${2:
 fi
 
 if [[ ${1:-} == instance && ${2:-} == start ]]; then
+  args=("$@")
   for argument in "$@"; do
     [[ $argument != --pwd ]] || exit 67
   done
   name=${!#}
-  profile=
-  nonce=
-  for argument in "$@"; do
-    [[ $argument != CT_HOST_PROJECTION_PROFILE=* ]] || profile=${argument#*=}
-    [[ $argument != CT_INSTANCE_CREATION_NONCE=* ]] || nonce=${argument#*=}
+  identity_source=
+  for ((index = 0; index < ${#args[@]} - 1; index++)); do
+    if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-identity:ro ]]; then
+      identity_source=${args[index + 1]%:/.container-tools-instance-identity:ro}
+      break
+    fi
   done
-  [[ $profile =~ ^[0-9a-f]{64}$ && $nonce =~ ^[0-9a-f]{32}$ ]] || exit 68
+  mapfile -t identity_fields 2>/dev/null < "$identity_source" || exit 68
+  [[ ${#identity_fields[@]} == 3 && ${identity_fields[0]} == "$name" \
+    && ${identity_fields[1]} =~ ^[0-9a-f]{64}$ && ${identity_fields[2]} =~ ^[0-9a-f]{32}$ ]] || exit 68
   [[ ${MKCHAD_TEST_HANG_START:-} != 1 ]] || sleep 10
   sleep "${MKCHAD_TEST_START_DELAY:-0}"
   [[ ! -e $MKCHAD_TEST_INSTANCES/$name ]] || exit 42
   : > "$MKCHAD_TEST_INSTANCES/$name"
-  printf '%s\n' "$profile" > "$MKCHAD_TEST_INSTANCES/$name.profile"
-  printf '%s\n' "$nonce" > "$MKCHAD_TEST_INSTANCES/$name.nonce"
+  printf '%s\n' "${identity_fields[1]}" > "$MKCHAD_TEST_INSTANCES/$name.profile"
+  printf '%s\n' "${identity_fields[2]}" > "$MKCHAD_TEST_INSTANCES/$name.nonce"
   exit 0
 fi
 
@@ -112,8 +116,9 @@ if [[ ${1:-} == exec ]]; then
       printf 'mutated during probe\n' >> "$MKCHAD_TEST_MUTATE_ON_PROBE"
       : > "$MKCHAD_TEST_MUTATE_MARKER"
     fi
-    eval "expected_profile=\${$((uri_index + 5)):-}"
-    eval "expected_nonce=\${$((uri_index + 6)):-}"
+    expected_profile=${@: -2:1}
+    expected_nonce=${!#}
+    [[ "$*" == *'/.container-tools-instance-identity'* ]] || exit 42
     [[ ${MKCHAD_TEST_FORCE_PROFILE_MISMATCH:-} != 1 ]] || exit 42
     [[ $expected_profile == "$(<"$MKCHAD_TEST_INSTANCES/${uri#instance://}.profile")" ]] || exit 42
     [[ -z $expected_nonce || $expected_nonce == "$(<"$MKCHAD_TEST_INSTANCES/${uri#instance://}.nonce")" ]] || exit 42
@@ -187,6 +192,20 @@ invoke() {
     -- "$image_path" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*'
 }
 
+for unsafe_root in "$work/unsafe:root" "$work/unsafe,root"; do
+  set +e
+  "$helper" --apptainer --ct-instance-root "$unsafe_root" \
+    -- "$image_path" /bin/fake-command unsafe-root \
+    >"$work/unsafe-root.out" 2>"$work/unsafe-root.err"
+  unsafe_root_status=$?
+  set -e
+  [[ $unsafe_root_status -eq 1 && ! -e $unsafe_root && ! -e $work/call-count \
+    && $(<"$work/unsafe-root.err") == *'without colon, comma, or newline'* ]] || {
+    printf '%s\n' 'delimiter-bearing instance root reached runtime or filesystem mutation' >&2
+    exit 1
+  }
+done
+
 set +e
 invoke
 first_status=$?
@@ -204,12 +223,12 @@ contains_line "$calls/2" "$bind_source:$work/container bind" || { printf '%s\n' 
 contains_line "$calls/2" "type=bind,src=$bind_source,dst=/host$bind_source" || {
   printf '%s\n' 'instance start omitted the selected generated host bind' >&2; exit 1;
 }
-start_has_profile=0
+start_has_identity=0
 while IFS= read -r start_argument; do
-  [[ $start_argument != CT_HOST_PROJECTION_PROFILE=* ]] || start_has_profile=1
+  [[ $start_argument != "$instance_root/$name.pending:/.container-tools-instance-identity:ro" ]] || start_has_identity=1
 done < "$calls/2"
-if [[ $start_has_profile -ne 1 ]]; then
-  printf '%s\n' 'instance start omitted the persistent host-projection profile' >&2
+if [[ $start_has_identity -ne 1 ]]; then
+  printf '%s\n' 'instance start omitted the pinned persistent identity record' >&2
   exit 1
 fi
 contains_line "$calls/4" "instance://$name" || { printf '%s\n' 'payload did not enter the created instance' >&2; exit 1; }
@@ -238,6 +257,22 @@ set -e
   printf '%s\n' 'second invocation did not reuse the existing instance' >&2; exit 1;
 }
 contains_line "$calls/6" "instance://$name" || { printf '%s\n' 'second invocation selected another instance' >&2; exit 1; }
+
+reserved_source="$work/reserved identity source"
+mkdir "$reserved_source"
+calls_before=$(<"$work/call-count")
+set +e
+"$helper" --apptainer --ct-instance-root "$instance_root" \
+  --ct-bind "$reserved_source:/.container-tools-instance-identity" \
+  -- "$image_path" /bin/fake-command reserved-identity \
+  >"$work/reserved-identity.out" 2>"$work/reserved-identity.err"
+reserved_identity_status=$?
+set -e
+[[ $reserved_identity_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
+  && $(<"$work/reserved-identity.err") == *'destination is reserved for persistent instance identity'* ]] || {
+  printf '%s\n' 'caller bind reached or replaced the reserved instance identity path' >&2
+  exit 1
+}
 
 # A transient first liveness error cannot authorize a new pending journal while
 # the structured instance list still reports the named instance.
@@ -733,7 +768,7 @@ mapfile -t delayed_list_call < "$calls/$((calls_before + 2))"
 mapfile -t delayed_start_call < "$calls/$((calls_before + 3))"
 [[ $delayed_recovery_status -eq 23 && -e $delayed_marker && ! -e $delayed_pending \
   && ${delayed_list_call[*]} == "instance list --json ${delayed_pending_fields[0]}" \
-  && ${delayed_start_call[*]} == *"CT_INSTANCE_CREATION_NONCE=${delayed_pending_fields[2]}"* \
+  && ${delayed_start_call[*]} == *"$delayed_pending:/.container-tools-instance-identity:ro"* \
   && $(<"$work/call-count") -eq $((calls_before + 5)) ]] || {
   printf '%s\n' 'delayed pending creation was not recovered with its exact nonce' >&2; exit 1;
 }
@@ -769,7 +804,7 @@ mapfile -t absent_list_call < "$calls/$((calls_before + 2))"
 mapfile -t absent_start_call < "$calls/$((calls_before + 3))"
 [[ $absent_recovery_status -eq 23 && ! -e $absent_pending \
   && ${absent_list_call[*]} == "instance list --json ${absent_pending_fields[0]}" \
-  && ${absent_start_call[*]} == *"CT_INSTANCE_CREATION_NONCE=${absent_pending_fields[2]}"* \
+  && ${absent_start_call[*]} == *"$absent_pending:/.container-tools-instance-identity:ro"* \
   && $(<"$work/call-count") -eq $((calls_before + 5)) ]] || {
   printf '%s\n' 'conclusive absence did not safely restart with the pending nonce' >&2; exit 1;
 }
