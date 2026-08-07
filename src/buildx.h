@@ -15,7 +15,6 @@ struct ct_buildx_transaction {
   char namespace_path[CT_BUILDX_PATH_MAX];
   char current_path[CT_BUILDX_PATH_MAX];
   char staging_path[CT_BUILDX_PATH_MAX];
-  bool enabled;
   bool has_current;
 };
 

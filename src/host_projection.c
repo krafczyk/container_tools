@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "host_projection.h"
 
+#include "backend_outer.h"
 #include "sha256.h"
 #include "storage.h"
 #include "storage_timeout.h"
@@ -367,13 +368,10 @@ static int ct_probe_sources_current(const struct ct_host_projection *selection)
 static int ct_probe_mount_descriptor(const char *backend, const struct ct_host_projection_entry *entry,
                                      char output[CT_HOST_PATH_MAX], const char **flag)
 {
-  int written;
   if (entry == NULL || entry->source[0] != '/' || entry->destination[0] != '/') return 1;
-  if (strcmp(backend, "docker") == 0) { *flag = "--mount"; written = snprintf(output, CT_HOST_PATH_MAX, "type=bind,source=%s,target=%s,bind-recursive=disabled", entry->source, entry->destination); }
-  else if (strcmp(backend, "podman") == 0) { *flag = "--mount"; written = snprintf(output, CT_HOST_PATH_MAX, "type=bind,source=%s,target=%s,bind-nonrecursive", entry->source, entry->destination); }
-  else if (strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) { *flag = "--mount"; written = snprintf(output, CT_HOST_PATH_MAX, "type=bind,src=%s,dst=%s", entry->source, entry->destination); }
-  else return 1;
-  return written < 0 || (size_t)written >= CT_HOST_PATH_MAX;
+  return ct_backend_outer_projection_mount(backend, entry->source,
+                                           entry->destination, output,
+                                           CT_HOST_PATH_MAX, flag);
 }
 
 /* The probe is deliberately a normal runtime operation: test doubles replace
@@ -461,6 +459,21 @@ done:
 static void ct_group_mode(const char *backend, char output[24])
 {
   (void)snprintf(output, 24U, "%s", (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) ? "primary-only" : "native-inherited");
+}
+
+int ct_host_projection_set_none(const char *backend,
+                                struct ct_host_projection *selection)
+{
+  if (backend == NULL || selection == NULL ||
+      (strcmp(backend, "docker") != 0 && strcmp(backend, "podman") != 0 &&
+       strcmp(backend, "singularity") != 0 &&
+       strcmp(backend, "apptainer") != 0)) return 1;
+  memset(selection, 0, sizeof(*selection));
+  (void)snprintf(selection->strategy, sizeof(selection->strategy), "none");
+  (void)snprintf(selection->completeness, sizeof(selection->completeness),
+                 "complete");
+  ct_group_mode(backend, selection->group_mode);
+  return 0;
 }
 
 static int ct_cache_root(char output[CT_HOST_PATH_MAX])
@@ -649,7 +662,7 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
   int terminal_failure = 0;
   if (backend == NULL || image == NULL || mode == NULL || selection == NULL || (strcmp(mode, "auto") != 0 && strcmp(mode, "required") != 0 && strcmp(mode, "disabled") != 0)) return 1;
   memset(selection, 0, sizeof(*selection)); ct_group_mode(backend, selection->group_mode);
-  if (strcmp(mode, "disabled") == 0) { (void)snprintf(selection->strategy, sizeof(selection->strategy), "none"); (void)snprintf(selection->completeness, sizeof(selection->completeness), "complete"); return 0; }
+  if (strcmp(mode, "disabled") == 0) return ct_host_projection_set_none(backend, selection);
   if (!ct_host_projection_endpoint_is_local(backend)) return 1;
   if (ct_cache_key(backend, image, key) != 0) return 1;
   if (ct_cache_lock(key, &lock_descriptor) != 0) return 1;
@@ -675,7 +688,8 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
       if (probe == 0) (void)snprintf(selection->strategy, sizeof(selection->strategy), "fallback");
       else if (probe == 2) { terminal_failure = 1; goto failed; }
     }
-    if (selection->strategy[0] == '\0') { (void)snprintf(selection->strategy, sizeof(selection->strategy), "none"); (void)snprintf(selection->completeness, sizeof(selection->completeness), "complete"); }
+    if (selection->strategy[0] == '\0' &&
+        ct_host_projection_set_none(backend, selection) != 0) goto failed;
     if (ct_probe_sources_current(selection) != 0 || ct_cache_write(key, selection) != 0) goto failed;
   }
   (void)ct_storage_timeout_flock_unlock(lock_descriptor);

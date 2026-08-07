@@ -46,7 +46,8 @@ int main(void)
   if (strstr(contents, "create") == NULL || strstr(contents, "start") == NULL || strstr(contents, "rm") == NULL) return 1;
   if (ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
         ct_host_projection_prepare("docker", "fixture-image", "required", 1, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
-        ct_host_projection_prepare("docker", "fixture-image", "disabled", 0, &selection) != 0 || strcmp(selection.strategy, "none") != 0) return 1;
+        ct_host_projection_prepare("docker", "fixture-image", "disabled", 0, &selection) != 0 || strcmp(selection.strategy, "none") != 0 ||
+        strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 0U) return 1;
   directory = opendir(cache);
   cache_record[0] = '\0';
   while (directory != NULL && (entry = readdir(directory)) != NULL) {
@@ -73,7 +74,7 @@ int main(void)
   if (stream == NULL || fclose(stream) != 0 || setenv("CT_RUNTIME_CREATE_TIMEOUT", "0.05", 1) != 0 ||
       setenv("CT_NATIVE_PROJECTION_WEDGE", "create", 1) != 0 ||
       ct_host_projection_prepare("docker", "wedge-image", "required", 1, &selection) != 0 ||
-      strcmp(selection.strategy, "none") != 0) { (void)fputs("wedge selection failed\n", stderr); return 1; }
+      strcmp(selection.strategy, "none") != 0 || selection.entry_count != 0U) { (void)fputs("wedge selection failed\n", stderr); return 1; }
   stream = fopen(log, "r");
   if (stream == NULL || (bytes = fread(contents, 1U, sizeof(contents) - 1U, stream)) == 0U || fclose(stream) != 0) { (void)fputs("wedge log failed\n", stderr); return 1; }
   contents[bytes] = '\0';

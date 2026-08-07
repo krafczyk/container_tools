@@ -81,17 +81,6 @@ static int ct_runtime_mount_descriptor(const char *backend, const struct ct_runt
   { const int written = snprintf(output, CT_RUNTIME_PATH_MAX, docker ? (read_only != 0 ? "type=bind,source=%s,target=%s,readonly" : "type=bind,source=%s,target=%s") : (read_only != 0 ? "%s:%s:ro" : "%s:%s"), bind->source, bind->target); return written < 0 || (size_t)written >= CT_RUNTIME_PATH_MAX; }
 }
 
-static int ct_runtime_projection_descriptor(const char *backend, const struct ct_runtime_bind *bind, char output[CT_RUNTIME_PATH_MAX], const char **flag)
-{
-  int written;
-  if (!ct_runtime_path_valid(bind->source) || !ct_runtime_path_valid(bind->target)) return 1;
-  if (strcmp(backend, "docker") == 0) { *flag = "--mount"; written = snprintf(output, CT_RUNTIME_PATH_MAX, "type=bind,source=%s,target=%s,bind-recursive=disabled", bind->source, bind->target); }
-  else if (strcmp(backend, "podman") == 0) { *flag = "--mount"; written = snprintf(output, CT_RUNTIME_PATH_MAX, "type=bind,source=%s,target=%s,bind-nonrecursive", bind->source, bind->target); }
-  else if (strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) { *flag = "--mount"; written = snprintf(output, CT_RUNTIME_PATH_MAX, "type=bind,src=%s,dst=%s", bind->source, bind->target); }
-  else return 1;
-  return written < 0 || (size_t)written >= CT_RUNTIME_PATH_MAX;
-}
-
 static int ct_runtime_path_inside(const char *path, const char *root)
 {
   const size_t root_length = root == NULL ? 0U : strlen(root);
@@ -123,14 +112,12 @@ static int ct_runtime_targets_conflict(const char *left, const char *right)
 }
 
 static int ct_runtime_target_available(const struct ct_runtime_bind binds[], size_t bind_count,
-                                       const struct ct_host_projection *projection, const char *target,
-                                       const char *bootstrap)
+                                       const char *target, const char *bootstrap)
 {
   size_t index;
   if (ct_runtime_targets_conflict(target, "/.container-tools-mount-plan") ||
       (bootstrap != NULL && ct_runtime_targets_conflict(target, "/.container-tools-bootstrap"))) return 0;
   for (index = 0U; index < bind_count; ++index) if (strcmp(target, binds[index].target) == 0) return 0;
-  (void)projection;
   return 1;
 }
 
@@ -144,8 +131,8 @@ static int ct_runtime_explicit_target_available(const struct ct_runtime_bind bin
   return !ct_runtime_targets_conflict(target, "/.container-tools-mount-plan");
 }
 
-static int ct_runtime_add_mask(const char *backend, const char *source, const char *destination, const char *private_root,
-                                const struct ct_runtime_bind binds[], size_t bind_count, const struct ct_host_projection *projection,
+static int ct_runtime_add_mask(const char *source, const char *destination, const char *private_root,
+                                const struct ct_runtime_bind binds[], size_t bind_count,
                                 const char *bootstrap, struct ct_runtime_bind masks[], size_t *mask_count)
 {
   char target[CT_RUNTIME_PATH_MAX];
@@ -156,13 +143,12 @@ static int ct_runtime_add_mask(const char *backend, const char *source, const ch
   else return 0;
   if (snprintf(target, sizeof(target), "%s%s", destination, relative) >= (int)sizeof(target) || !ct_runtime_path_valid(target)) return 1;
   if (ct_runtime_target_taken(masks, *mask_count, target)) return 0;
-  if (!ct_runtime_target_available(binds, bind_count, projection, target, bootstrap)) return 1;
+  if (!ct_runtime_target_available(binds, bind_count, target, bootstrap)) return 1;
   if (*mask_count == CT_RUNTIME_MAX_MOUNTS || ct_runtime_path_valid(private_root) == 0) return 1;
   masks[*mask_count].source = private_root;
   /* The destination buffer belongs to the caller; it remains valid through dispatch. */
   masks[*mask_count].target = strdup(target);
   if (masks[*mask_count].target == NULL) return 1;
-  (void)backend;
   ++*mask_count;
   return 0;
 }
@@ -232,13 +218,9 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   if (projection_status == 2) { (void)fputs("container-tools: host projection cleanup is unconfirmed\n", stderr); return 1; }
   if (!dry && !remote && projection_status != 0) {
     if (strcmp(host_root, "required") == 0) { (void)fputs("container-tools: complete host projection is unavailable\n", stderr); return 1; }
-    (void)snprintf(projection.strategy, sizeof(projection.strategy), "none");
-    (void)snprintf(projection.completeness, sizeof(projection.completeness), "complete");
-    (void)snprintf(projection.group_mode, sizeof(projection.group_mode), "%s", (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) ? "primary-only" : "native-inherited");
+    if (ct_host_projection_set_none(backend, &projection) != 0) return 1;
   } else if (dry || remote) {
-    (void)snprintf(projection.strategy, sizeof(projection.strategy), "none");
-    (void)snprintf(projection.completeness, sizeof(projection.completeness), "complete");
-    (void)snprintf(projection.group_mode, sizeof(projection.group_mode), "%s", (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) ? "primary-only" : "native-inherited");
+    if (ct_host_projection_set_none(backend, &projection) != 0) return 1;
   } }
   if (strcmp(host_root, "required") == 0 && (remote || strcmp(projection.strategy, "none") == 0 || strcmp(projection.completeness, "complete") != 0)) { (void)fputs("container-tools: complete host projection is unavailable\n", stderr); return 1; }
   if (!dry && !remote) {
@@ -273,21 +255,21 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
     plan.backend = backend; plan.strategy = projection.strategy; plan.completeness = projection.completeness; plan.group_mode = projection.group_mode; plan.entries = entries; plan.entry_count = entry_count;
     if (ct_mount_plan_publish(&plan, state_root, manifest_path) != 0) { (void)fputs("container-tools: cannot publish mount plan\n", stderr); return 1; }
     for (index = 0U; index < projection.entry_count; ++index) {
-      if (ct_runtime_add_mask(backend, projection.entries[index].target, projection.entries[index].destination, state_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0 ||
-          ct_runtime_add_mask(backend, projection.entries[index].target, projection.entries[index].destination, cache_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0) return 1;
+      if (ct_runtime_add_mask(projection.entries[index].target, projection.entries[index].destination, state_root, binds, bind_count, bootstrap, masks, &mask_count) != 0 ||
+          ct_runtime_add_mask(projection.entries[index].target, projection.entries[index].destination, cache_root, binds, bind_count, bootstrap, masks, &mask_count) != 0) return 1;
     }
     for (index = 0U; index < bind_count; ++index) {
-      if (ct_runtime_add_mask(backend, resolved_bind_sources[index], binds[index].target, state_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0 ||
-          ct_runtime_add_mask(backend, resolved_bind_sources[index], binds[index].target, cache_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0) return 1;
+      if (ct_runtime_add_mask(resolved_bind_sources[index], binds[index].target, state_root, binds, bind_count, bootstrap, masks, &mask_count) != 0 ||
+          ct_runtime_add_mask(resolved_bind_sources[index], binds[index].target, cache_root, binds, bind_count, bootstrap, masks, &mask_count) != 0) return 1;
     }
     if (strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) {
       const char *home = getenv("HOME");
       char home_resolved[CT_RUNTIME_PATH_MAX];
       if (home != NULL && home[0] == '/' && realpath(home, home_resolved) != NULL &&
-          (ct_runtime_add_mask(backend, home_resolved, home_resolved, state_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0 ||
-           ct_runtime_add_mask(backend, home_resolved, home_resolved, cache_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0)) return 1;
-      if (ct_runtime_add_mask(backend, cwd, cwd, state_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0 ||
-          ct_runtime_add_mask(backend, cwd, cwd, cache_root, binds, bind_count, &projection, bootstrap, masks, &mask_count) != 0) return 1;
+          (ct_runtime_add_mask(home_resolved, home_resolved, state_root, binds, bind_count, bootstrap, masks, &mask_count) != 0 ||
+           ct_runtime_add_mask(home_resolved, home_resolved, cache_root, binds, bind_count, bootstrap, masks, &mask_count) != 0)) return 1;
+      if (ct_runtime_add_mask(cwd, cwd, state_root, binds, bind_count, bootstrap, masks, &mask_count) != 0 ||
+          ct_runtime_add_mask(cwd, cwd, cache_root, binds, bind_count, bootstrap, masks, &mask_count) != 0) return 1;
     }
   }
   if (snprintf(uid_gid, sizeof(uid_gid), "%lu:%lu", (unsigned long)geteuid(), (unsigned long)getegid()) >= (int)sizeof(uid_gid)) return 125;
@@ -295,7 +277,7 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   if (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) { if (ct_runtime_append(command, &command_count, "--rm") != 0 || (shell_mode != 0 && ct_runtime_append(command, &command_count, "-it") != 0) || (strcmp(backend, "podman") == 0 && ct_runtime_append(command, &command_count, "--userns=keep-id") != 0) || ct_runtime_append(command, &command_count, "--user") != 0 || ct_runtime_append(command, &command_count, uid_gid) != 0 || ct_runtime_append(command, &command_count, "-w") != 0 || ct_runtime_append(command, &command_count, cwd) != 0) return 125; }
   else if (ct_runtime_append(command, &command_count, "--pwd") != 0 || ct_runtime_append(command, &command_count, cwd) != 0) return 125;
   for (index = 0U; index < environment_count; ++index) if (ct_runtime_append(command, &command_count, "--env") != 0 || ct_runtime_append(command, &command_count, (char *)environment[index]) != 0) goto cleanup;
-  for (index = 0U; index < projection.entry_count; ++index) { const char *flag; struct ct_runtime_bind bind = {projection.entries[index].source, projection.entries[index].destination}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_projection_descriptor(backend, &bind, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
+  for (index = 0U; index < projection.entry_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_backend_outer_projection_mount(backend, projection.entries[index].source, projection.entries[index].destination, mount_strings[mount_string_count], sizeof(mount_strings[mount_string_count]), &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
   for (index = 0U; index < bind_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &binds[index], 0, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
   if (bootstrap != NULL) { const char *flag; struct ct_runtime_bind bind = {bootstrap, "/.container-tools-bootstrap"}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &bind, 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
   for (index = 0U; index < mask_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &masks[index], 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }

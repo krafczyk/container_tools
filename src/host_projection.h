@@ -23,6 +23,14 @@ int ct_host_projection_endpoint_is_local(const char *backend);
 /** Return nonzero for lexical host paths that must never be mirrored beneath /host. */
 int ct_host_projection_source_is_eligible(const char *path, const char *filesystem);
 /**
+ * Initialize a complete selection that exposes no host projection.
+ *
+ * Clears all prior entries and derives the group mode from `backend`. Returns
+ * nonzero when the backend is unsupported or `selection` is null.
+ */
+int ct_host_projection_set_none(const char *backend,
+                                struct ct_host_projection *selection);
+/**
  * Select and revalidate a bounded local host projection.
  *
  * `mode` must be `auto`, `required`, or `disabled`; refresh bypasses one warm

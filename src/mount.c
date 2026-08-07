@@ -75,14 +75,15 @@ enum ct_mount_status ct_mount_format_args(const char *const *file_tokens,
 }
 
 static enum ct_mount_status ct_mount_read_tokens(const char *path, char *contents,
-                                                  size_t *length, const char **tokens,
+                                                  const char **tokens,
                                                   size_t *count)
 {
   FILE *stream;
   size_t bytes;
   char *cursor;
+  char *state = NULL;
 
-  if (path == NULL || contents == NULL || length == NULL || tokens == NULL || count == NULL) {
+  if (path == NULL || contents == NULL || tokens == NULL || count == NULL) {
     return CT_MOUNT_INVALID;
   }
   stream = fopen(path, "r");
@@ -94,19 +95,12 @@ static enum ct_mount_status ct_mount_read_tokens(const char *path, char *content
   }
   (void)fclose(stream);
   contents[bytes] = '\0';
-  *length = bytes;
   *count = 0U;
-  cursor = contents;
-  while (*cursor != '\0') {
-    char *start;
-    while (*cursor == ' ' || *cursor == '\t' || *cursor == '\r' || *cursor == '\n') ++cursor;
-    if (*cursor == '\0') break;
+  cursor = strtok_r(contents, " \t\r\n", &state);
+  while (cursor != NULL) {
     if (*count == CT_MOUNT_TOKEN_MAX) return CT_MOUNT_INVALID;
-    start = cursor;
-    while (*cursor != '\0' && *cursor != ' ' && *cursor != '\t' && *cursor != '\r' &&
-           *cursor != '\n') ++cursor;
-    if (*cursor != '\0') *cursor++ = '\0';
-    tokens[(*count)++] = start;
+    tokens[(*count)++] = cursor;
+    cursor = strtok_r(NULL, " \t\r\n", &state);
   }
   return CT_MOUNT_OK;
 }
@@ -116,19 +110,17 @@ int ct_mount_args_command(int argument_count, char *const arguments[])
   char contents[CT_MOUNT_FILE_MAX + 1U];
   const char *file_tokens[CT_MOUNT_TOKEN_MAX];
   char output[CT_MOUNT_FILE_MAX + 1U];
-  size_t length;
   size_t count;
   enum ct_mount_status status;
 
   if (argument_count < 1 || arguments == NULL) return 64;
-  status = ct_mount_read_tokens(arguments[0], contents, &length, file_tokens, &count);
+  status = ct_mount_read_tokens(arguments[0], contents, file_tokens, &count);
   if (status != CT_MOUNT_OK ||
       ct_mount_format_args(file_tokens, count, (const char *const *)(arguments + 1),
                            (size_t)(argument_count - 1), output, sizeof(output)) != CT_MOUNT_OK) {
     (void)fprintf(stderr, "container-tools: mount args: invalid configuration\n");
     return 1;
   }
-  (void)length;
   (void)fprintf(stdout, "%s\n", output);
   return 0;
 }
@@ -162,24 +154,22 @@ static bool ct_mount_excluded_path(const char *path, const char *const *extra, s
   return false;
 }
 
+static int ct_mount_candidate_compare(const void *left, const void *right)
+{
+  const char *left_path = left;
+  const char *right_path = right;
+  const size_t left_length = strlen(left_path);
+  const size_t right_length = strlen(right_path);
+
+  if (left_length < right_length) return -1;
+  if (left_length > right_length) return 1;
+  return strcmp(left_path, right_path);
+}
+
 static void ct_mount_sort_candidates(char candidates[][CT_MOUNT_PATH_MAX], size_t candidate_count)
 {
-  size_t index;
-
-  for (index = 0U; index < candidate_count; ++index) {
-    size_t inner;
-    for (inner = index + 1U; inner < candidate_count; ++inner) {
-      const size_t candidate_length = strlen(candidates[index]);
-      const size_t other_length = strlen(candidates[inner]);
-      if (other_length < candidate_length ||
-          (other_length == candidate_length && strcmp(candidates[inner], candidates[index]) < 0)) {
-        char swap[CT_MOUNT_PATH_MAX];
-        memcpy(swap, candidates[index], sizeof(swap));
-        memcpy(candidates[index], candidates[inner], sizeof(swap));
-        memcpy(candidates[inner], swap, sizeof(swap));
-      }
-    }
-  }
+  qsort(candidates, candidate_count, sizeof(candidates[0]),
+        ct_mount_candidate_compare);
 }
 
 int ct_mount_detect_command(int argument_count, char *const arguments[])

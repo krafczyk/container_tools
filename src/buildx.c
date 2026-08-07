@@ -201,7 +201,6 @@ int ct_buildx_prepare(struct ct_buildx_transaction *transaction,
     (void)ct_buildx_discard(transaction);
     return 1;
   }
-  transaction->enabled = true;
   return 0;
 }
 
@@ -211,7 +210,7 @@ int ct_buildx_commit(struct ct_buildx_transaction *transaction)
   char index_path[CT_BUILDX_PATH_MAX];
   int current_exists;
 
-  if (transaction == NULL || !transaction->enabled) return ct_buildx_discard(transaction);
+  if (transaction == NULL || transaction->staging_path[0] == '\0') return ct_buildx_discard(transaction);
   if (snprintf(index_path, sizeof(index_path), "%s/index.json", transaction->staging_path) >=
           (int)sizeof(index_path) || ct_storage_timeout_access(index_path, F_OK) != 0 ||
       snprintf(previous, sizeof(previous), "%s/.previous", transaction->namespace_path) >=
@@ -240,7 +239,6 @@ int ct_buildx_discard(struct ct_buildx_transaction *transaction)
     if (ct_storage_timeout_close(transaction->lock_descriptor) != 0) result = 1;
     transaction->lock_descriptor = -1;
   }
-  transaction->enabled = false;
   return result;
 }
 
@@ -273,12 +271,12 @@ int ct_buildx_exec_command(int argument_count, char *const arguments[])
       ct_storage_select_runtime("docker", &config) != 0 ||
       ct_buildx_prepare(&transaction, &config, architecture) != 0) return 1;
   child[child_count++] = arguments[separator + 1]; child[child_count++] = arguments[separator + 2]; child[child_count++] = arguments[separator + 3];
-  if (transaction.enabled && transaction.has_current) {
+  if (transaction.staging_path[0] != '\0' && transaction.has_current) {
     static char from[CT_BUILDX_PATH_MAX + 32U];
     (void)snprintf(from, sizeof(from), "type=local,src=%s", transaction.current_path);
     child[child_count++] = "--cache-from"; child[child_count++] = from;
   }
-  if (transaction.enabled) {
+  if (transaction.staging_path[0] != '\0') {
     static char to[CT_BUILDX_PATH_MAX + 40U];
     (void)snprintf(to, sizeof(to), "type=local,dest=%s,mode=max", transaction.staging_path);
     child[child_count++] = "--cache-to"; child[child_count++] = to;
