@@ -8,8 +8,9 @@ across Docker, Podman, SingularityCE, and Apptainer.
 The C11 package bootstrap installs one static `container-tools` executable,
 five generated compatibility-script trampolines, and immutable package metadata
 under a caller-selected prefix. It does not replace the current Bash callers in
-this unit. Native behavior commands intentionally return exit status `70` with
-a `not implemented` diagnostic until their corresponding migration units land.
+this unit. Native `exec` and `shell` now directly supervise one nonpersistent
+outer-runtime argv; the remaining unported behavior commands return exit status
+`70` with a `not implemented` diagnostic until their corresponding units land.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
@@ -33,6 +34,16 @@ The executable and scripts resolve their sibling metadata, so a complete prefix
 can move as a unit. Selection through `PATH` or an exact executable/script path
 uses that selected prefix; mixing files from two prefixes is rejected. The
 bootstrap is not a release-complete replacement for the retained Bash surface.
+
+`container-tools exec BACKEND [OPTIONS] [--] IMAGE COMMAND...` and
+`container-tools shell BACKEND [OPTIONS] [--] IMAGE` accept `--docker`,
+`--podman`, `--singularity`, or `--apptainer`, plus `--ct-bind`, `--ct-env`,
+`--ct-bootstrap`, `--ct-container-shell`, `--ct-host-root`, and
+`--ct-host-root-refresh`. They preserve payload argv and return the backend's
+normal status or `128 + signal`. `CT_DRY_RUN` prints the rendered argv and
+writes no selection or manifest state. Explicit remote Docker/Podman endpoints
+launch without a local manifest. Eligible local non-dry launches publish and
+read-only bind a validated `ct-mount-plan-v1` record.
 
 ## Semantic Mount Plans
 
@@ -116,6 +127,8 @@ launch and performs a new cold proof; a failed refresh does not consume the old
 record. Automatic launches warn and retain the existing launch behavior when a
 projection is unavailable or partial. Explicit remote Docker/Podman endpoint
 selectors are intentionally unavailable because their daemon host is not local.
+`--ct-host-root disabled` deliberately emits no generated `/host` projection
+while retaining the local semantic manifest for the remaining launcher mounts.
 Top-level kernel API exclusions are complete by definition and do not produce
 an incomplete-projection warning. When an ordinary tree such as `/run` contains
 a nested kernel mount, fallback planning recursively splits only that mount's

@@ -6,6 +6,7 @@
 #include "package.h"
 #include "process.h"
 #include "storage.h"
+#include "runtime.h"
 
 #include "package_identity.h"
 
@@ -121,6 +122,12 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_MOUNT_DETECT) {
     return ct_mount_detect_command(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_EXEC) {
+    return ct_runtime_foreground_command(argument_count - 2, arguments + 2, 0);
+  }
+  if (parsed.command == CT_COMMAND_SHELL) {
+    return ct_runtime_foreground_command(argument_count - 2, arguments + 2, 1);
   }
   (void)fprintf(stderr, "container-tools: not implemented: %s\n",
                 ct_command_name(parsed.command));

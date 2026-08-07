@@ -50,8 +50,20 @@ function(expect_success)
   endif()
 endfunction()
 
-expect_not_implemented(exec -- image command)
-expect_not_implemented(shell -- image)
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1 "${prefix}/bin/container-tools" exec --docker --ct-host-root disabled image command
+  RESULT_VARIABLE foreground_result
+)
+if(NOT foreground_result EQUAL 0)
+  message(FATAL_ERROR "installed foreground command did not support dry execution")
+endif()
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1 "${prefix}/bin/container-tools" shell --docker --ct-host-root disabled image
+  RESULT_VARIABLE shell_result
+)
+if(NOT shell_result EQUAL 0)
+  message(FATAL_ERROR "installed shell command did not support dry execution")
+endif()
 expect_not_implemented(instance exec -- image command)
 expect_not_implemented(instance identity)
 expect_success(mount detect --help)

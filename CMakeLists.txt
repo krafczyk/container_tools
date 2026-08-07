@@ -77,7 +77,8 @@ endfunction()
 container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   src/main.c src/cli.c src/package.c src/config.c src/config.h src/storage.c src/storage.h
   src/storage_timeout.c src/storage_timeout.h src/mount.c src/mount.h src/buildx.c src/buildx.h
-  src/process.c src/process.h
+  src/process.c src/process.h src/runtime.c src/runtime.h src/backend_outer.c src/backend_outer.h
+  src/host_projection.c src/host_projection.h src/mount_plan.c src/mount_plan.h src/sha256.c src/sha256.h
   vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
   vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
 container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
@@ -104,9 +105,9 @@ target_include_directories(container_tools_json PRIVATE vendor/yyjson)
 
 set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c src/buildx.c
-  src/process.c)
+  src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c)
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
-target_include_directories(container_tools_core PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_include_directories(container_tools_core PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(container_tools_core PRIVATE _POSIX_C_SOURCE=200809L)
 target_link_libraries(container_tools_core PRIVATE container_tools_toml container_tools_json)
 container_tools_enable_warnings(container_tools_core)
@@ -122,7 +123,7 @@ endif()
 if(BUILD_TESTING)
   # The forced-timeout seam is isolated from the production executable.
   add_library(container_tools_test_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
-  target_include_directories(container_tools_test_core PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_include_directories(container_tools_test_core PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(container_tools_test_core PRIVATE
     _POSIX_C_SOURCE=200809L CT_STORAGE_TIMEOUT_TEST_SEAM=1)
   target_link_libraries(container_tools_test_core PRIVATE container_tools_toml container_tools_json)
@@ -166,7 +167,7 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_package)
   add_test(NAME container_tools_package COMMAND test_package)
 
-  foreach(test_name config storage storage_timeout mount buildx)
+  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process)
     add_executable(test_${test_name} tests/test_${test_name}.c)
     target_link_libraries(test_${test_name} PRIVATE container_tools_test_core)
     target_include_directories(test_${test_name} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -194,5 +195,11 @@ if(BUILD_TESTING)
       "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake" @ONLY)
     add_test(NAME container_tools_runtime_config_integration COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake")
+    configure_file(tests/test_foreground.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_foreground.cmake" @ONLY)
+    add_test(NAME container_tools_foreground_integration COMMAND "${CMAKE_COMMAND}" -P
+      "${CMAKE_CURRENT_BINARY_DIR}/test_foreground.cmake")
+    configure_file(tests/test_native_projection.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_native_projection.cmake" @ONLY)
+    add_test(NAME container_tools_native_projection_integration COMMAND "${CMAKE_COMMAND}" -P
+      "${CMAKE_CURRENT_BINARY_DIR}/test_native_projection.cmake")
   endif()
 endif()

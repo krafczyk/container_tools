@@ -16,6 +16,9 @@ int ct_storage_timeout_open(const char *path, int flags, mode_t mode);
 int ct_storage_timeout_fstat(int descriptor, struct stat *status);
 ssize_t ct_storage_timeout_read(int descriptor, void *buffer, size_t count);
 int ct_storage_timeout_close(int descriptor);
+int ct_storage_timeout_fsync(int descriptor);
+ssize_t ct_storage_timeout_write(int descriptor, const void *buffer, size_t count);
+int ct_storage_timeout_flock_lock(int descriptor);
 int ct_storage_timeout_flock_unlock(int descriptor);
 int ct_storage_timeout_mkdir(const char *path, mode_t mode);
 int ct_storage_timeout_chmod(const char *path, mode_t mode);
@@ -26,5 +29,6 @@ int ct_storage_timeout_closedir(DIR *directory);
 int ct_storage_timeout_unlink(const char *path);
 int ct_storage_timeout_rmdir(const char *path);
 int ct_storage_timeout_rename(const char *old_path, const char *new_path);
+int ct_storage_timeout_link(const char *old_path, const char *new_path);
 
 #endif

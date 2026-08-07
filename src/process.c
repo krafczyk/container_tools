@@ -2,20 +2,107 @@
 #include "process.h"
 
 #include <errno.h>
+#include <limits.h>
+#include <math.h>
 #include <stdbool.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static volatile sig_atomic_t ct_process_child_group;
+static volatile sig_atomic_t ct_process_interrupted;
 
 static void ct_process_forward_signal(int signal_number)
 {
+  ct_process_interrupted = signal_number;
   if (ct_process_child_group > 0) {
     (void)kill(-(pid_t)ct_process_child_group, signal_number);
+  }
+}
+
+static int ct_process_duration(const char *value, long *milliseconds)
+{
+  char *end;
+  double seconds;
+  if (value == NULL || value[0] == '\0') return 1;
+  errno = 0;
+  seconds = strtod(value, &end);
+  if (errno != 0 || end == value || *end != '\0' || !isfinite(seconds) || seconds <= 0.0 || seconds > 3600.0 ||
+      seconds * 1000.0 > (double)LONG_MAX) return 1;
+  *milliseconds = (long)(seconds * 1000.0 + 0.999);
+  return *milliseconds <= 0 ? 1 : 0;
+}
+
+static int ct_process_operation_timeout(const char *operation, long *milliseconds)
+{
+  char name[64];
+  const char *value;
+  size_t index, prefix_length;
+  if (operation == NULL ||
+      (strcmp(operation, "probe") != 0 && strcmp(operation, "create") != 0 &&
+       strcmp(operation, "start") != 0 && strcmp(operation, "cleanup") != 0)) return 1;
+  if (snprintf(name, sizeof(name), "CT_RUNTIME_") < 0) return 1;
+  prefix_length = strlen(name);
+  for (index = prefix_length; operation[index - prefix_length] != '\0'; ++index) {
+    const char input = operation[index - prefix_length];
+    name[index] = input >= 'a' && input <= 'z' ? (char)(input - ('a' - 'A')) : input;
+  }
+  if (snprintf(name + index, sizeof(name) - index, "_TIMEOUT") < 0) return 1;
+  value = getenv(name);
+  if (value == NULL || value[0] == '\0') value = getenv("CT_RUNTIME_OPERATION_TIMEOUT");
+  return ct_process_duration(value == NULL || value[0] == '\0' ? "10" : value, milliseconds);
+}
+
+static int ct_process_group_alive(pid_t group)
+{
+  if (kill(-group, 0) == 0 || errno == EPERM) return 1;
+  return errno == ESRCH ? 0 : -1;
+}
+
+static int ct_process_sleep_until(const struct timespec *deadline)
+{
+  struct timespec now, pause;
+  if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return 1;
+  if (now.tv_sec > deadline->tv_sec || (now.tv_sec == deadline->tv_sec && now.tv_nsec >= deadline->tv_nsec)) return 1;
+  pause.tv_sec = 0;
+  pause.tv_nsec = 10000000L;
+  if (nanosleep(&pause, NULL) != 0 && errno != EINTR) return 1;
+  return 0;
+}
+
+static void ct_process_cleanup_deadline(struct timespec *deadline);
+
+static int ct_process_reap_group(pid_t group)
+{
+  struct timespec deadline;
+  int alive = ct_process_group_alive(group);
+  if (alive <= 0) return alive == 0 ? 0 : 1;
+  (void)kill(-group, SIGTERM);
+  ct_process_cleanup_deadline(&deadline);
+  while ((alive = ct_process_group_alive(group)) > 0 && ct_process_sleep_until(&deadline) == 0) { }
+  if (alive == 0) return 0;
+  (void)kill(-group, SIGKILL);
+  ct_process_cleanup_deadline(&deadline);
+  while ((alive = ct_process_group_alive(group)) > 0 && ct_process_sleep_until(&deadline) == 0) { }
+  return alive == 0 ? 0 : 1;
+}
+
+static void ct_process_cleanup_deadline(struct timespec *deadline)
+{
+  if (clock_gettime(CLOCK_MONOTONIC, deadline) != 0) {
+    deadline->tv_sec = 0;
+    deadline->tv_nsec = 0;
+    return;
+  }
+  deadline->tv_nsec += 50000000L;
+  if (deadline->tv_nsec >= 1000000000L) {
+    ++deadline->tv_sec;
+    deadline->tv_nsec -= 1000000000L;
   }
 }
 
@@ -155,4 +242,118 @@ int ct_process_run(char *const arguments[],
   if (WIFEXITED(status)) return WEXITSTATUS(status);
   if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
   return 125;
+}
+
+static int ct_process_run_operation_internal(char *const arguments[], const char *operation, int capture_output)
+{
+  pid_t child;
+  int ready[2] = {-1, -1};
+  int status = 0;
+  char group_ready;
+  long milliseconds;
+  struct timespec deadline;
+  struct sigaction action, old_interrupt, old_terminate;
+  sigset_t blocked, old_mask;
+  int timed_out = 0;
+  int child_done = 0;
+  int cleanup_failed = 0;
+  int restore_failed = 0;
+  struct timespec cleanup_deadline;
+
+  if (arguments == NULL || arguments[0] == NULL || ct_process_operation_timeout(operation, &milliseconds) != 0 ||
+      clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return 125;
+  deadline.tv_sec += milliseconds / 1000L;
+  deadline.tv_nsec += (milliseconds % 1000L) * 1000000L;
+  if (deadline.tv_nsec >= 1000000000L) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000L; }
+  if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 || sigaddset(&blocked, SIGTERM) != 0 ||
+      sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) return 125;
+  if (pipe(ready) != 0) {
+    (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
+    return 125;
+  }
+  child = fork();
+  if (child == 0) {
+    const char setup_status = setpgid(0, 0) == 0 ? 0 : 1;
+    (void)close(ready[0]);
+    if (ct_process_write_byte(ready[1], setup_status) != 0 || close(ready[1]) != 0 || setup_status != 0 ||
+        (capture_output >= 0 && (dup2(capture_output, STDOUT_FILENO) < 0 || close(capture_output) != 0)) ||
+        sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) _exit(125);
+    execvp(arguments[0], arguments);
+    _exit(errno == ENOENT ? 127 : 126);
+  }
+  if (child < 0) { (void)close(ready[0]); (void)close(ready[1]); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125; }
+  (void)close(ready[1]);
+  if (ct_process_read_byte(ready[0], &group_ready) != 0 || close(ready[0]) != 0 || group_ready != 0) {
+    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
+  }
+  memset(&action, 0, sizeof(action));
+  action.sa_handler = ct_process_forward_signal;
+  if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGINT, &action, &old_interrupt) != 0) {
+    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
+  }
+  if (sigaction(SIGTERM, &action, &old_terminate) != 0) {
+    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status);
+    (void)sigaction(SIGINT, &old_interrupt, NULL);
+    (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
+    return 125;
+  }
+  ct_process_child_group = (sig_atomic_t)child;
+  ct_process_interrupted = 0;
+  if (sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) {
+    (void)kill(-child, SIGKILL);
+    (void)ct_process_wait(child, &status);
+    (void)sigaction(SIGTERM, &old_terminate, NULL);
+    (void)sigaction(SIGINT, &old_interrupt, NULL);
+    return 125;
+  }
+  while (!child_done) {
+    const pid_t waited = waitpid(child, &status, WNOHANG);
+    if (waited == child) child_done = 1;
+    else if (waited < 0 && errno != EINTR) timed_out = 1;
+    if (!child_done && (ct_process_interrupted != 0 || ct_process_sleep_until(&deadline) != 0)) timed_out = 1;
+    if (timed_out) {
+      (void)kill(-child, ct_process_interrupted != 0 ? (int)ct_process_interrupted : SIGTERM);
+      break;
+    }
+  }
+  if (ct_process_reap_group(child) != 0) {
+    cleanup_failed = 1;
+  }
+  ct_process_cleanup_deadline(&cleanup_deadline);
+  while (!child_done && ct_process_sleep_until(&cleanup_deadline) == 0) {
+    const pid_t waited = waitpid(child, &status, WNOHANG);
+    if (waited == child) child_done = 1;
+    else if (waited < 0 && errno != EINTR) { cleanup_failed = 1; break; }
+  }
+  ct_process_child_group = 0;
+  if (sigaction(SIGTERM, &old_terminate, NULL) != 0) restore_failed = 1;
+  if (sigaction(SIGINT, &old_interrupt, NULL) != 0) restore_failed = 1;
+  if (sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) restore_failed = 1;
+  if (restore_failed) return 125;
+  if (timed_out) return 124;
+  if (!child_done || cleanup_failed) return 125;
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+  return 125;
+}
+
+int ct_process_run_operation(char *const arguments[], const char *operation)
+{
+  return ct_process_run_operation_internal(arguments, operation, -1);
+}
+
+int ct_process_run_operation_capture(char *const arguments[], const char *operation,
+                                     char output[], size_t output_size)
+{
+  int descriptors[2] = {-1, -1};
+  int result;
+  ssize_t received;
+  size_t used = 0U;
+  if (output == NULL || output_size < 2U || pipe(descriptors) != 0) return 125;
+  result = ct_process_run_operation_internal(arguments, operation, descriptors[1]);
+  if (close(descriptors[1]) != 0) result = 125;
+  while (used + 1U < output_size && (received = read(descriptors[0], output + used, output_size - used - 1U)) > 0) used += (size_t)received;
+  if (received < 0 || close(descriptors[0]) != 0 || (received > 0 && used + 1U == output_size)) return 125;
+  output[used] = '\0';
+  return result;
 }

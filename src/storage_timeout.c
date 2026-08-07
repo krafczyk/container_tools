@@ -214,6 +214,29 @@ int ct_storage_timeout_close(int descriptor)
   CT_STORAGE_TIMEOUT_INT_CALL(close(descriptor));
 }
 
+int ct_storage_timeout_fsync(int descriptor)
+{
+  CT_STORAGE_TIMEOUT_INT_CALL(fsync(descriptor));
+}
+
+ssize_t ct_storage_timeout_write(int descriptor, const void *buffer, size_t count)
+{
+  struct ct_storage_timeout timeout;
+  ssize_t result;
+  int operation_errno;
+  if (ct_storage_timeout_begin(&timeout) != 0) return -1;
+  result = write(descriptor, buffer, count);
+  operation_errno = errno;
+  if (ct_storage_timeout_end(&timeout) != 0) return -1;
+  errno = operation_errno;
+  return result;
+}
+
+int ct_storage_timeout_flock_lock(int descriptor)
+{
+  CT_STORAGE_TIMEOUT_INT_CALL(flock(descriptor, LOCK_EX));
+}
+
 int ct_storage_timeout_flock_unlock(int descriptor)
 {
   CT_STORAGE_TIMEOUT_INT_CALL(flock(descriptor, LOCK_UN));
@@ -279,4 +302,9 @@ int ct_storage_timeout_rmdir(const char *path)
 int ct_storage_timeout_rename(const char *old_path, const char *new_path)
 {
   CT_STORAGE_TIMEOUT_INT_CALL(rename(old_path, new_path));
+}
+
+int ct_storage_timeout_link(const char *old_path, const char *new_path)
+{
+  CT_STORAGE_TIMEOUT_INT_CALL(link(old_path, new_path));
 }

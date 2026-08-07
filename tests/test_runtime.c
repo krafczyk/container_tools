@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: Apache-2.0 OR MIT */
+#include "runtime.h"
+
+#include <fcntl.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+int main(void)
+{
+  char *dry[] = {"--docker", "--ct-host-root", "disabled", "image", "command"};
+  char work[] = "/tmp/mkchad-v1/container-tools-c11/native-runtime-test.XXXXXX";
+  char fake[4096], source[4096], alias[4096], alias_binding[8192], binding[8192], log[4096], state[4096], mountinfo[4096], path[8192];
+  char *launch[] = {"--docker", "--ct-host-root", "required", "--ct-bind", binding, "image", "command"};
+  char *alias_launch[] = {"--docker", "--ct-host-root", "disabled", "--ct-bind", alias_binding, "image", "command"};
+  FILE *stream;
+  char contents[16384];
+  size_t bytes;
+  if (setenv("CT_DRY_RUN", "1", 1) != 0 || ct_runtime_foreground_command(5, dry, 0) != 0) return 1;
+  if (unsetenv("CT_DRY_RUN") != 0 || mkdtemp(work) == NULL ||
+      snprintf(fake, sizeof(fake), "%s/fake", work) >= (int)sizeof(fake) || mkdir(fake, 0700) != 0 ||
+      snprintf(source, sizeof(source), "%s/source", work) >= (int)sizeof(source) || mkdir(source, 0700) != 0 ||
+      snprintf(binding, sizeof(binding), "%s:/workspace", source) >= (int)sizeof(binding) ||
+      snprintf(log, sizeof(log), "%s/log", work) >= (int)sizeof(log) ||
+       snprintf(state, sizeof(state), "%s/state", work) >= (int)sizeof(state) ||
+       snprintf(mountinfo, sizeof(mountinfo), "%s/mountinfo", work) >= (int)sizeof(mountinfo) ||
+      snprintf(path, sizeof(path), "%s/docker", fake) >= (int)sizeof(path)) return 1;
+  stream = fopen(mountinfo, "w");
+  if (stream == NULL || fputs("1 0 0:1 / / rw - ext4 root rw\n", stream) == EOF || fclose(stream) != 0) return 1;
+  stream = fopen(path, "w");
+  if (stream == NULL || fputs("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CT_NATIVE_TEST_LOG\"\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(path, 0700) != 0 ||
+       setenv("PATH", fake, 1) != 0 || setenv("XDG_STATE_HOME", state, 1) != 0 || setenv("CT_NATIVE_TEST_LOG", log, 1) != 0 ||
+       setenv("CT_HOST_PROJECTION_SOURCE_ROOT", source, 1) != 0 || setenv("CT_HOST_PROJECTION_MOUNTINFO", mountinfo, 1) != 0 ||
+       setenv("CT_HOST_PROJECTION_CACHE_ROOT", state, 1) != 0 || setenv("CT_HOST_PROJECTION_FAKE_PROBE", "direct", 1) != 0 ||
+       ct_runtime_foreground_command(7, launch, 0) != 0) return 1;
+  stream = fopen(log, "r");
+  if (stream == NULL) return 1;
+  bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);
+  if (fclose(stream) != 0 || bytes == 0U) return 1;
+  contents[bytes] = '\0';
+  if (strstr(contents, "/.container-tools-mount-plan,readonly") == NULL) return 1;
+  if (snprintf(alias, sizeof(alias), "%s/alias", work) >= (int)sizeof(alias) ||
+      symlink(work, alias) != 0 ||
+      snprintf(alias_binding, sizeof(alias_binding), "%s:/workspace", alias) >= (int)sizeof(alias_binding) ||
+      ct_runtime_foreground_command(7, alias_launch, 0) != 0) return 1;
+  stream = fopen(log, "r");
+  if (stream == NULL) return 1;
+  bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);
+  if (fclose(stream) != 0 || bytes == 0U) return 1;
+  contents[bytes] = '\0';
+  if (strstr(contents, "target=/workspace/state,readonly") == NULL) return 1;
+  return 0;
+}
