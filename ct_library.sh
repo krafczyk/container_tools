@@ -357,12 +357,533 @@ discard_docker_build_storage() {
 
 # Host-projection records intentionally contain only selection data. The policy
 # version changes whenever their meaning or their key material changes.
-CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v5'
+CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v6'
 CT_HOST_PROJECTION_PROFILE_VERSION='ct-host-projection-profile-v1'
 CT_HOST_PROJECTION_RECORD_VERSION=ct-host-projection-selection-v1
 CT_HOST_PROJECTION_RECORD_MAX_BYTES=1048576
 CT_HOST_PROJECTION_RECORD_MAX_PAIRS=4096
 CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH=64
+
+# Mount-plan records describe only the final semantic bind plan. They are
+# content-addressed so a container can use its mounted file as the selector.
+CT_MOUNT_PLAN_RECORD_VERSION=ct-mount-plan-v1
+CT_MOUNT_PLAN_RECORD_MAX_BYTES=1048576
+CT_MOUNT_PLAN_RECORD_MAX_ENTRIES=4096
+CT_MOUNT_PLAN_DESTINATION=/.container-tools-mount-plan
+
+# Normalize one absolute container path lexically without consulting host state.
+ct_container_path_normalize() {
+  local path=$1 rest component
+  local -a components=()
+  [[ $path == /* ]] || return 1
+  rest=${path#/}
+  while [[ -n $rest ]]; do
+    if [[ $rest == */* ]]; then
+      component=${rest%%/*}
+      rest=${rest#*/}
+    else
+      component=$rest
+      rest=
+    fi
+    case "$component" in
+      ''|.) ;;
+      ..)
+        ((${#components[@]} == 0)) || unset 'components[-1]'
+        ;;
+      *) components+=("$component") ;;
+    esac
+  done
+  if ((${#components[@]} == 0)); then
+    printf '/'
+  else
+    printf '/%s' "${components[@]}"
+  fi
+}
+
+# Return the private root that holds immutable semantic mount-plan manifests.
+# CT_MOUNT_PLAN_STATE_ROOT is a test-only style override matching the existing
+# CT_* state-root seams; production callers use XDG state by default.
+ct_mount_plan_state_directory() {
+  if [[ -n ${CT_MOUNT_PLAN_STATE_ROOT:-} ]]; then
+    printf '%s' "$CT_MOUNT_PLAN_STATE_ROOT"
+  else
+    printf '%s/container-tools/mount-plans/v1' "${XDG_STATE_HOME:-$HOME/.local/state}"
+  fi
+}
+
+# Run one composite manifest operation with a deadline that terminates its
+# complete process group rather than only the wrapper shell.
+ct_mount_plan_bounded_command() {
+  local timeout_seconds=${CT_RUNTIME_STORAGE_TIMEOUT:-10}
+  [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 1
+  LC_ALL=C timeout --kill-after=2s "${timeout_seconds}s" "$@"
+}
+
+# Adopt or create a private manifest directory inside the caller-owned aggregate
+# deadline. Runtime-state subprocesses use --foreground and remain in that group.
+ct_mount_plan_ensure_state_directory() {
+  local directory=$1 ancestor kind uid mode
+  if [[ -e $directory || -L $directory ]]; then
+    [[ ! -L $directory && -d $directory ]] || return 1
+    IFS='|' read -r kind uid mode < <(stat -c '%F|%u|%a' -- "$directory") || return 1
+    [[ $kind == directory && $uid == "$EUID" && $mode == 700 ]] || return 1
+    ancestor=${directory%/*}
+    [[ -n $ancestor ]] || ancestor=/
+    while :; do
+      [[ ! -L $ancestor && -d $ancestor ]] || return 1
+      IFS='|' read -r kind mode < <(stat -c '%F|%a' -- "$ancestor") || return 1
+      [[ $kind == directory ]] || return 1
+      (( (8#$mode & 022) == 0 || (8#$mode & 01000) != 0 )) || return 1
+      [[ $ancestor == / ]] && return 0
+      ancestor=${ancestor%/*}
+      [[ -n $ancestor ]] || ancestor=/
+    done
+  fi
+  ensure_private_runtime_directory "$directory"
+}
+
+# Validate one semantic entry scalar without interpreting paths or argv text.
+ct_mount_plan_entry_is_valid() {
+  local role=$1 caller_path=$2 target_path=$3 access=$4 recursion=$5 backend=${6:-} normalized
+  case "$role" in
+    generated-host-root|detected-automatic|explicit|bootstrap-internal|persistent-automatic-cwd) ;;
+    *) return 1 ;;
+  esac
+  normalized=$(ct_container_path_normalize "$caller_path") || return 1
+  [[ $normalized == "$caller_path" ]] || return 1
+  normalized=$(ct_container_path_normalize "$target_path") || return 1
+  [[ $normalized == "$target_path" ]] || return 1
+  case "$access" in inherit|read-only) ;; *) return 1 ;; esac
+  case "$recursion" in non-recursive|runtime-default) ;; *) return 1 ;; esac
+  case "$role" in
+    generated-host-root)
+      [[ ( $caller_path == /host || $caller_path == /host/* ) \
+        && $access == inherit ]] || return 1
+      case "$backend:$recursion" in
+        :*|docker:non-recursive|podman:non-recursive|singularity:runtime-default|apptainer:runtime-default) ;;
+        *) return 1 ;;
+      esac
+      ;;
+    detected-automatic|explicit|persistent-automatic-cwd)
+      [[ $caller_path == "$target_path" && $access == inherit && $recursion == runtime-default ]] || return 1
+      ;;
+    bootstrap-internal)
+      [[ $caller_path == /.container-tools-bootstrap && $target_path == /.container-tools-bootstrap \
+        && $access == read-only && $recursion == runtime-default ]] || return 1
+      ;;
+  esac
+}
+
+# Hash a NUL-delimited closed field sequence and print the resulting digest.
+ct_mount_plan_hash_fields() {
+  local digest
+  digest=$(printf '%s\0' "$@" | sha256sum) || return 1
+  digest=${digest%% *}
+  [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s' "$digest"
+}
+
+# Serialize the semantic fields after the version and digest fields.
+ct_mount_plan_write_body() {
+  local backend=$1 index
+  printf '%s\0' "$backend" "${CT_HOST_PROJECTION_STRATEGY:-none}" \
+    "${CT_HOST_PROJECTION_COMPLETE:-complete}" "${CT_HOST_PROJECTION_GROUP_MODE:-none}" \
+    "${#CT_MOUNT_PLAN_ROLES[@]}"
+  for index in "${!CT_MOUNT_PLAN_ROLES[@]}"; do
+    printf '%s\0' "${CT_MOUNT_PLAN_ROLES[index]}" "${CT_MOUNT_PLAN_CALLER_PATHS[index]}" \
+      "${CT_MOUNT_PLAN_TARGET_PATHS[index]}" "${CT_MOUNT_PLAN_ACCESS[index]}" \
+      "${CT_MOUNT_PLAN_RECURSION[index]}"
+  done
+}
+
+# Validate the current in-memory semantic plan and its closed record bounds.
+# The manifest bind and its protective alias masks are intentionally not entries.
+ct_mount_plan_validate_current() {
+  local backend=$1 strategy=${CT_HOST_PROJECTION_STRATEGY:-none}
+  local completeness=${CT_HOST_PROJECTION_COMPLETE:-complete}
+  local group_mode=${CT_HOST_PROJECTION_GROUP_MODE:-none} index entry_count value
+  local record_bytes=65 LC_ALL=C
+  local -a header=()
+  case "$backend" in docker|podman|singularity|apptainer) ;; *) return 1 ;; esac
+  case "$strategy" in direct|fallback|none) ;; *) return 1 ;; esac
+  case "$completeness" in complete|partial) ;; *) return 1 ;; esac
+  case "$group_mode" in numeric-supplementary|keep-groups|primary-only|native-inherited|none) ;; *) return 1 ;; esac
+  entry_count=${#CT_MOUNT_PLAN_ROLES[@]}
+  (( entry_count == ${#CT_MOUNT_PLAN_CALLER_PATHS[@]} \
+    && entry_count == ${#CT_MOUNT_PLAN_TARGET_PATHS[@]} \
+    && entry_count == ${#CT_MOUNT_PLAN_ACCESS[@]} \
+    && entry_count == ${#CT_MOUNT_PLAN_RECURSION[@]} \
+    && entry_count <= CT_MOUNT_PLAN_RECORD_MAX_ENTRIES )) || return 1
+  header=("$CT_MOUNT_PLAN_RECORD_VERSION" "$backend" "$strategy" "$completeness" "$group_mode" "$entry_count")
+  for value in "${header[@]}"; do
+    record_bytes=$((record_bytes + ${#value} + 1))
+  done
+  for index in "${!CT_MOUNT_PLAN_ROLES[@]}"; do
+    ct_mount_plan_entry_is_valid "${CT_MOUNT_PLAN_ROLES[index]}" "${CT_MOUNT_PLAN_CALLER_PATHS[index]}" \
+      "${CT_MOUNT_PLAN_TARGET_PATHS[index]}" "${CT_MOUNT_PLAN_ACCESS[index]}" \
+      "${CT_MOUNT_PLAN_RECURSION[index]}" "$backend" || return 1
+    for value in "${CT_MOUNT_PLAN_ROLES[index]}" "${CT_MOUNT_PLAN_CALLER_PATHS[index]}" \
+      "${CT_MOUNT_PLAN_TARGET_PATHS[index]}" "${CT_MOUNT_PLAN_ACCESS[index]}" \
+      "${CT_MOUNT_PLAN_RECURSION[index]}"; do
+      record_bytes=$((record_bytes + ${#value} + 1))
+    done
+    (( record_bytes <= CT_MOUNT_PLAN_RECORD_MAX_BYTES )) || return 1
+  done
+}
+
+# Calculate the independent content digest for one validated in-memory plan.
+ct_mount_plan_digest() {
+  local backend=$1 digest
+  ct_mount_plan_validate_current "$backend" || return 1
+  digest=$({
+    printf '%s\0' "$CT_MOUNT_PLAN_RECORD_VERSION"
+    ct_mount_plan_write_body "$backend"
+  } | sha256sum) || return 1
+  CT_MOUNT_PLAN_DIGEST=${digest%% *}
+  [[ $CT_MOUNT_PLAN_DIGEST =~ ^[0-9a-f]{64}$ ]]
+}
+
+# Validate one manifest inside the aggregate deadline owned by the public
+# wrapper. The descriptor and pathname must retain one exact identity.
+ct_mount_plan_validate_file_bounded() {
+  local file=$1 expected_digest=$2 max_bytes=$3 max_entries=$4 expected_uid=$5
+  local path_before path_after fd_before fd_after kind uid mode size count index computed field_limit
+  local canonical_size=0 value LC_ALL=C
+  local -a fields=() hash_fields=()
+  [[ ! -L $file && -e $file ]] || return 1
+  path_before=$(stat -Lc '%d|%i|%F|%u|%a|%s|%y|%z' -- "$file" 2>/dev/null) || return 1
+  exec 3< "$file" || return 1
+  fd_before=$(stat -Lc '%d|%i|%F|%u|%a|%s|%y|%z' -- /proc/self/fd/3 2>/dev/null) || return 1
+  [[ $path_before == "$fd_before" ]] || return 1
+  IFS='|' read -r _ _ kind uid mode size _ _ <<< "$fd_before"
+  [[ $kind == 'regular file' && $uid == "$EUID" && $mode == 600 \
+    && $uid == "$expected_uid" && $size =~ ^[0-9]+$ && $size -gt 0 && $size -le max_bytes ]] || return 1
+  field_limit=$((7 + max_entries * 5 + 1))
+  mapfile -d '' -n "$field_limit" -t fields <&3 || return 1
+  path_after=$(stat -Lc '%d|%i|%F|%u|%a|%s|%y|%z' -- "$file" 2>/dev/null) || return 1
+  fd_after=$(stat -Lc '%d|%i|%F|%u|%a|%s|%y|%z' -- /proc/self/fd/3 2>/dev/null) || return 1
+  exec 3<&-
+  [[ $path_before == "$path_after" && $fd_before == "$fd_after" ]] || return 1
+  (( ${#fields[@]} <= 7 + max_entries * 5 )) || return 1
+  for value in "${fields[@]}"; do
+    canonical_size=$((canonical_size + ${#value} + 1))
+  done
+  (( canonical_size == size )) || return 1
+  (( ${#fields[@]} >= 7 )) || return 1
+  [[ ${fields[0]} == "$CT_MOUNT_PLAN_RECORD_VERSION" && ${fields[1]} == "$expected_digest" \
+    && ${fields[1]} =~ ^[0-9a-f]{64}$ ]] || return 1
+  case "${fields[2]}" in docker|podman|singularity|apptainer) ;; *) return 1 ;; esac
+  case "${fields[3]}" in direct|fallback|none) ;; *) return 1 ;; esac
+  case "${fields[4]}" in complete|partial) ;; *) return 1 ;; esac
+  case "${fields[5]}" in numeric-supplementary|keep-groups|primary-only|native-inherited|none) ;; *) return 1 ;; esac
+  [[ ${fields[6]} == 0 || ${fields[6]} =~ ^[1-9][0-9]*$ ]] || return 1
+  count=${fields[6]}
+  (( count <= max_entries && ${#fields[@]} == 7 + count * 5 )) || return 1
+  for ((index = 0; index < count; index++)); do
+    ct_mount_plan_entry_is_valid "${fields[7 + index * 5]}" "${fields[8 + index * 5]}" \
+      "${fields[9 + index * 5]}" "${fields[10 + index * 5]}" "${fields[11 + index * 5]}" \
+      "${fields[2]}" || return 1
+  done
+  hash_fields=("${fields[0]}" "${fields[@]:2}")
+  computed=$(ct_mount_plan_hash_fields "${hash_fields[@]}") || return 1
+  [[ $computed == "$expected_digest" ]]
+}
+
+# Validate an immutable manifest through one bounded descriptor-pinned read.
+ct_mount_plan_validate_file() {
+  local file=$1 expected_digest=$2 library
+  library=${BASH_SOURCE[0]}
+  [[ $library == /* ]] || library="$PWD/${library#./}"
+  [[ -f $library ]] || return 1
+  # shellcheck disable=SC2016 # The bounded child expands its own arguments.
+  ct_mount_plan_bounded_command bash -c '
+    . "$1"
+    ct_mount_plan_validate_file_bounded "$2" "$3" "$4" "$5" "$6"
+  ' bash "$library" "$file" "$expected_digest" "$CT_MOUNT_PLAN_RECORD_MAX_BYTES" \
+    "$CT_MOUNT_PLAN_RECORD_MAX_ENTRIES" "$EUID"
+}
+
+# Read one validated semantic body from standard input, then digest, serialize,
+# publish, and validate it under the caller-owned aggregate deadline. Temporary
+# files live only in private recoverable state; TERM timeout cleanup is owned by
+# the parent after the complete worker process group has been killed.
+ct_mount_plan_publish_bounded() {
+  local backend=$1 directory=$2 max_bytes=$3 max_entries=$4 expected_uid=$5 lock_timeout=$6
+  local work_directory="$directory/.work" lock_directory="$directory/.locks"
+  local body='' candidate='' temporary='' file='' digest='' stale='' stale_count=0 lock_open=0 work_lock_open=0
+  # shellcheck disable=SC2329 # Signal and EXIT traps invoke this cleanup hook.
+  cleanup_mount_plan_publication() {
+    [[ -z $body ]] || rm -f -- "$body"
+    [[ -z $candidate ]] || rm -f -- "$candidate"
+    [[ -z $temporary ]] || rm -f -- "$temporary"
+    if (( work_lock_open )); then
+      flock -u 8 >/dev/null 2>&1 || true
+      exec 8>&-
+    fi
+    if (( lock_open )); then
+      flock -u 9 >/dev/null 2>&1 || true
+      exec 9>&-
+    fi
+  }
+  trap cleanup_mount_plan_publication EXIT
+  trap 'exit 129' HUP
+  trap 'exit 130' INT
+  # The outer timeout must retain the process group until its KILL phase so a
+  # TERM-ignoring dependency cannot outlive publication.
+  trap '' TERM
+  ct_mount_plan_ensure_state_directory "$directory" || return 1
+  ct_mount_plan_ensure_state_directory "$work_directory" || return 1
+  exec 8> "$work_directory/.lock" || return 1
+  work_lock_open=1
+  flock -w "$lock_timeout" 8 || return 1
+  shopt -s nullglob
+  for stale in "$work_directory"/.body.* "$work_directory"/.candidate.*; do
+    stale_count=$((stale_count + 1))
+    (( stale_count <= 16 )) || return 1
+    [[ ! -L $stale && -f $stale && $(stat -Lc '%u' -- "$stale") == "$expected_uid" ]] || return 1
+    rm -f -- "$stale" || return 1
+  done
+  shopt -u nullglob
+  body=$(mktemp "$work_directory/.body.XXXXXX") || return 1
+  cat > "$body" || return 1
+  chmod 600 -- "$body" || return 1
+  digest=$({ printf '%s\0' "$CT_MOUNT_PLAN_RECORD_VERSION"; cat -- "$body"; } | sha256sum) || return 1
+  digest=${digest%% *}
+  [[ $digest =~ ^[0-9a-f]{64}$ ]] || return 1
+  candidate=$(mktemp "$work_directory/.candidate.XXXXXX") || return 1
+  { printf '%s\0%s\0' "$CT_MOUNT_PLAN_RECORD_VERSION" "$digest"; cat -- "$body"; } > "$candidate" || return 1
+  chmod 600 -- "$candidate" || return 1
+  ct_mount_plan_validate_file_bounded "$candidate" "$digest" "$max_bytes" "$max_entries" "$expected_uid" || return 1
+  file="$directory/$digest.manifest"
+  shopt -s nullglob
+  for stale in "$directory/.${digest}.tmp."*; do
+    stale_count=$((stale_count + 1))
+    (( stale_count <= 32 )) || return 1
+    [[ ! -L $stale && -f $stale && $(stat -Lc '%u' -- "$stale") == "$expected_uid" ]] || return 1
+    rm -f -- "$stale" || return 1
+  done
+  shopt -u nullglob
+  if [[ -e $file || -L $file ]]; then
+    ct_mount_plan_validate_file_bounded "$file" "$digest" "$max_bytes" "$max_entries" "$expected_uid" || return 1
+    printf '%s\n%s' "$digest" "$file"
+    return 0
+  fi
+  ct_mount_plan_ensure_state_directory "$lock_directory" || return 1
+  exec 9> "$lock_directory/$digest.lock" || return 1
+  lock_open=1
+  flock -w "$lock_timeout" 9 || return 1
+  if [[ ! -e $file && ! -L $file ]]; then
+    temporary=$(mktemp "$directory/.${digest}.tmp.XXXXXX") || return 1
+    cp -- "$candidate" "$temporary" || return 1
+    chmod 600 -- "$temporary" || return 1
+    mv -n -T -- "$temporary" "$file" || return 1
+    [[ ! -e $temporary ]] || return 1
+    temporary=
+  fi
+  ct_mount_plan_validate_file_bounded "$file" "$digest" "$max_bytes" "$max_entries" "$expected_uid" || return 1
+  printf '%s\n%s' "$digest" "$file"
+}
+
+# Recover interrupted publisher temporaries only while no active publisher can
+# own them. This runs as a separate bounded operation after worker failure.
+ct_mount_plan_recover_temporary_state() {
+  local directory=$1 expected_uid=$2 lock_timeout=$3 stale count=0
+  local work_directory="$directory/.work"
+  [[ ! -L $directory && -d $directory && $(stat -Lc '%u|%a' -- "$directory") == "$expected_uid|700" ]] || return 0
+  [[ ! -L $work_directory && -d $work_directory \
+    && $(stat -Lc '%u|%a' -- "$work_directory") == "$expected_uid|700" ]] || return 0
+  exec 8> "$work_directory/.lock" || return 1
+  flock -w "$lock_timeout" 8 || return 1
+  shopt -s nullglob
+  for stale in "$work_directory"/.body.* "$work_directory"/.candidate.* "$directory"/.*.tmp.*; do
+    count=$((count + 1))
+    (( count <= 32 )) || return 1
+    [[ ! -L $stale && -f $stale && $(stat -Lc '%u' -- "$stale") == "$expected_uid" ]] || return 1
+    rm -f -- "$stale" || return 1
+  done
+  shopt -u nullglob
+}
+
+# Publish the current plan once as a private immutable record, reusing only an
+# exact validated record with the same semantic digest.
+ct_mount_plan_publish() {
+  local backend=$1 directory normalized_directory result path status
+  local lock_timeout=${CT_MOUNT_PLAN_LOCK_TIMEOUT:-8} recovery_timeout=1 library
+  [[ -z ${CT_DRY_RUN:-} ]] || return 0
+  [[ $lock_timeout =~ ^[0-9]+([.][0-9]+)?$ && ! $lock_timeout =~ ^0+([.]0+)?$ ]] || return 1
+  ct_mount_plan_validate_current "$backend" || return 1
+  directory=$(ct_mount_plan_state_directory)
+  [[ $directory == /* && $directory != *$'\n'* && $directory != *:* && $directory != *,* ]] || return 1
+  normalized_directory=$(ct_container_path_normalize "$directory") || return 1
+  [[ $normalized_directory == "$directory" ]] || return 1
+  library=${BASH_SOURCE[0]}
+  [[ $library == /* ]] || library="$PWD/${library#./}"
+  [[ -f $library ]] || return 1
+  # shellcheck disable=SC2016 # The bounded child expands its own arguments.
+  if result=$(ct_mount_plan_write_body "$backend" | ct_mount_plan_bounded_command bash -c '
+    . "$1"
+    ct_mount_plan_publish_bounded "$2" "$3" "$4" "$5" "$6" "$7"
+  ' bash "$library" "$backend" "$directory" "$CT_MOUNT_PLAN_RECORD_MAX_BYTES" \
+    "$CT_MOUNT_PLAN_RECORD_MAX_ENTRIES" "$EUID" "$lock_timeout"); then
+    status=0
+  else
+    status=$?
+  fi
+  if (( status == 124 || status == 137 || status == 143 )); then
+    # shellcheck disable=SC2016 # The bounded recovery child expands its arguments.
+    if ! CT_RUNTIME_STORAGE_TIMEOUT=$recovery_timeout ct_mount_plan_bounded_command bash -c '
+      . "$1"
+      trap "" TERM
+      ct_mount_plan_recover_temporary_state "$2" "$3" "$4"
+    ' bash "$library" "$directory" "$EUID" "$recovery_timeout" >/dev/null 2>&1; then
+      :
+    fi
+  fi
+  if (( status != 0 )); then
+    return "$status"
+  fi
+  CT_MOUNT_PLAN_DIGEST=${result%%$'\n'*}
+  path=${result#*$'\n'}
+  [[ $CT_MOUNT_PLAN_DIGEST =~ ^[0-9a-f]{64}$ && $path == "$directory/$CT_MOUNT_PLAN_DIGEST.manifest" ]] || return 1
+  CT_MOUNT_PLAN_PATH=$path
+}
+
+# Track one regular bind in its assembly order rather than serializing argv.
+ct_mount_plan_append_entry() {
+  local role=$1 caller_path=$2 target_path=$3 access=$4 recursion=$5
+  ct_mount_plan_entry_is_valid "$role" "$caller_path" "$target_path" "$access" "$recursion" || return 1
+  CT_MOUNT_PLAN_ROLES+=("$role")
+  CT_MOUNT_PLAN_CALLER_PATHS+=("$caller_path")
+  CT_MOUNT_PLAN_TARGET_PATHS+=("$target_path")
+  CT_MOUNT_PLAN_ACCESS+=("$access")
+  CT_MOUNT_PLAN_RECURSION+=("$recursion")
+}
+
+# Prepend the surviving host projection entries exactly where their generated
+# mounts are prepended, retaining their resolved selected-root targets.
+ct_mount_plan_prepend_generated_entries() {
+  local backend=$1 index recursion
+  local -a roles=() caller_paths=() target_paths=() access=() recursion_values=()
+  case "$backend" in docker|podman) recursion=non-recursive ;; singularity|apptainer) recursion=runtime-default ;; *) return 1 ;; esac
+  for index in "${!CT_HOST_PROJECTION_DESTINATIONS[@]}"; do
+    roles+=(generated-host-root)
+    caller_paths+=("${CT_HOST_PROJECTION_DESTINATIONS[index]}")
+    target_paths+=("${CT_HOST_PROJECTION_TARGETS[index]}")
+    access+=(inherit)
+    recursion_values+=("$recursion")
+  done
+  CT_MOUNT_PLAN_ROLES=("${roles[@]}" "${CT_MOUNT_PLAN_ROLES[@]}")
+  CT_MOUNT_PLAN_CALLER_PATHS=("${caller_paths[@]}" "${CT_MOUNT_PLAN_CALLER_PATHS[@]}")
+  CT_MOUNT_PLAN_TARGET_PATHS=("${target_paths[@]}" "${CT_MOUNT_PLAN_TARGET_PATHS[@]}")
+  CT_MOUNT_PLAN_ACCESS=("${access[@]}" "${CT_MOUNT_PLAN_ACCESS[@]}")
+  CT_MOUNT_PLAN_RECURSION=("${recursion_values[@]}" "${CT_MOUNT_PLAN_RECURSION[@]}")
+}
+
+# Add one read-only mask wherever a writable mount exposes the private backing
+# directory. Inputs are a resolved host source and its canonical container
+# destination; failures leave MOUNT_ARGS unchanged for that alias.
+ct_mount_plan_protect_alias() {
+  local backend=$1 source=$2 destination=$3 directory=$4 alias relative
+  [[ $source != "$directory" && $source != "$directory"/* ]] || {
+    printf 'Error: container bind source exposes private mount-plan state: %s\n' "$source" >&2
+    return 1
+  }
+  if [[ $source == / ]]; then
+    [[ $directory == /* ]] || return 0
+    relative=$directory
+  else
+    [[ $directory == "$source"/* ]] || return 0
+    relative=${directory#"$source"}
+  fi
+  alias=${destination%/}$relative
+  [[ -n $alias ]] || alias=/
+  alias=$(ct_container_path_normalize "$alias") || return 1
+  [[ -z ${CT_MOUNT_PLAN_PROTECTED_TARGETS[$alias]+set} ]] || return 0
+  if ct_mount_plan_target_is_bound "$alias"; then
+    printf 'Error: container bind target conflicts with mount-plan state protection: %s\n' "$alias" >&2
+    return 1
+  fi
+  CT_MOUNT_PLAN_PROTECTED_TARGETS[$alias]=1
+  case "$backend" in
+    docker|podman)
+      MOUNT_ARGS+=(--mount "type=bind,source=$directory,target=$alias,readonly")
+      ;;
+    singularity|apptainer)
+      MOUNT_ARGS+=(--bind "$directory:$alias:ro")
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Return whether assembled caller or generated argv already owns one exact
+# container destination. Backend delimiters were rejected before this parser.
+ct_mount_plan_target_is_bound() {
+  local wanted=$1 index kind descriptor target
+  for ((index = 0; index < ${#MOUNT_ARGS[@]}; index++)); do
+    kind=${MOUNT_ARGS[index]}
+    [[ $kind == --mount || $kind == --bind ]] || continue
+    descriptor=${MOUNT_ARGS[index + 1]:-}
+    if [[ $kind == --mount ]]; then
+      if ct_host_projection_mount_field "$descriptor" target \
+        || ct_host_projection_mount_field "$descriptor" dst; then
+        target=$CT_HOST_PROJECTION_MOUNT_FIELD
+      else
+        continue
+      fi
+    else
+      target=${descriptor#*:}
+      target=${target%%:*}
+    fi
+    [[ $target == "$wanted" ]] && return 0
+  done
+  return 1
+}
+
+# Mask every writable generated or caller bind alias of the manifest backing
+# directory. The masks are manifest machinery and are not semantic entries.
+ct_mount_plan_protect_backing_state() {
+  local backend=$1 directory index implicit_source implicit_target
+  directory=${CT_MOUNT_PLAN_PATH%/*}
+  declare -gA CT_MOUNT_PLAN_PROTECTED_TARGETS=()
+  for index in "${!CT_HOST_PROJECTION_TARGETS[@]}"; do
+    ct_mount_plan_protect_alias "$backend" "${CT_HOST_PROJECTION_TARGETS[index]}" \
+      "${CT_HOST_PROJECTION_DESTINATIONS[index]}" "$directory" || return 1
+  done
+  for index in "${!CT_CALLER_BIND_SOURCES[@]}"; do
+    ct_mount_plan_protect_alias "$backend" "${CT_CALLER_BIND_SOURCES[index]}" \
+      "${CT_CALLER_BIND_TARGETS[index]}" "$directory" || return 1
+  done
+  if [[ $backend == singularity || $backend == apptainer ]]; then
+    for implicit_target in "$HOME" "$PWD_DIR"; do
+      [[ $implicit_target == /* ]] || return 1
+      implicit_source=$(timeout --foreground --kill-after=2s 2s readlink -f -- "$implicit_target") || return 1
+      implicit_target=$(ct_container_path_normalize "$implicit_target") || return 1
+      ct_mount_plan_protect_alias "$backend" "$implicit_source" "$implicit_target" "$directory" || return 1
+    done
+  fi
+}
+
+# Publish and bind the semantic plan selected by TOOL[0]. Dry runs return
+# without I/O. Success sets CT_MOUNT_PLAN_PATH and appends read-only protection
+# masks plus the stable selector to MOUNT_ARGS; malformed state, unsupported
+# backends, unsafe aliases, publication failure, or unrepresentable paths fail.
+ct_mount_plan_publish_and_bind() {
+  local backend=${TOOL[0]}
+  [[ -z ${CT_DRY_RUN:-} ]] || return 0
+  [[ ${CT_MOUNT_PLAN_BIND_SUPPORTED:-1} == 1 ]] || return 0
+  ct_mount_plan_publish "$backend" || return 1
+  ct_mount_plan_protect_backing_state "$backend" || return 1
+  case "$backend" in
+    docker|podman)
+      MOUNT_ARGS+=(--mount "type=bind,source=$CT_MOUNT_PLAN_PATH,target=$CT_MOUNT_PLAN_DESTINATION,readonly")
+      ;;
+    singularity|apptainer)
+      [[ $CT_MOUNT_PLAN_PATH != *:* && $CT_MOUNT_PLAN_PATH != *,* ]] || return 1
+      MOUNT_ARGS+=(--bind "$CT_MOUNT_PLAN_PATH:$CT_MOUNT_PLAN_DESTINATION:ro")
+      ;;
+    *) return 1 ;;
+  esac
+}
 
 # Decode the octal escapes used in /proc/*/mountinfo path fields.
 ct_host_projection_unescape_mountinfo_path() {
@@ -402,10 +923,29 @@ ct_host_projection_kernel_path() {
   esac
 }
 
+# Return whether a path is the reserved host mirror within the selected root.
+ct_host_projection_reserved_path() {
+  local path=$1 root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} relative
+  if [[ $root == / ]]; then
+    relative=$path
+  elif [[ $path == "$root" ]]; then
+    relative=/
+  elif [[ $path == "$root"/* ]]; then
+    relative=/${path#"$root"/}
+  else
+    return 0
+  fi
+  case "$relative" in
+    /host|/host/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # Return whether a lexical host source is eligible for generated projection.
 ct_host_projection_source_eligible() {
   local source=$1 filesystem=${2:-}
   [[ $source == /* ]] || return 1
+  ! ct_host_projection_reserved_path "$source" || return 1
   ct_host_projection_kernel_path "$source" && return 1
   [[ -z $filesystem ]] || ! ct_host_projection_kernel_filesystem "$filesystem"
 }
@@ -416,6 +956,7 @@ ct_host_projection_source_eligible() {
 ct_host_projection_target_eligible() {
   local target=$1 index mounted filesystem
   [[ $target == /* ]] || return 1
+  ! ct_host_projection_reserved_path "$target" || return 1
   ct_host_projection_kernel_path "$target" && return 1
   for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
     mounted=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
@@ -1073,8 +1614,17 @@ ct_host_projection_select() {
   return 1
 }
 
+# Discard generated argv and matching semantic entries after render failure.
+ct_host_projection_discard_rendered_mounts() {
+  CT_HOST_PROJECTION_MOUNT_ARGS=()
+  CT_HOST_PROJECTION_SOURCES=()
+  CT_HOST_PROJECTION_TARGETS=()
+  CT_HOST_PROJECTION_DESTINATIONS=()
+}
+
 # Render selected generated binds into backend argv fragments without exposing
-# source paths through word splitting or a serialized command line.
+# source paths through word splitting or a serialized command line. A failure
+# discards the generated semantic entries so the manifest matches backend argv.
 ct_host_projection_render_mounts() {
   local backend=$1 index source destination
   CT_HOST_PROJECTION_MOUNT_ARGS=()
@@ -1083,7 +1633,10 @@ ct_host_projection_render_mounts() {
   for index in "${!CT_HOST_PROJECTION_SOURCES[@]}"; do
     source=${CT_HOST_PROJECTION_SOURCES[index]}
     destination=${CT_HOST_PROJECTION_DESTINATIONS[index]}
-    [[ $source == /* && $destination == /host/* || $destination == /host ]] || return 1
+    [[ $source == /* && $destination == /host/* || $destination == /host ]] || {
+      ct_host_projection_discard_rendered_mounts
+      return 1
+    }
     case "$backend" in
       docker)
         CT_HOST_PROJECTION_MOUNT_ARGS+=(--mount "type=bind,source=$source,target=$destination,bind-recursive=disabled")
@@ -1095,11 +1648,15 @@ ct_host_projection_render_mounts() {
         [[ $source != *,* && $destination != *,* ]] || {
           # shellcheck disable=SC2034 # This typed result is consumed by launch integration.
           CT_HOST_PROJECTION_RENDER_FAILURE=unrepresentable-path
+          ct_host_projection_discard_rendered_mounts
           return 1
         }
         CT_HOST_PROJECTION_MOUNT_ARGS+=(--mount "type=bind,src=$source,dst=$destination")
         ;;
-      *) return 1 ;;
+      *)
+        ct_host_projection_discard_rendered_mounts
+        return 1
+        ;;
     esac
   done
 }
@@ -1467,10 +2024,12 @@ ct_host_projection_prepare_foreground() {
   local backend=${TOOL[0]} image=${PAYLOAD_ARGS[0]:-} requested_group_mode cache_key selected=0 cold_timeout cached_completeness
   local plan_timeout whole fraction milliseconds now
   CT_HOST_PROJECTION_MOUNT_ARGS=()
+  CT_MOUNT_PLAN_BIND_SUPPORTED=1
   # shellcheck disable=SC2034 # Foreground launchers consume this shared result.
   CT_HOST_PROJECTION_RUNTIME_LABEL_ARGS=()
   CT_HOST_PROJECTION_GROUP_ARGS=()
   [[ -n ${CT_DRY_RUN:-} ]] && return 0
+  ct_host_projection_set_none "$backend" unavailable || return 1
   if [[ -n ${CT_HOST_PROJECTION_RUNTIME_LABEL:-} && ( $backend == docker || $backend == podman ) ]]; then
     [[ $CT_HOST_PROJECTION_RUNTIME_LABEL =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || return 1
     # shellcheck disable=SC2034 # ct_exec.sh and ct_shell.sh consume this argv fragment.
@@ -1488,10 +2047,10 @@ ct_host_projection_prepare_foreground() {
     singularity|apptainer) requested_group_mode=native-inherited ;;
     *) return 1 ;;
   esac
-  ct_host_projection_set_none "$backend" unavailable
   if ! ct_host_projection_local_endpoint "$backend"; then
     [[ $CT_HOST_ROOT == auto ]] && {
       printf '%s\n' 'WARNING: host projection unavailable for an explicit remote runtime endpoint' >&2
+      CT_MOUNT_PLAN_BIND_SUPPORTED=0
       ct_host_projection_apply_group_mode "$backend"
       return 0
     }
@@ -1559,6 +2118,7 @@ ct_host_projection_prepare_foreground() {
   if [[ $CT_HOST_ROOT == auto && ( $CT_HOST_PROJECTION_STRATEGY == none || $CT_HOST_PROJECTION_COMPLETE != complete ) ]]; then
     printf '%s\n' 'WARNING: host projection is incomplete; dispatching the existing foreground launch' >&2
   fi
+  ct_mount_plan_prepend_generated_entries "$backend" || return 1
   MOUNT_ARGS=("${CT_HOST_PROJECTION_MOUNT_ARGS[@]}" "${MOUNT_ARGS[@]}")
 }
 
@@ -1651,6 +2211,25 @@ warn_dropped_mount() {
 append_mount_arg() {
   local host=$1
   local container=$2
+  local role=${3:-detected-automatic}
+  local normalized_container source_real
+
+  [[ $host != *:* && $host != *,* && $host != *$'\n'* \
+    && $container != *:* && $container != *,* && $container != *$'\n'* ]] || {
+    echo "Error: container bind paths cannot contain ':', comma, or newline" >&2
+    return 1
+  }
+  normalized_container=$(ct_container_path_normalize "$container") || return 1
+  [[ $normalized_container != "$CT_MOUNT_PLAN_DESTINATION" \
+    && $normalized_container != "$CT_MOUNT_PLAN_DESTINATION"/* ]] || {
+    echo "Error: container bind destination is reserved for mount plans: $CT_MOUNT_PLAN_DESTINATION" >&2
+    return 1
+  }
+  container=$normalized_container
+  source_real=$(timeout --foreground --kill-after=2s 2s readlink -f -- "$host") || return 1
+  ct_mount_plan_append_entry "$role" "$container" "$container" inherit runtime-default || return 1
+  CT_CALLER_BIND_SOURCES+=("$source_real")
+  CT_CALLER_BIND_TARGETS+=("$container")
 
   case "${TOOL[0]}" in
     docker|podman)
@@ -1663,6 +2242,8 @@ append_mount_arg() {
 }
 
 append_bootstrap_mount_arg() {
+  ct_mount_plan_append_entry bootstrap-internal "$CT_BOOTSTRAP_CONTAINER" \
+    "$CT_BOOTSTRAP_CONTAINER" read-only runtime-default || return 1
   case "${TOOL[0]}" in
     docker|podman)
       MOUNT_ARGS+=(--mount "type=bind,source=${CT_BOOTSTRAP},target=${CT_BOOTSTRAP_CONTAINER},readonly")
@@ -1699,6 +2280,21 @@ parse_explicit_mount_args() {
         local container=${mnt#*:}
         if [[ $host == "$mnt" || -z $container || $container != /* ]]; then
           echo "Error: invalid --ct-bind '$mnt' (expected HOST_PATH:CONTAINER_PATH)" >&2
+          return 1
+        fi
+        if [[ $host == *,* || $host == *$'\n'* \
+          || $container == *:* || $container == *,* || $container == *$'\n'* ]]; then
+          echo "Error: invalid --ct-bind '$mnt' (paths cannot contain ':', comma, or newline)" >&2
+          return 1
+        fi
+        local normalized_container
+        normalized_container=$(ct_container_path_normalize "$container") || {
+          echo "Error: invalid --ct-bind '$mnt' (expected HOST_PATH:CONTAINER_PATH)" >&2
+          return 1
+        }
+        if [[ $normalized_container == "$CT_MOUNT_PLAN_DESTINATION" \
+          || $normalized_container == "$CT_MOUNT_PLAN_DESTINATION"/* ]]; then
+          echo "Error: container bind destination is reserved for mount plans: $CT_MOUNT_PLAN_DESTINATION" >&2
           return 1
         fi
         if ! valid_bind_src "$host"; then
@@ -1781,12 +2377,21 @@ parse_explicit_mount_args() {
 
 build_mount_args() {
   MOUNT_ARGS=()
+  CT_CALLER_BIND_SOURCES=()
+  CT_CALLER_BIND_TARGETS=()
+  CT_MOUNT_PLAN_ROLES=()
+  CT_MOUNT_PLAN_CALLER_PATHS=()
+  CT_MOUNT_PLAN_TARGET_PATHS=()
+  CT_MOUNT_PLAN_ACCESS=()
+  CT_MOUNT_PLAN_RECURSION=()
 
   CT_MOUNT_CFG=${CT_MOUNT_CFG:=${HOME}/.config/ct_mount.conf}
   if [[ -e $CT_MOUNT_CFG ]]; then
+    # shellcheck disable=SC2154,SC2086 # Source scripts provide script_dir; flags are intentionally tokenized.
     MOUNT_DETECTOR_ARGS=$("$script_dir/ct_args.sh" "$CT_MOUNT_CFG" ${MOUNT_DETECTOR_ARGS:=})
   fi
 
+  # shellcheck disable=SC2086 # MOUNT_DETECTOR_ARGS is an intentionally tokenized flag list.
   while IFS= read -r mnt; do
     [[ -n $mnt ]] || continue
 
@@ -1800,6 +2405,17 @@ build_mount_args() {
       container=$mnt
     fi
 
+    local normalized_container
+    normalized_container=$(ct_container_path_normalize "$container") || return 1
+
+    # A nested launcher observes the parent manifest as a runtime-internal
+    # mount. It is replaced by this launcher's own plan rather than replayed.
+    case "$normalized_container" in
+      "$CT_MOUNT_PLAN_DESTINATION"|"$CT_MOUNT_PLAN_DESTINATION"/*|/.container-tools-instance-identity|/.container-tools-bootstrap)
+        continue
+        ;;
+    esac
+
     if ! valid_bind_src "$host"; then
       local reason
       reason=$(bind_src_error "$host")
@@ -1808,17 +2424,17 @@ build_mount_args() {
       continue
     fi
 
-    append_mount_arg "$host" "$container"
+    append_mount_arg "$host" "$normalized_container" detected-automatic || return 1
   done < <("$script_dir/ct_mount_detector.sh" ${MOUNT_DETECTOR_ARGS:=})
 
   for mnt in "${EXPLICIT_MOUNTS[@]}"; do
     local host=${mnt%%:*}
     local container=${mnt#*:}
-    append_mount_arg "$host" "$container"
+    append_mount_arg "$host" "$container" explicit || return 1
   done
 
   if [[ -n $CT_BOOTSTRAP ]]; then
-    append_bootstrap_mount_arg
+    append_bootstrap_mount_arg || return 1
   fi
 }
 
@@ -1871,8 +2487,8 @@ run_cmd() {
     printf '%q ' "${CMD[@]}"
     echo
   else
-    unset SINGULARITY_BIND SINGULARITY_BINDPATH
-    unset APPTAINER_BIND APPTAINER_BINDPATH
+    unset SINGULARITY_BIND SINGULARITY_BINDPATH SINGULARITY_MOUNT
+    unset APPTAINER_BIND APPTAINER_BINDPATH APPTAINER_MOUNT
     exec "${CMD[@]}"
   fi
 }
@@ -1893,6 +2509,7 @@ launcher_preamble() {
 
   USER_ID=$(id -u)
   GROUP_ID=$(id -g)
+  # shellcheck disable=SC2034 # Sourcing launchers consume this shared preamble result.
   PWD_DIR=$PWD
 
   build_mount_args

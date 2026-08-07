@@ -19,6 +19,19 @@ mkdir -p "$work/root" "$work/cache"
 # shellcheck disable=SC1091
 . "$root/ct_library.sh"
 
+# Foreground native launches cannot inherit alternate runtime mount channels
+# that bypass the semantic plan and its reserved selector.
+ambient_probe="$work/ambient-mount-probe.sh"
+cat > "$ambient_probe" <<'EOF'
+#!/usr/bin/env bash
+[[ -z ${SINGULARITY_BIND:-}${SINGULARITY_BINDPATH:-}${SINGULARITY_MOUNT:-} ]] || exit 1
+[[ -z ${APPTAINER_BIND:-}${APPTAINER_BINDPATH:-}${APPTAINER_MOUNT:-} ]] || exit 1
+EOF
+chmod 755 "$ambient_probe"
+SINGULARITY_BIND=/untrusted SINGULARITY_BINDPATH=/untrusted SINGULARITY_MOUNT=/untrusted \
+APPTAINER_BIND=/untrusted APPTAINER_BINDPATH=/untrusted APPTAINER_MOUNT=/untrusted \
+  bash -c '. "$1"; CT_DRY_RUN=; CMD=("$2"); run_cmd' bash "$root/ct_library.sh" "$ambient_probe"
+
 fixture_root="$work/root"
 mkdir -p "$fixture_root"
 mkdir -p "$fixture_root/usr" "$fixture_root/var" "$fixture_root/run/netns" "$fixture_root/data"
@@ -152,6 +165,18 @@ ct_host_projection_render_mounts docker
 [[ ${CT_HOST_PROJECTION_MOUNT_ARGS[*]} == *'bind-recursive=disabled'* ]]
 ct_host_projection_render_mounts podman
 [[ ${CT_HOST_PROJECTION_MOUNT_ARGS[*]} == *'bind-nonrecursive'* ]]
+CT_HOST_PROJECTION_SOURCES=('/source,unrepresentable')
+CT_HOST_PROJECTION_TARGETS=(/source)
+CT_HOST_PROJECTION_DESTINATIONS=(/host/source)
+if ct_host_projection_render_mounts apptainer; then
+  printf '%s\n' 'native render accepted an unrepresentable generated source' >&2
+  exit 1
+fi
+[[ ${#CT_HOST_PROJECTION_MOUNT_ARGS[@]} == 0 && ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 \
+  && ${#CT_HOST_PROJECTION_TARGETS[@]} == 0 && ${#CT_HOST_PROJECTION_DESTINATIONS[@]} == 0 ]] || {
+  printf '%s\n' 'render failure retained generated semantic mount entries' >&2
+  exit 1
+}
 
 ct_host_projection_build_fallback
 fallback_count=${#CT_HOST_PROJECTION_SOURCES[@]}
@@ -243,7 +268,7 @@ CT_HOST_PROJECTION_RECORD_MAX_BYTES=$default_record_max_bytes
 
 current_policy_version=$CT_HOST_PROJECTION_POLICY_VERSION
 legacy_partial_keys=()
-for legacy_policy_version in host-projection-v1 host-projection-v2 host-projection-v3 host-projection-v4; do
+for legacy_policy_version in host-projection-v1 host-projection-v2 host-projection-v3 host-projection-v4 host-projection-v5; do
   CT_HOST_PROJECTION_POLICY_VERSION=$legacy_policy_version
   ct_host_projection_selection_key docker image:one option-a numeric-supplementary
   legacy_partial_keys+=("$CT_HOST_PROJECTION_SELECTION_KEY")
@@ -339,7 +364,7 @@ sleep 5
 EOF
 chmod 755 "$slow_bin/find"
 planning_started=$SECONDS
-CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 1))
+CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 2))
 if PATH="$slow_bin:$PATH" ct_host_projection_build_fallback; then
   printf '%s\n' 'hung top-level fallback enumeration succeeded' >&2
   exit 1
@@ -374,7 +399,7 @@ chmod 755 "$slow_sort_bin/sort"
 chmod 755 "$slow_sort_bin/find"
 printf '%s\n' slow-sort > "$slow_sort_bin/mode"
 planning_started=$SECONDS
-CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 1))
+CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 2))
 if PATH="$slow_sort_bin:$PATH" ct_host_projection_build_fallback; then
   printf '%s\n' 'hung fallback sort succeeded' >&2
   exit 1
@@ -485,6 +510,408 @@ ct_host_projection_resolve_mount_conflicts
   exit 1
 }
 MOUNT_ARGS=()
+
+# A semantic mount plan is a bounded, content-addressed record. It retains the
+# semantic mount paths and roles, not backend argv or mountinfo presentation.
+CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans"
+export CT_MOUNT_PLAN_STATE_ROOT
+# Generated records carry the resolved selected-root target, and target-only
+# changes select a new content digest.
+CT_MOUNT_PLAN_ROLES=()
+CT_MOUNT_PLAN_CALLER_PATHS=()
+CT_MOUNT_PLAN_TARGET_PATHS=()
+CT_MOUNT_PLAN_ACCESS=()
+CT_MOUNT_PLAN_RECURSION=()
+CT_HOST_PROJECTION_SOURCES=(/lexical-source)
+CT_HOST_PROJECTION_TARGETS=(/resolved-target-a)
+CT_HOST_PROJECTION_DESTINATIONS=(/host/lexical-source)
+CT_HOST_PROJECTION_STRATEGY=fallback
+CT_HOST_PROJECTION_COMPLETE=complete
+CT_HOST_PROJECTION_GROUP_MODE=primary-only
+ct_mount_plan_prepend_generated_entries docker
+[[ ${CT_MOUNT_PLAN_TARGET_PATHS[0]} == /resolved-target-a ]] || {
+  printf '%s\n' 'generated mount-plan entry omitted its resolved target' >&2
+  exit 1
+}
+ct_mount_plan_digest docker
+resolved_target_digest=$CT_MOUNT_PLAN_DIGEST
+CT_MOUNT_PLAN_ROLES=()
+CT_MOUNT_PLAN_CALLER_PATHS=()
+CT_MOUNT_PLAN_TARGET_PATHS=()
+CT_MOUNT_PLAN_ACCESS=()
+CT_MOUNT_PLAN_RECURSION=()
+CT_HOST_PROJECTION_TARGETS=(/resolved-target-b)
+ct_mount_plan_prepend_generated_entries docker
+ct_mount_plan_digest docker
+[[ $CT_MOUNT_PLAN_DIGEST != "$resolved_target_digest" ]] || {
+  printf '%s\n' 'resolved target change reused the mount-plan digest' >&2
+  exit 1
+}
+CT_MOUNT_PLAN_ROLES=(generated-host-root detected-automatic explicit bootstrap-internal)
+CT_MOUNT_PLAN_CALLER_PATHS=(/host/project '/container/detected path' '/container/explicit path' /.container-tools-bootstrap)
+CT_MOUNT_PLAN_TARGET_PATHS=(/project '/container/detected path' '/container/explicit path' /.container-tools-bootstrap)
+CT_MOUNT_PLAN_ACCESS=(inherit inherit inherit read-only)
+CT_MOUNT_PLAN_RECURSION=(non-recursive runtime-default runtime-default runtime-default)
+CT_HOST_PROJECTION_STRATEGY=direct
+CT_HOST_PROJECTION_COMPLETE=complete
+CT_HOST_PROJECTION_GROUP_MODE=primary-only
+ct_mount_plan_publish docker
+manifest_path=$CT_MOUNT_PLAN_PATH
+first_manifest_path=$manifest_path
+[[ $manifest_path == "$work/mount-plans"/[0-9a-f]*.manifest && -f $manifest_path \
+  && ! -L $manifest_path && $(stat -c '%a' -- "$manifest_path") == 600 ]] || {
+  printf '%s\n' 'mount-plan publication did not create the private content-addressed manifest' >&2
+  exit 1
+}
+mapfile -d '' -t mount_plan_fields < "$manifest_path"
+[[ ${mount_plan_fields[0]} == ct-mount-plan-v1 && ${mount_plan_fields[1]} =~ ^[0-9a-f]{64}$ \
+  && ${mount_plan_fields[2]} == docker && ${mount_plan_fields[3]} == direct \
+  && ${mount_plan_fields[4]} == complete && ${mount_plan_fields[5]} == primary-only \
+  && ${mount_plan_fields[6]} == 4 && ${mount_plan_fields[7]} == generated-host-root \
+  && ${mount_plan_fields[8]} == /host/project && ${mount_plan_fields[9]} == /project \
+  && ${mount_plan_fields[10]} == inherit && ${mount_plan_fields[11]} == non-recursive \
+  && ${mount_plan_fields[12]} == detected-automatic \
+  && ${mount_plan_fields[17]} == explicit && ${mount_plan_fields[22]} == bootstrap-internal ]] || {
+  printf '%s\n' 'mount-plan record omitted its closed semantic fields or role ordering' >&2
+  exit 1
+}
+mount_plan_hash_fields=("${mount_plan_fields[0]}" "${mount_plan_fields[@]:2}")
+[[ $(ct_mount_plan_hash_fields "${mount_plan_hash_fields[@]}") == "${mount_plan_fields[1]}" ]] || {
+  printf '%s\n' 'mount-plan record digest did not cover its closed semantic fields' >&2
+  exit 1
+}
+ct_mount_plan_publish docker
+[[ $CT_MOUNT_PLAN_PATH == "$manifest_path" ]] || {
+  printf '%s\n' 'matching immutable mount-plan record was not reused' >&2
+  exit 1
+}
+printf 'tampered\0' > "$manifest_path"
+if ct_mount_plan_publish docker; then
+  printf '%s\n' 'tampered mount-plan record was reused' >&2
+  exit 1
+fi
+rm -- "$manifest_path"
+ct_mount_plan_publish docker
+manifest_path=$CT_MOUNT_PLAN_PATH
+chmod 640 -- "$manifest_path"
+if ct_mount_plan_publish docker; then
+  printf '%s\n' 'insecure mount-plan record was reused' >&2
+  exit 1
+fi
+chmod 600 -- "$manifest_path"
+rm -- "$manifest_path"
+ln -s "$work/mount-plan-link-target" "$manifest_path"
+if ct_mount_plan_publish docker; then
+  printf '%s\n' 'symlinked mount-plan record was reused' >&2
+  exit 1
+fi
+rm -- "$manifest_path"
+ct_mount_plan_publish docker
+first_mount_plan_digest=$CT_MOUNT_PLAN_DIGEST
+CT_MOUNT_PLAN_CALLER_PATHS[2]=/container/explicit-updated
+CT_MOUNT_PLAN_TARGET_PATHS[2]=/container/explicit-updated
+ct_mount_plan_digest docker
+mismatched_manifest_path="$CT_MOUNT_PLAN_STATE_ROOT/$CT_MOUNT_PLAN_DIGEST.manifest"
+cp "$first_manifest_path" "$mismatched_manifest_path"
+if ct_mount_plan_publish docker; then
+  printf '%s\n' 'mismatched mount-plan record was reused' >&2
+  exit 1
+fi
+rm -- "$mismatched_manifest_path"
+ct_mount_plan_publish docker
+[[ $CT_MOUNT_PLAN_DIGEST != "$first_mount_plan_digest" ]] || {
+  printf '%s\n' 'semantic mount-plan change did not select a new digest' >&2
+  exit 1
+}
+
+# Validation caps fields before loading them and keeps metadata plus reading
+# under one aggregate deadline.
+dense_manifest="$work/dense-mount-plan.manifest"
+dense_digest=0000000000000000000000000000000000000000000000000000000000000000
+{
+  printf '%s\0%s\0' ct-mount-plan-v1 "$dense_digest"
+  for ((field_index = 0; field_index < 7 + CT_MOUNT_PLAN_RECORD_MAX_ENTRIES * 5; field_index++)); do
+    printf '\0'
+  done
+} > "$dense_manifest"
+chmod 600 "$dense_manifest"
+if ct_mount_plan_validate_file "$dense_manifest" "$dense_digest"; then
+  printf '%s\n' 'NUL-dense mount-plan record exceeded the bounded field count' >&2
+  exit 1
+fi
+truncated_manifest="$work/truncated-mount-plan.manifest"
+cp -- "$CT_MOUNT_PLAN_PATH" "$truncated_manifest"
+truncate -s -1 "$truncated_manifest"
+chmod 600 "$truncated_manifest"
+if ct_mount_plan_validate_file "$truncated_manifest" "$CT_MOUNT_PLAN_DIGEST"; then
+  printf '%s\n' 'mount-plan record without its final NUL terminator was accepted' >&2
+  exit 1
+fi
+# Self-consistent malformed records exercise every closed semantic validator,
+# rather than failing earlier only because their digest is stale.
+assert_semantic_manifest_rejected() {
+  local field_index=$1 replacement=$2 invalid_digest invalid_manifest
+  local -a invalid_fields=("${mount_plan_fields[@]}") invalid_hash_fields=()
+  invalid_fields[field_index]=$replacement
+  invalid_hash_fields=("${invalid_fields[0]}" "${invalid_fields[@]:2}")
+  invalid_digest=$(ct_mount_plan_hash_fields "${invalid_hash_fields[@]}")
+  invalid_fields[1]=$invalid_digest
+  invalid_manifest="$work/invalid-semantic-$field_index-${RANDOM}.manifest"
+  printf '%s\0' "${invalid_fields[@]}" > "$invalid_manifest"
+  chmod 600 "$invalid_manifest"
+  if ct_mount_plan_validate_file "$invalid_manifest" "$invalid_digest"; then
+    printf 'self-consistent invalid mount-plan field was accepted: %s=%s\n' "$field_index" "$replacement" >&2
+    exit 1
+  fi
+}
+assert_semantic_manifest_rejected 2 unsupported
+assert_semantic_manifest_rejected 3 unsupported
+assert_semantic_manifest_rejected 4 unsupported
+assert_semantic_manifest_rejected 5 unsupported
+assert_semantic_manifest_rejected 6 04
+assert_semantic_manifest_rejected 7 unsupported
+assert_semantic_manifest_rejected 8 //host/project
+assert_semantic_manifest_rejected 10 read-only
+assert_semantic_manifest_rejected 11 runtime-default
+slow_manifest_bin="$work/slow-manifest-bin"
+mkdir "$slow_manifest_bin"
+cat > "$slow_manifest_bin/stat" <<'EOF'
+#!/usr/bin/env bash
+sleep 5
+EOF
+chmod 755 "$slow_manifest_bin/stat"
+validation_started=$SECONDS
+if PATH="$slow_manifest_bin:$PATH" CT_RUNTIME_STORAGE_TIMEOUT=0.1 \
+  ct_mount_plan_validate_file "$CT_MOUNT_PLAN_PATH" "$CT_MOUNT_PLAN_DIGEST"; then
+  printf '%s\n' 'hung mount-plan metadata validation succeeded' >&2
+  exit 1
+fi
+(( SECONDS - validation_started < 4 )) || {
+  printf '%s\n' 'mount-plan validation exceeded its aggregate deadline' >&2
+  exit 1
+}
+
+# Publication, including private-state creation, stale-temp cleanup, locking,
+# rename, and final validation, shares one process-group deadline.
+slow_publish_bin="$work/slow-publish-bin"
+slow_publish_root="$work/slow-publish-root"
+mkdir "$slow_publish_bin" "$slow_publish_root"
+chmod 700 "$slow_publish_root"
+cat > "$slow_publish_bin/mv" <<'EOF'
+#!/usr/bin/env bash
+sleep 5
+EOF
+chmod 755 "$slow_publish_bin/mv"
+publication_started=$SECONDS
+if PATH="$slow_publish_bin:$PATH" CT_RUNTIME_STORAGE_TIMEOUT=0.1 \
+  CT_MOUNT_PLAN_STATE_ROOT="$slow_publish_root" ct_mount_plan_publish docker \
+  2>"$work/slow-publication.err"; then
+  printf '%s\n' 'hung mount-plan publication succeeded' >&2
+  exit 1
+fi
+(( SECONDS - publication_started < 4 )) || {
+  printf '%s\n' 'mount-plan publication exceeded its aggregate deadline' >&2
+  exit 1
+}
+shopt -s nullglob
+slow_publish_temps=("$slow_publish_root"/."$CT_MOUNT_PLAN_DIGEST".tmp.* \
+  "$slow_publish_root/.work"/.body.* "$slow_publish_root/.work"/.candidate.*)
+shopt -u nullglob
+[[ ${#slow_publish_temps[@]} == 0 ]] || {
+  printf '%s\n' 'interrupted mount-plan publication leaked a state temporary' >&2
+  exit 1
+}
+CT_MOUNT_PLAN_STATE_ROOT="$work/comma,mount-plans"
+if ct_mount_plan_publish docker; then
+  printf '%s\n' 'mount-plan publication accepted a backend-delimiter state path' >&2
+  exit 1
+fi
+[[ ! -e $CT_MOUNT_PLAN_STATE_ROOT ]] || {
+  printf '%s\n' 'invalid mount-plan state path was created before rejection' >&2
+  exit 1
+}
+CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans"
+
+# A subsequent publisher recovers interrupted private work and final-record
+# temporaries while holding the shared work lock.
+mkdir -p "$CT_MOUNT_PLAN_STATE_ROOT/.work"
+printf stale > "$CT_MOUNT_PLAN_STATE_ROOT/.work/.body.stale"
+printf stale > "$CT_MOUNT_PLAN_STATE_ROOT/.work/.candidate.stale"
+printf stale > "$CT_MOUNT_PLAN_STATE_ROOT/.${CT_MOUNT_PLAN_DIGEST}.tmp.stale"
+chmod 600 "$CT_MOUNT_PLAN_STATE_ROOT/.work/.body.stale" \
+  "$CT_MOUNT_PLAN_STATE_ROOT/.work/.candidate.stale" \
+  "$CT_MOUNT_PLAN_STATE_ROOT/.${CT_MOUNT_PLAN_DIGEST}.tmp.stale"
+ct_mount_plan_publish docker
+[[ ! -e $CT_MOUNT_PLAN_STATE_ROOT/.work/.body.stale \
+  && ! -e $CT_MOUNT_PLAN_STATE_ROOT/.work/.candidate.stale \
+  && ! -e $CT_MOUNT_PLAN_STATE_ROOT/.${CT_MOUNT_PLAN_DIGEST}.tmp.stale ]] || {
+  printf '%s\n' 'next publisher did not recover interrupted mount-plan temporaries' >&2
+  exit 1
+}
+
+slow_digest_bin="$work/slow-digest-bin"
+slow_digest_root="$work/slow-digest-root"
+mkdir "$slow_digest_bin"
+cat > "$slow_digest_bin/sha256sum" <<'EOF'
+#!/usr/bin/env bash
+trap '' TERM
+sleep 5
+EOF
+chmod 755 "$slow_digest_bin/sha256sum"
+digest_started=$SECONDS
+if PATH="$slow_digest_bin:$PATH" CT_RUNTIME_STORAGE_TIMEOUT=0.1 \
+  CT_MOUNT_PLAN_STATE_ROOT="$slow_digest_root" ct_mount_plan_publish docker \
+  2>"$work/slow-digest.err"; then
+  printf '%s\n' 'hung mount-plan digest succeeded' >&2
+  exit 1
+fi
+(( SECONDS - digest_started < 4 )) || {
+  printf '%s\n' 'mount-plan digest exceeded the aggregate publication deadline' >&2
+  exit 1
+}
+shopt -s nullglob
+slow_digest_temps=("$slow_digest_root/.work"/.body.* "$slow_digest_root/.work"/.candidate.*)
+shopt -u nullglob
+[[ ${#slow_digest_temps[@]} == 0 ]] || {
+  printf '%s\n' 'interrupted mount-plan digest leaked a state temporary' >&2
+  exit 1
+}
+CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans"
+
+# Writable projections and caller binds that cover the private state directory
+# receive nested read-only masks before the stable manifest selector is added.
+MOUNT_ARGS=()
+CT_HOST_PROJECTION_TARGETS=(/)
+CT_HOST_PROJECTION_DESTINATIONS=(/host)
+CT_CALLER_BIND_SOURCES=("$work")
+CT_CALLER_BIND_TARGETS=(/workspace)
+ct_mount_plan_protect_backing_state docker
+[[ " ${MOUNT_ARGS[*]} " == *"source=$work/mount-plans,target=/host$work/mount-plans,readonly"* \
+  && " ${MOUNT_ARGS[*]} " == *"source=$work/mount-plans,target=/workspace/mount-plans,readonly"* ]] || {
+  printf '%s\n' 'writable manifest backing aliases were not masked read-only' >&2
+  exit 1
+}
+saved_mount_plan_path=$CT_MOUNT_PLAN_PATH
+native_state="$work/home/native-mount-plans"
+mkdir -p "$native_state"
+CT_MOUNT_PLAN_PATH="$native_state/manifest"
+saved_home=$HOME
+HOME="$work/home"
+MOUNT_ARGS=()
+CT_HOST_PROJECTION_TARGETS=()
+CT_HOST_PROJECTION_DESTINATIONS=()
+CT_CALLER_BIND_SOURCES=()
+CT_CALLER_BIND_TARGETS=()
+PWD_DIR=$fixture_root
+ct_mount_plan_protect_backing_state apptainer
+[[ " ${MOUNT_ARGS[*]} " == *" --bind $native_state:$native_state:ro "* ]] || {
+  printf '%s\n' 'native implicit HOME alias was not masked read-only' >&2
+  exit 1
+}
+HOME=$saved_home
+CT_MOUNT_PLAN_PATH=$saved_mount_plan_path
+CT_CALLER_BIND_SOURCES=("$CT_MOUNT_PLAN_STATE_ROOT/.work")
+CT_CALLER_BIND_TARGETS=(/private-work)
+if ct_mount_plan_protect_backing_state docker 2>"$work/private-state-source.err"; then
+  printf '%s\n' 'caller bind exposed a mount-plan state descendant' >&2
+  exit 1
+fi
+CT_CALLER_BIND_SOURCES=()
+CT_CALLER_BIND_TARGETS=()
+CT_HOST_PROJECTION_TARGETS=(/)
+CT_HOST_PROJECTION_DESTINATIONS=(/host)
+MOUNT_ARGS=(--mount "type=bind,source=$fixture_root/data,target=/host$CT_MOUNT_PLAN_STATE_ROOT")
+if ct_mount_plan_protect_backing_state docker 2>"$work/protection-conflict.err"; then
+  printf '%s\n' 'mount-plan protection silently duplicated an existing destination' >&2
+  exit 1
+fi
+MOUNT_ARGS=()
+
+# Concurrent publishers serialize per digest and converge on one immutable file.
+mount_plan_worker="$work/mount-plan-worker.sh"
+mount_plan_concurrent_root="$work/mount-plans-concurrent"
+mount_plan_publications="$work/mount-plan-publications"
+cat > "$mount_plan_worker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+. "$1/ct_library.sh"
+CT_MOUNT_PLAN_STATE_ROOT=$2
+CT_HOST_PROJECTION_STRATEGY=none
+CT_HOST_PROJECTION_COMPLETE=complete
+CT_HOST_PROJECTION_GROUP_MODE=primary-only
+CT_MOUNT_PLAN_ROLES=(explicit)
+CT_MOUNT_PLAN_CALLER_PATHS=('/container path')
+CT_MOUNT_PLAN_TARGET_PATHS=('/container path')
+CT_MOUNT_PLAN_ACCESS=(inherit)
+CT_MOUNT_PLAN_RECURSION=(runtime-default)
+ct_mount_plan_publish docker
+printf '%s\n' "$CT_MOUNT_PLAN_DIGEST" >> "$3"
+EOF
+chmod 755 "$mount_plan_worker"
+"$mount_plan_worker" "$root" "$mount_plan_concurrent_root" "$mount_plan_publications" &
+mount_plan_worker_one=$!
+"$mount_plan_worker" "$root" "$mount_plan_concurrent_root" "$mount_plan_publications" &
+mount_plan_worker_two=$!
+wait "$mount_plan_worker_one"
+wait "$mount_plan_worker_two"
+mapfile -t mount_plan_publication_digests < "$mount_plan_publications"
+mount_plan_files=("$mount_plan_concurrent_root"/[0-9a-f]*.manifest)
+[[ ${#mount_plan_publication_digests[@]} == 2 \
+  && ${mount_plan_publication_digests[0]} == "${mount_plan_publication_digests[1]}" \
+  && ${#mount_plan_files[@]} == 1 ]] || {
+  printf '%s\n' 'concurrent mount-plan publication did not converge on one immutable record' >&2
+  exit 1
+}
+
+# The stable in-container selector is not caller-replaceable, even for a dry
+# run where no backend or mount-plan state may be created.
+reserved_manifest_source="$fixture_root/data"
+for reserved_backend in docker podman apptainer; do
+  reserved_manifest_root="$work/reserved-manifest-$reserved_backend"
+  set +e
+  env HOME="$work/home" CT_MOUNT_CFG="$work/missing-mount-config" \
+    CT_DRY_RUN=1 CT_MOUNT_PLAN_STATE_ROOT="$reserved_manifest_root" \
+    "$root/ct_exec.sh" "--$reserved_backend" \
+    --ct-bind "$reserved_manifest_source:/.container-tools-mount-plan" image:local command \
+    >"$work/reserved-manifest-$reserved_backend.out" 2>"$work/reserved-manifest-$reserved_backend.err"
+  reserved_manifest_status=$?
+  set -e
+  [[ $reserved_manifest_status -eq 1 && ! -e $reserved_manifest_root \
+    && $(<"$work/reserved-manifest-$reserved_backend.err") == *'destination is reserved for mount plans'* ]] || {
+    printf 'reserved mount-plan destination reached launch setup for %s\n' "$reserved_backend" >&2
+    exit 1
+  }
+done
+for reserved_alias in '/.container-tools-mount-plan/' '//.container-tools-mount-plan' \
+  '/tmp/../.container-tools-mount-plan' '/./.container-tools-mount-plan' \
+  '/.container-tools-mount-plan/child'; do
+  set +e
+  env HOME="$work/home" CT_MOUNT_CFG="$work/missing-mount-config" CT_DRY_RUN=1 \
+    CT_MOUNT_PLAN_STATE_ROOT="$work/reserved-alias-mount-plans" \
+    "$root/ct_exec.sh" --docker --ct-bind "$reserved_manifest_source:$reserved_alias" image:local command \
+    >"$work/reserved-alias.out" 2>"$work/reserved-alias.err"
+  reserved_alias_status=$?
+  set -e
+  [[ $reserved_alias_status -eq 1 && ! -e $work/reserved-alias-mount-plans \
+    && $(<"$work/reserved-alias.err") == *'destination is reserved for mount plans'* ]] || {
+    printf 'reserved mount-plan alias reached launch setup: %s\n' "$reserved_alias" >&2
+    exit 1
+  }
+done
+for delimiter_alias in '/.container-tools-mount-plan:rw' \
+  '/safe,src=/untrusted,dst=/.container-tools-mount-plan'; do
+  set +e
+  env HOME="$work/home" CT_MOUNT_CFG="$work/missing-mount-config" CT_DRY_RUN=1 \
+    "$root/ct_exec.sh" --apptainer --ct-bind "$reserved_manifest_source:$delimiter_alias" image:local command \
+    >"$work/reserved-delimiter.out" 2>"$work/reserved-delimiter.err"
+  reserved_delimiter_status=$?
+  set -e
+  [[ $reserved_delimiter_status -eq 1 \
+    && $(<"$work/reserved-delimiter.err") == *"paths cannot contain"* ]] || {
+    printf 'reserved mount-plan delimiter alias reached launch setup: %s\n' "$delimiter_alias" >&2
+    exit 1
+  }
+done
 
 # Corrupt, future, and oversized records are cache misses. Cache file mode is
 # deliberately not a validity input.
@@ -712,6 +1139,13 @@ esac
 EOF
 chmod 755 "$launcher_fake/docker"
 ln -s docker "$launcher_fake/podman"
+launcher_mountinfo="$work/launcher-mountinfo"
+cat > "$launcher_mountinfo" <<'EOF'
+24 1 8:1 / / rw,relatime - ext4 /dev/root rw
+25 24 0:1 / /proc rw,relatime - proc proc rw
+26 24 0:2 / /sys rw,relatime - sysfs sysfs rw
+27 24 0:3 / /dev rw,relatime - devtmpfs devtmpfs rw
+EOF
 
 # The effective endpoint selector is key material and explicit remote selectors
 # are rejected before either a warm probe or payload invocation.
@@ -731,12 +1165,97 @@ DOCKER_CONTEXT=default ct_host_projection_selection_key docker image:local optio
 }
 unset DOCKER_HOST DOCKER_CONTEXT
 CT_HOST_PROJECTION_ENDPOINT=local
+export CT_HOST_PROJECTION_MOUNTINFO="$launcher_mountinfo"
+ct_host_projection_source_eligible /host ext4 && {
+  printf '%s\n' 'reserved host mirror remained eligible as projection source data' >&2
+  exit 1
+}
+mkdir -p "$fixture_root/host/private"
+ln -s host/private "$fixture_root/host-mirror-alias"
+ct_host_projection_target_eligible "$(realpath "$fixture_root/host-mirror-alias")" && {
+  printf '%s\n' 'resolved alias of the reserved host mirror remained eligible' >&2
+  exit 1
+}
 env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
   CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
-  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker \
+  --ct-bind "$fixture_root/run/service-file:/container-data" image:local command
 mapfile -t launch_argv < "$launcher_log"
 [[ ${launch_argv[0]} == run && ${launch_argv[1]} == --rm ]] || {
   printf '%s\n' 'foreground Docker payload was not normalized to run --rm' >&2
+  exit 1
+}
+[[ " ${launch_argv[*]} " == *'target=/.container-tools-mount-plan,readonly'* ]] || {
+  printf '%s\n' 'foreground launch omitted the stable mount-plan bind' >&2
+  exit 1
+}
+launch_manifest=
+for launch_argument in "${launch_argv[@]}"; do
+  case "$launch_argument" in
+    type=bind,source=*,target=/.container-tools-mount-plan,readonly)
+      launch_manifest=${launch_argument#type=bind,source=}
+      launch_manifest=${launch_manifest%,target=/.container-tools-mount-plan,readonly}
+      ;;
+  esac
+done
+[[ -n $launch_manifest ]] || { printf '%s\n' 'foreground launch omitted its mount-plan source' >&2; exit 1; }
+mapfile -d '' -t launch_manifest_fields < "$launch_manifest"
+launch_manifest_has_root=0
+launch_manifest_has_explicit=0
+launch_manifest_entries_valid=1
+[[ ${launch_manifest_fields[0]} == ct-mount-plan-v1 \
+  && ${launch_manifest_fields[1]} =~ ^[0-9a-f]{64}$ \
+  && ${launch_manifest_fields[2]} == docker \
+  && ${launch_manifest_fields[3]} == direct \
+  && ${launch_manifest_fields[4]} == complete \
+  && ${launch_manifest_fields[5]} == numeric-supplementary \
+  && ${launch_manifest_fields[6]} =~ ^[0-9]+$ ]] || {
+  printf '%s\n' 'foreground manifest header did not describe its complete record' >&2
+  exit 1
+}
+(( ${#launch_manifest_fields[@]} == 7 + 10#${launch_manifest_fields[6]} * 5 )) || {
+  printf '%s\n' 'foreground manifest count did not match its semantic entries' >&2
+  exit 1
+}
+launch_manifest_hash_fields=("${launch_manifest_fields[0]}" "${launch_manifest_fields[@]:2}")
+[[ $(ct_mount_plan_hash_fields "${launch_manifest_hash_fields[@]}") == "${launch_manifest_fields[1]}" ]] || {
+  printf '%s\n' 'foreground manifest digest did not match its semantic record' >&2
+  exit 1
+}
+for ((field_index = 7; field_index < ${#launch_manifest_fields[@]}; field_index += 5)); do
+  case ${launch_manifest_fields[field_index]} in
+    generated-host-root)
+      if [[ ${launch_manifest_fields[field_index + 1]} == /host \
+        && ${launch_manifest_fields[field_index + 2]} == / \
+        && ${launch_manifest_fields[field_index + 3]} == inherit \
+        && ${launch_manifest_fields[field_index + 4]} == non-recursive ]]; then
+        launch_manifest_has_root=1
+      else
+        launch_manifest_entries_valid=0
+      fi
+      ;;
+    detected-automatic)
+      [[ ${launch_manifest_fields[field_index + 1]} == "${launch_manifest_fields[field_index + 2]}" \
+        && ${launch_manifest_fields[field_index + 3]} == inherit \
+        && ${launch_manifest_fields[field_index + 4]} == runtime-default ]] \
+        || launch_manifest_entries_valid=0
+      ;;
+    explicit)
+      if [[ ${launch_manifest_fields[field_index + 1]} == /container-data \
+        && ${launch_manifest_fields[field_index + 2]} == /container-data \
+        && ${launch_manifest_fields[field_index + 3]} == inherit \
+        && ${launch_manifest_fields[field_index + 4]} == runtime-default ]]; then
+        launch_manifest_has_explicit=1
+      else
+        launch_manifest_entries_valid=0
+      fi
+      ;;
+    *) launch_manifest_entries_valid=0 ;;
+  esac
+done
+[[ $launch_manifest_has_root == 1 && $launch_manifest_has_explicit == 1 && $launch_manifest_entries_valid == 1 \
+  && " ${launch_manifest_fields[*]} " != *" $fixture_root/run/service-file "* ]] || {
+  printf '%s\n' 'foreground manifest did not separate lexical root targets from outer bind sources' >&2
   exit 1
 }
 [[ " ${launch_argv[*]} " == *' target=/host,'* || " ${launch_argv[*]} " == *'target=/host,'* ]] || {
@@ -794,6 +1313,7 @@ for dry_launcher in exec shell; do
   for dry_cache_state in cold existing; do
     dry_cache="$work/dry-$dry_launcher-$dry_cache_state-cache"
     dry_cache_snapshot="$work/dry-$dry_launcher-$dry_cache_state-cache-before"
+    dry_manifest_root="$work/dry-mount-plans-$dry_launcher-$dry_cache_state"
     if [[ $dry_cache_state == existing ]]; then
       cp -a "$work/launcher-cache" "$dry_cache"
       cp -a "$dry_cache" "$dry_cache_snapshot"
@@ -801,7 +1321,7 @@ for dry_launcher in exec shell; do
     : > "$launcher_fake/calls"
     if [[ $dry_launcher == exec ]]; then
       dry_output=$(env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
-        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" \
+        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT="$dry_manifest_root" \
         "$root/ct_exec.sh" --docker --ct-env DRY_TEST=value --ct-bootstrap "$dry_bootstrap" -- \
         image:local dry-command 'dry argument')
       [[ $dry_output == *"$dry_bootstrap"*'target=/.container-tools-bootstrap'* \
@@ -812,7 +1332,7 @@ for dry_launcher in exec shell; do
       }
     else
       dry_output=$(env HOME="$work/home" PATH="$launcher_fake:$PATH" CT_MOUNT_CFG="$work/missing-mount-config" \
-        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" \
+        CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT="$dry_manifest_root" \
         "$root/ct_shell.sh" --docker --ct-env DRY_TEST=value --ct-bootstrap "$dry_bootstrap" \
         --ct-container-shell /bin/bash -- image:local)
       [[ $dry_output == *"$dry_bootstrap"*'target=/.container-tools-bootstrap'* \
@@ -823,7 +1343,7 @@ for dry_launcher in exec shell; do
       }
     fi
     [[ ! -s $launcher_fake/calls && $dry_output != *"$generated_host_mount"* \
-      && $dry_output != *'target=/host/'* ]] || {
+      && $dry_output != *'target=/host/'* && $dry_output != *'.container-tools-mount-plan'* ]] || {
       printf '%s dry run invoked a backend or rendered a generated host projection: %s\n' \
         "$dry_launcher/$dry_cache_state" "$dry_output" >&2
       exit 1
@@ -839,6 +1359,10 @@ for dry_launcher in exec shell; do
         exit 1
       }
     fi
+    [[ ! -e $dry_manifest_root ]] || {
+      printf '%s\n' 'foreground dry run created mount-plan state' >&2
+      exit 1
+    }
   done
 done
 
@@ -994,6 +1518,18 @@ mapfile -t launch_calls < "$launcher_fake/calls"
   exit 1
 }
 rm -f -- "$launcher_log"
+remote_auto_state="$work/remote-auto-mount-plans"
+env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_HOST=tcp://remote.invalid \
+  CT_MOUNT_CFG="$work/missing-mount-config" CT_MOUNT_PLAN_STATE_ROOT="$remote_auto_state" \
+  CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
+  CT_HOST_PROJECTION_LAUNCH_LOG="$launcher_log" "$root/ct_exec.sh" --docker image:local command \
+  >/dev/null 2>&1
+mapfile -t remote_auto_argv < "$launcher_log"
+[[ ! -e $remote_auto_state && " ${remote_auto_argv[*]} " != *'.container-tools-mount-plan'* ]] || {
+  printf '%s\n' 'automatic remote launch received a local-only mount-plan bind' >&2
+  exit 1
+}
+rm -f -- "$launcher_log"
 set +e
 env HOME="$work/home" PATH="$launcher_fake:$PATH" DOCKER_HOST=tcp://remote.invalid \
   CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/launcher-cache" \
@@ -1055,6 +1591,7 @@ rm -f -- "$work/home/.docker/config.json" "$work/home/.config/containers/podman-
 # The host evidence runner is safe to invoke by default: help and invalid CLI
 # produce no report, while a valid disabled invocation emits the closed schema
 # and records no runtime claim.
+unset CT_HOST_PROJECTION_MOUNTINFO
 runner="$root/tests/host_projection_runtime_test.sh"
 bash "$runner" --help >/dev/null
 if bash "$runner" --backend docker --image image:local --work "$work/not-an-approved-runtime-work" >/dev/null 2>&1; then

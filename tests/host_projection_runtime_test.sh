@@ -702,7 +702,8 @@ run_foreground() {
     exec {identity_capture_read}>&-
     exec {identity_capture_write}>&-
     PATH="$PATH" HOME="$work/home" CT_MOUNT_CFG="$work/missing-mount-config" \
-      CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" CT_HOST_PROJECTION_RUNTIME_LABEL="${work##*/}" \
+      CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans" \
+      CT_HOST_PROJECTION_RUNTIME_LABEL="${work##*/}" \
       CT_HOST_PROJECTION_RUNTIME_EXECUTABLE_FD="$runtime_executable_fd" \
       timeout --foreground --kill-after=2s 15s "$tool_root/ct_exec.sh" "--$backend" --ct-host-root "$mode" "${refresh_args[@]}" \
       "$immutable_image" /bin/sh -ec "$payload_script"
@@ -877,7 +878,7 @@ case "$backend" in
           exec {identity_capture_read}>&-
           exec {identity_capture_write}>&-
           PATH="$PATH" HOME="$work/home" CT_MOUNT_CFG="$work/missing-mount-config" \
-            CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" \
+            CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans" \
             CT_HOST_PROJECTION_RUNTIME_EXECUTABLE_FD="$runtime_executable_fd" \
             MKCHAD_TEST_RUNTIME_INSTANCES="$work/native-instances" \
             timeout --foreground --kill-after=2s 15s "$tool_root/ct_instance_exec.sh" "--$backend" --ct-instance-root "$work/persistent-instances" \

@@ -11,6 +11,7 @@ script_dir=$(dirname "$(realpath "$0")")
 launcher_preamble "$@"
 build_payload_args shell
 ct_host_projection_prepare_foreground
+ct_mount_plan_publish_and_bind
 
 # Launch container with proper arguments.
 case "${TOOL[0]}" in

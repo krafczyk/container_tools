@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export LC_ALL=C
 
 work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/host-root-projection}
 helper=${2:?pass the ct_instance_exec.sh path}
@@ -53,15 +54,34 @@ if [[ ${1:-} == instance && ${2:-} == start ]]; then
   done
   name=${!#}
   identity_source=
+  mount_plan_source=
   for ((index = 0; index < ${#args[@]} - 1; index++)); do
     if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-identity:ro ]]; then
       identity_source=${args[index + 1]%:/.container-tools-instance-identity:ro}
-      break
+    fi
+    if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-mount-plan:ro ]]; then
+      mount_plan_source=${args[index + 1]%:/.container-tools-mount-plan:ro}
     fi
   done
   mapfile -t identity_fields 2>/dev/null < "$identity_source" || exit 68
   [[ ${#identity_fields[@]} == 3 && ${identity_fields[0]} == "$name" \
     && ${identity_fields[1]} =~ ^[0-9a-f]{64}$ && ${identity_fields[2]} =~ ^[0-9a-f]{32}$ ]] || exit 68
+  [[ -n $mount_plan_source && -f $mount_plan_source && ! -L $mount_plan_source \
+    && $(stat -c '%a' -- "$mount_plan_source") == 600 ]] || exit 68
+  mapfile -d '' -t mount_plan_fields < "$mount_plan_source" || exit 68
+  [[ ${mount_plan_fields[0]} == ct-mount-plan-v1 && ${mount_plan_fields[1]} =~ ^[0-9a-f]{64}$ \
+    && ( ${mount_plan_fields[2]} == apptainer || ${mount_plan_fields[2]} == singularity ) \
+    && ${mount_plan_fields[6]} =~ ^[0-9]+$ ]] || exit 68
+  (( ${#mount_plan_fields[@]} == 7 + 5 * 10#${mount_plan_fields[6]} )) || exit 68
+  mount_plan_digest=$({ printf '%s\0' "${mount_plan_fields[0]}"; printf '%s\0' "${mount_plan_fields[@]:2}"; } | sha256sum)
+  mount_plan_digest=${mount_plan_digest%% *}
+  [[ $mount_plan_digest == "${mount_plan_fields[1]}" \
+    && ${mount_plan_source##*/} == "$mount_plan_digest.manifest" ]] || exit 68
+  mount_plan_bytes=0
+  for mount_plan_field in "${mount_plan_fields[@]}"; do
+    mount_plan_bytes=$((mount_plan_bytes + ${#mount_plan_field} + 1))
+  done
+  (( mount_plan_bytes == $(stat -c '%s' -- "$mount_plan_source") )) || exit 68
   [[ ${MKCHAD_TEST_HANG_START:-} != 1 ]] || sleep 10
   sleep "${MKCHAD_TEST_START_DELAY:-0}"
   [[ ! -e $MKCHAD_TEST_INSTANCES/$name ]] || exit 42
@@ -144,7 +164,9 @@ chmod 755 "$fake/id"
 
 export HOME="$home"
 export PATH="$fake:$PATH"
-export CT_MOUNT_CFG="$work/missing-mount-config"
+printf '%s\n' '--exclude-path /.container-tools-instance-identity' > "$work/mount-config"
+export CT_MOUNT_CFG="$work/mount-config"
+# Avoid inheriting the enclosing container's identity mount in this fake test.
 export MKCHAD_TEST_CALLS="$calls"
 export MKCHAD_TEST_CALL_COUNT="$work/call-count"
 export MKCHAD_TEST_CALL_LOCK="$work/call.lock"
@@ -159,6 +181,7 @@ export MKCHAD_TEST_GROUPS
 mountinfo="$work/mountinfo"
 printf '24 1 8:1 / / rw,relatime - ext4 /dev/root rw\n25 24 8:2 / %s rw,relatime - ext4 /dev/test rw\n' "$bind_source" > "$mountinfo"
 export CT_HOST_PROJECTION_CACHE_ROOT="$work/projection-cache"
+export CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans"
 export CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
 export CT_HOST_PROJECTION_SOURCE_ROOT="$projection_root"
 export CT_HOST_PROJECTION_HOSTNAME=instance-test-host
@@ -231,6 +254,14 @@ if [[ $start_has_identity -ne 1 ]]; then
   printf '%s\n' 'instance start omitted the pinned persistent identity record' >&2
   exit 1
 fi
+start_has_mount_plan=0
+while IFS= read -r start_argument; do
+  [[ $start_argument != *':/.container-tools-mount-plan:ro' ]] || start_has_mount_plan=1
+done < "$calls/2"
+if [[ $start_has_mount_plan -ne 1 ]]; then
+  printf '%s\n' 'instance start omitted the stable mount-plan bind' >&2
+  exit 1
+fi
 contains_line "$calls/4" "instance://$name" || { printf '%s\n' 'payload did not enter the created instance' >&2; exit 1; }
 contains_line "$calls/4" '/.container-tools-bootstrap' || { printf '%s\n' 'payload omitted the bootstrap' >&2; exit 1; }
 mapfile -t payload < "$calls/4"
@@ -271,6 +302,20 @@ set -e
 [[ $reserved_identity_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
   && $(<"$work/reserved-identity.err") == *'destination is reserved for persistent instance identity'* ]] || {
   printf '%s\n' 'caller bind reached or replaced the reserved instance identity path' >&2
+  exit 1
+}
+
+calls_before=$(<"$work/call-count")
+set +e
+"$helper" --apptainer --ct-instance-root "$instance_root" \
+  --ct-bind "$reserved_source:/.container-tools-mount-plan" \
+  -- "$image_path" /bin/fake-command reserved-mount-plan \
+  >"$work/reserved-mount-plan.out" 2>"$work/reserved-mount-plan.err"
+reserved_mount_plan_status=$?
+set -e
+[[ $reserved_mount_plan_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
+  && $(<"$work/reserved-mount-plan.err") == *'destination is reserved for mount plans'* ]] || {
+  printf '%s\n' 'persistent caller bind reached the reserved mount-plan path' >&2
   exit 1
 }
 
@@ -431,6 +476,27 @@ latest_call=$(<"$work/call-count")
 contains_line "$calls/$((latest_call - 2))" "$uncovered_cwd:$uncovered_cwd" || {
   printf '%s\n' 'instance start omitted the uncovered working-directory bind' >&2; exit 1;
 }
+cwd_plan=
+while IFS= read -r start_argument; do
+  [[ $start_argument != *':/.container-tools-mount-plan:ro' ]] || {
+    cwd_plan=${start_argument%:/.container-tools-mount-plan:ro}
+    break
+  }
+done < "$calls/$((latest_call - 2))"
+[[ -n $cwd_plan ]] || { printf '%s\n' 'persistent start omitted its cwd mount-plan source' >&2; exit 1; }
+mapfile -d '' -t cwd_plan_fields < "$cwd_plan"
+cwd_plan_has_entry=0
+for ((field_index = 7; field_index < ${#cwd_plan_fields[@]}; field_index += 5)); do
+  [[ ${cwd_plan_fields[field_index]} == persistent-automatic-cwd \
+    && ${cwd_plan_fields[field_index + 1]} == "$uncovered_cwd" \
+    && ${cwd_plan_fields[field_index + 2]} == "$uncovered_cwd" \
+    && ${cwd_plan_fields[field_index + 3]} == inherit \
+    && ${cwd_plan_fields[field_index + 4]} == runtime-default ]] && cwd_plan_has_entry=1
+done
+(( cwd_plan_has_entry )) || {
+  printf '%s\n' 'persistent working-directory bind was absent from the semantic mount plan' >&2
+  exit 1
+}
 
 starts=0
 for call in "$calls"/*; do
@@ -574,9 +640,11 @@ set -e
 # instance state or a projection cache/pending record.
 dry_root="$work/dry instance root"
 dry_cache="$work/dry projection cache"
-CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" "$helper" --apptainer \
+dry_mount_plans="$work/dry mount plans"
+CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT="$dry_mount_plans" "$helper" --apptainer \
   --ct-instance-root "$dry_root" -- "$image_path" /bin/fake-command dry >"$work/dry.out"
-[[ ! -e $dry_root && ! -e $dry_cache && $(<"$work/dry.out") == *'instance://dry-run'* ]] || {
+[[ ! -e $dry_root && ! -e $dry_cache && ! -e $dry_mount_plans \
+  && $(<"$work/dry.out") == *'instance://dry-run'* ]] || {
   printf '%s\n' 'persistent dry run mutated runtime state' >&2; exit 1;
 }
 

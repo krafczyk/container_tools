@@ -3,6 +3,73 @@
 `ct_exec.sh` and `ct_shell.sh` normalize foreground mounts and launch behavior
 across Docker, Podman, SingularityCE, and Apptainer.
 
+## Semantic Mount Plans
+
+Every non-dry-run foreground launch on a local runtime endpoint and every
+persistent instance start mounts one read-only, versioned semantic mount-plan
+manifest at the stable in-container selector `/.container-tools-mount-plan`. A
+future host bridge reads that bound file directly; it must not scan host state
+and infer a plan hash. Automatic launches through an explicit remote
+Docker/Podman endpoint retain the existing remote launch without a local-only
+manifest bind; required host projection already rejects those endpoints.
+
+The default host record path is
+`${XDG_STATE_HOME:-$HOME/.local/state}/container-tools/mount-plans/v1/<64-hex-mount-plan-digest>.manifest`.
+`CT_MOUNT_PLAN_STATE_ROOT` is a narrow test-state override. The state directory
+must be absolute and cannot contain a colon, comma, or newline because every
+supported backend must represent the resulting bind path without ambiguity.
+The directory and every record are current-user-owned and private; records are
+mode `0600` and published with a temporary file plus atomic rename. A matching
+validated content-addressed record is reused. Malformed, mismatched, symlinked,
+wrong-owner, or insecure records fail the launch rather than being replaced.
+State creation, stale-temporary cleanup, locking, publication, and final
+validation share one bounded process-group operation. Stale content-addressed
+records may remain after an instance exits. A timed-out operation receives one
+separate one-second bounded recovery attempt after its process group is dead;
+later publishers also recover any private temporary that remains.
+
+The closed NUL-delimited `ct-mount-plan-v1` grammar is:
+
+```text
+version, digest, backend, strategy, completeness, group_mode, entry_count,
+entry_count * (role, caller_path, target_path, access, recursion)
+```
+
+Every scalar, including the final recursion field, is followed by NUL. The
+digest is lowercase SHA-256 over the same sequence with the digest field
+omitted: `version`, then `backend` through the final entry field. `entry_count`
+is canonical decimal and is limited to 4096; the complete record is limited to
+1 MiB. Backends are `docker`, `podman`, `singularity`, and `apptainer`.
+Strategies are `direct`, `fallback`, and `none`; completeness is `complete` or
+`partial`. Group modes are `numeric-supplementary`, `keep-groups`,
+`primary-only`, `native-inherited`, and `none`.
+
+Each ordered entry records a role, caller-visible canonical container path,
+resolved selected-root target path, access (`inherit` or `read-only`), and
+recursion (`non-recursive` or `runtime-default`). Roles are
+`generated-host-root`, `detected-automatic`, `explicit`,
+`bootstrap-internal`, and `persistent-automatic-cwd`. Generated entries use the
+surviving post-conflict projection plan, `inherit`, and backend-specific
+recursion. Detected, explicit, and persistent-CWD entries use the same canonical
+caller and target path with `inherit` and `runtime-default`. The bootstrap entry
+uses `/.container-tools-bootstrap` for both paths, `read-only`, and
+`runtime-default`. Entries retain launcher assembly order.
+
+The manifest excludes rendered argv, raw mountinfo, credentials, stat
+identities, unrelated host-source presentation, its own stable bind, and the
+read-only masks that prevent writable mount aliases from reaching its backing
+directory. Those masks cover generated, detected, explicit, persistent-CWD, and
+native runtime implicit HOME/CWD aliases. A conflicting destination or a caller
+source inside private manifest state fails before backend dispatch.
+
+The manifest bind is added only after the complete semantic plan is hashed and
+published. Dry runs create no mount-plan state and add no manifest bind.
+`/.container-tools-mount-plan` is reserved and cannot be a caller bind target,
+including a lexical alias containing repeated separators, `.` or `..`.
+Cross-backend caller bind paths cannot contain a colon, comma, or newline.
+Persistent instance profiles include the resulting manifest path and bind, so a
+plan or protocol change selects a new instance without circular hashing.
+
 ## Host-root projection
 
 Foreground launchers default to `--ct-host-root auto`. They make a bounded cold
@@ -25,8 +92,11 @@ ancestors and retains their safe file, socket, symlink, and directory siblings.
 Branches the caller cannot list or traverse are omitted without warning because
 they are already unavailable under caller authority. Cold entries that cannot
 be resolved are treated the same way; losing a previously proven warm entry
-still reports partial. Policy v5 invalidates older cached selections that
-dropped these ordinary or caller-unavailable trees.
+still reports partial. Policy v6 invalidates older cached selections that
+dropped these ordinary or caller-unavailable trees or reprojected a reserved
+host mirror.
+The reserved `/host` destination is never projected again as source data, so a
+nested launcher does not create a recursive `/host/host` mirror.
 Only Docker's explicit `default` context and local Unix `DOCKER_HOST` or
 `CONTAINER_HOST` selectors are eligible; named Docker contexts, Podman
 connections, machine selectors, SSH, and TCP endpoints are unavailable.
@@ -125,9 +195,10 @@ accounting for every process and caller that uses it.
 
 Persistent profiles are finalized only after automatic host-projection selection
 and every generated, detected, explicit, bootstrap, and working-directory bind
-has been assembled. They include the semantic generated-bind tuple (not mount
+has been assembled and the semantic mount-plan manifest has been published.
+They include the semantic generated-bind tuple (not mount
 or inode presentation), effective UID, primary GID, sorted supplementary GIDs,
-and the selected group mode. A warm matching call performs one profile-aware
+the selected group mode, and the stable manifest bind. A warm matching call performs one profile-aware
 liveness exec followed by its payload; it never reruns a capability probe or
 adds a bind to an already-running instance. Profile mismatch refuses before the
 payload and never stops an existing instance.

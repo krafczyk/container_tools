@@ -20,7 +20,16 @@
 exclude_fs="proc sysfs tmpfs devtmpfs devpts securityfs cgroup pstore efivarfs debugfs tracefs configfs fusectl cgroup2 mqueue hugetlbfs"
 
 # Define an array of directory paths to exclude (besides "/").
-exclude_paths=("/run" "/var" "/sys" "/proc")
+exclude_paths=(
+  "/run"
+  "/var"
+  "/sys"
+  "/proc"
+  "/host"
+  "/.container-tools-bootstrap"
+  "/.container-tools-instance-identity"
+  "/.container-tools-mount-plan"
+)
 
 # Arrays to hold user-specified additional filters.
 extra_exclude_fs=()
@@ -156,9 +165,9 @@ for mp in "${mount_points[@]}"; do
 done
 
 # Sort the mounts by the length of their path (shortest first).
-sorted_mounts=( $(for mp in "${unique_mounts[@]}"; do
+mapfile -t sorted_mounts < <(for mp in "${unique_mounts[@]}"; do
     printf "%s\t%s\n" "${#mp}" "$mp"
-  done | sort -n | cut -f2) )
+  done | sort -n | cut -f2-)
 
 # Remove nested mount points (keeping only the top-level ones).
 final_mounts=()

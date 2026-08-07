@@ -57,10 +57,61 @@ chmod 755 "$bootstrap" "$fake/apptainer" "$fake/singularity" "$fake/docker" "$fa
 
 common_env=(HOME="$home" PATH="$fake:$PATH" CT_TEST_LOG="$log" CT_MOUNT_CFG="$work/missing-mount-config" CT_HOST_PROJECTION_CACHE_ROOT="$work/cache")
 
+assert_manifest_bind() {
+  local backend=$1 require_bootstrap=${2:-0} index source='' digest field bytes=0 LC_ALL=C
+  local -a fields=()
+  for ((index = 0; index < ${#argv[@]}; index++)); do
+    if [[ ${argv[index]} == --bind && $((index + 1)) -lt ${#argv[@]} \
+      && ${argv[index + 1]} == *:/.container-tools-mount-plan:ro ]]; then
+      source=${argv[index + 1]%:/.container-tools-mount-plan:ro}
+    elif [[ ${argv[index]} == --mount && $((index + 1)) -lt ${#argv[@]} \
+      && ${argv[index + 1]} == type=bind,source=*,target=/.container-tools-mount-plan,readonly ]]; then
+      source=${argv[index + 1]#type=bind,source=}
+      source=${source%,target=/.container-tools-mount-plan,readonly}
+    fi
+  done
+  [[ -n $source && -f $source ]] || { printf 'missing %s mount-plan bind\n' "$backend" >&2; exit 1; }
+  mapfile -d '' -t fields < "$source"
+  [[ ${fields[0]} == ct-mount-plan-v1 && ${fields[1]} =~ ^[0-9a-f]{64}$ \
+    && ${fields[2]} == "$backend" && ${fields[6]} =~ ^[0-9]+$ ]] || {
+    printf 'invalid %s mount-plan record\n' "$backend" >&2
+    exit 1
+  }
+  (( ${#fields[@]} == 7 + 5 * 10#${fields[6]} )) || {
+    printf 'invalid %s mount-plan record count\n' "$backend" >&2
+    exit 1
+  }
+  digest=$({ printf '%s\0' "${fields[0]}"; printf '%s\0' "${fields[@]:2}"; } | sha256sum)
+  digest=${digest%% *}
+  [[ $digest == "${fields[1]}" && ${source##*/} == "$digest.manifest" ]] || {
+    printf 'invalid %s content-addressed mount-plan source\n' "$backend" >&2
+    exit 1
+  }
+  for field in "${fields[@]}"; do
+    bytes=$((bytes + ${#field} + 1))
+  done
+  (( bytes == $(stat -c '%s' -- "$source") )) || {
+    printf 'invalid %s mount-plan framing\n' "$backend" >&2
+    exit 1
+  }
+  if (( require_bootstrap )); then
+    local found=0
+    for ((index = 7; index < ${#fields[@]}; index += 5)); do
+      [[ ${fields[index]} == bootstrap-internal \
+        && ${fields[index + 1]} == /.container-tools-bootstrap \
+        && ${fields[index + 2]} == /.container-tools-bootstrap \
+        && ${fields[index + 3]} == read-only \
+        && ${fields[index + 4]} == runtime-default ]] && found=1
+    done
+    (( found )) || { printf 'missing %s bootstrap manifest tuple\n' "$backend" >&2; exit 1; }
+  fi
+}
+
 env "${common_env[@]}" "$root/ct_exec.sh" --apptainer \
   --ct-env 'FEATURE=value with spaces' --ct-bootstrap "$bootstrap" -- \
   "$image" command 'argument with spaces'
 mapfile -t argv < "$log"
+assert_manifest_bind apptainer 1
 [[ ${argv[0]} == exec && ${argv[1]} == --pwd ]] || { printf '%s\n' 'apptainer exec prefix changed' >&2; exit 1; }
 [[ " ${argv[*]} " == *" --bind $bootstrap:/.container-tools-bootstrap:ro "* ]] || { printf '%s\n' 'bootstrap was not mounted read-only' >&2; exit 1; }
 [[ " ${argv[*]} " == *" --env FEATURE=value with spaces "* ]] || { printf '%s\n' 'normalized environment was not forwarded' >&2; exit 1; }
@@ -73,6 +124,7 @@ count=${#argv[@]}
 env "${common_env[@]}" "$root/ct_shell.sh" --apptainer \
   --ct-bootstrap "$bootstrap" --ct-container-shell /bin/bash -- "$image"
 mapfile -t argv < "$log"
+assert_manifest_bind apptainer 1
 count=${#argv[@]}
 [[ ${argv[0]} == exec && ${argv[count-4]} == "$image" \
   && ${argv[count-3]} == /.container-tools-bootstrap \
@@ -83,6 +135,7 @@ count=${#argv[@]}
 env "${common_env[@]}" "$root/ct_exec.sh" --docker \
   --ct-bootstrap "$bootstrap" -- "$image" command
 mapfile -t argv < "$log"
+assert_manifest_bind docker 1
 [[ ${argv[0]} == run && ${argv[1]} == --rm ]] || { printf '%s\n' 'docker bootstrap did not use a normalized run invocation' >&2; exit 1; }
 [[ " ${argv[*]} " == *" type=bind,source=$bootstrap,target=/.container-tools-bootstrap,readonly "* ]] || {
   printf '%s\n' 'docker bootstrap mount changed' >&2; exit 1;
@@ -91,6 +144,7 @@ mapfile -t argv < "$log"
 env "${common_env[@]}" "$root/ct_exec.sh" --apptainer \
   --env LEGACY=value "$image" command
 mapfile -t argv < "$log"
+assert_manifest_bind apptainer
 count=${#argv[@]}
 [[ ${argv[0]} == exec && ${argv[count-4]} == --env \
   && ${argv[count-3]} == LEGACY=value && ${argv[count-2]} == "$image" \
@@ -101,6 +155,7 @@ count=${#argv[@]}
 env "${common_env[@]}" "$root/ct_exec.sh" --apptainer \
   "$image" command -- 'payload option'
 mapfile -t argv < "$log"
+assert_manifest_bind apptainer
 count=${#argv[@]}
 [[ ${argv[count-4]} == "$image" && ${argv[count-3]} == command \
   && ${argv[count-2]} == -- && ${argv[count-1]} == 'payload option' ]] || {
@@ -110,11 +165,13 @@ count=${#argv[@]}
 env "${common_env[@]}" "$root/ct_exec.sh" --singularity \
   --ct-bootstrap "$bootstrap" -- "$image" command
 mapfile -t argv < "$log"
+assert_manifest_bind singularity 1
 [[ ${argv[0]} == exec ]] || { printf '%s\n' 'singularity bootstrap did not use exec' >&2; exit 1; }
 
 env "${common_env[@]}" "$root/ct_shell.sh" --podman \
   --ct-bootstrap "$bootstrap" -- "$image"
 mapfile -t argv < "$log"
+assert_manifest_bind podman 1
 [[ ${argv[0]} == run && ${argv[1]} == --rm && ${argv[2]} == -it ]] || {
   printf '%s\n' 'podman bootstrap shell was not normalized' >&2; exit 1;
 }

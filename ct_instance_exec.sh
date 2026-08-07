@@ -8,7 +8,7 @@ script_dir=$(dirname "$(realpath "$0")")
 lock_timeout=${CT_INSTANCE_LOCK_TIMEOUT:-10}
 probe_timeout=${CT_INSTANCE_PROBE_TIMEOUT:-5}
 start_timeout=${CT_INSTANCE_START_TIMEOUT:-30}
-instance_profile_version=ct-instance-profile-v2
+instance_profile_version=ct-instance-profile-v3
 identity_path=/.container-tools-instance-identity
 
 . "$script_dir/ct_library.sh"
@@ -145,9 +145,13 @@ for ((index = 0; index < ${#MOUNT_ARGS[@]}; index++)); do
   esac
 done
 if [[ $pwd_covered -eq 0 ]]; then
-  append_mount_arg "$pwd_real" "$pwd_real"
+  append_mount_arg "$pwd_real" "$pwd_real" persistent-automatic-cwd
   bind_identities+=("$pwd_real:$pwd_real:$pwd_real:$(stat -Lc '%d:%i:%F' -- "$pwd_real")")
 fi
+
+# The persistent profile includes this stable bind path, but its digest was
+# calculated from the completed semantic plan before the bind was appended.
+ct_mount_plan_publish_and_bind
 
 ct_host_projection_profile_digest "${TOOL[0]}"
 mapfile -t supplementary_groups < <(id -G | tr ' ' '\n' | LC_ALL=C sort -n -u)
