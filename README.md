@@ -18,6 +18,15 @@ launch and performs a new cold proof; a failed refresh does not consume the old
 record. Automatic launches warn and retain the existing launch behavior when a
 projection is unavailable or partial. Explicit remote Docker/Podman endpoint
 selectors are intentionally unavailable because their daemon host is not local.
+Top-level kernel API exclusions are complete by definition and do not produce
+an incomplete-projection warning. When an ordinary tree such as `/run` contains
+a nested kernel mount, fallback planning recursively splits only that mount's
+ancestors and retains their safe file, socket, symlink, and directory siblings.
+Branches the caller cannot list or traverse are omitted without warning because
+they are already unavailable under caller authority. Cold entries that cannot
+be resolved are treated the same way; losing a previously proven warm entry
+still reports partial. Policy v5 invalidates older cached selections that
+dropped these ordinary or caller-unavailable trees.
 Only Docker's explicit `default` context and local Unix `DOCKER_HOST` or
 `CONTAINER_HOST` selectors are eligible; named Docker contexts, Podman
 connections, machine selectors, SSH, and TCP endpoints are unavailable.

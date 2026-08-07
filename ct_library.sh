@@ -357,11 +357,12 @@ discard_docker_build_storage() {
 
 # Host-projection records intentionally contain only selection data. The policy
 # version changes whenever their meaning or their key material changes.
-CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v1'
+CT_HOST_PROJECTION_POLICY_VERSION='host-projection-v5'
 CT_HOST_PROJECTION_PROFILE_VERSION='ct-host-projection-profile-v1'
 CT_HOST_PROJECTION_RECORD_VERSION=ct-host-projection-selection-v1
 CT_HOST_PROJECTION_RECORD_MAX_BYTES=1048576
 CT_HOST_PROJECTION_RECORD_MAX_PAIRS=4096
+CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH=64
 
 # Decode the octal escapes used in /proc/*/mountinfo path fields.
 ct_host_projection_unescape_mountinfo_path() {
@@ -587,53 +588,137 @@ ct_host_projection_has_excluded_descendant() {
   return 1
 }
 
-# List top-level fallback candidates without allowing directory enumeration to
-# outlive the selection's aggregate deadline.
-ct_host_projection_list_top_level() {
-  local root=$1 timeout_seconds=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1} output status
+# List one bounded directory level without allowing enumeration to outlive the
+# selection's aggregate deadline. Callers recurse only toward excluded mounts.
+ct_host_projection_list_children() {
+  local directory=$1 max_entries=$2 timeout_seconds=${CT_HOST_PROJECTION_PLAN_TIMEOUT:-1} output status
+  CT_HOST_PROJECTION_CHILDREN=()
+  CT_HOST_PROJECTION_CHILDREN_COMPLETE=1
+  [[ $max_entries =~ ^[0-9]+$ && $max_entries -gt 0 ]] || return 2
   if [[ -n ${CT_HOST_PROJECTION_COLD_DEADLINE:-} ]]; then
     timeout_seconds=$((CT_HOST_PROJECTION_COLD_DEADLINE - SECONDS))
   fi
   [[ $timeout_seconds =~ ^[0-9]+([.][0-9]+)?$ && ! $timeout_seconds =~ ^0+([.]0+)?$ ]] || return 124
   output=$(mktemp "${TMPDIR:-/tmp}/ct-host-projection-list.XXXXXX") || return 2
-  if timeout --foreground --kill-after=2s "${timeout_seconds}s" \
-    find -H "$root" -mindepth 1 -maxdepth 1 \( -type d -o -type l \) -print0 > "$output"; then
-    mapfile -d '' -t CT_HOST_PROJECTION_TOP_LEVEL < "$output"
+  # Keep discovery, sorting, status collection, and output limiting inside one
+  # deadline. `lastpipe` retains the limiter counters in the child shell.
+  # shellcheck disable=SC2016 # The child must expand its own pipeline state.
+  if timeout --kill-after=2s "${timeout_seconds}s" bash -c '
+    set -o pipefail
+    shopt -s lastpipe
+    export LC_ALL=C
+    directory=$1
+    max_entries=$2
+    max_bytes=$3
+    count=0
+    bytes=0
+    truncated=0
+    find -H "$directory" -mindepth 1 -maxdepth 1 -print0 2>/dev/null \
+      | LC_ALL=C sort -z \
+      | while IFS= read -r -d "" child; do
+          count=$((count + 1))
+          child_bytes=${#child}
+          if (( count <= max_entries && bytes + child_bytes + 1 <= max_bytes )); then
+            printf "%s\0" "$child"
+            bytes=$((bytes + child_bytes + 1))
+          else
+            truncated=1
+          fi
+        done
+    statuses=("${PIPESTATUS[@]}")
+    for pipeline_status in "${statuses[@]}"; do
+      (( pipeline_status == 0 )) || exit 2
+    done
+    (( truncated == 0 )) || exit 3
+  ' bash "$directory" "$max_entries" "$CT_HOST_PROJECTION_RECORD_MAX_BYTES" > "$output"; then
     status=0
   else
     status=$?
+    if (( status == 3 )); then
+      CT_HOST_PROJECTION_CHILDREN_COMPLETE=0
+      status=0
+    fi
+  fi
+  if (( status == 0 )); then
+    mapfile -d '' -t CT_HOST_PROJECTION_CHILDREN < "$output"
   fi
   rm -f -- "$output"
   return "$status"
 }
 
-# Build the recursive fallback strategy from top-level directories/symlinks and
-# separately mounted descendants. This enumeration is cold-path only.
+# Add one fallback leaf, splitting only mountinfo-proven ancestors of excluded
+# mounts so safe siblings remain visible without importing kernel APIs.
+ct_host_projection_add_fallback_candidate() {
+  local source=$1 filesystem=${2:-} depth=${3:-0} target status remaining child child_filesystem
+  ct_host_projection_source_eligible "$source" "$filesystem" || return 0
+  if target=$(ct_host_projection_realpath "$source" 2>/dev/null); then
+    :
+  else
+    status=$?
+    (( status == 124 || status == 137 )) && return "$status"
+    # A cold source the caller cannot resolve has no usable authority to
+    # preserve. Warm validation still reports loss of a previously proven leaf.
+    return 0
+  fi
+  # A lexical alias of a kernel API is excluded by contract, just like the
+  # canonical mountpoint itself.
+  ct_host_projection_target_eligible "$target" || return 0
+  if ct_host_projection_has_excluded_descendant "$target"; then
+    # Omission of a branch the caller cannot list or traverse does not reduce
+    # their effective host view, and binding it recursively would import the
+    # excluded descendant we are splitting around.
+    [[ -r $source && -x $source ]] || return 0
+    if (( depth >= CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH )); then
+      CT_HOST_PROJECTION_COMPLETE=partial
+      return 0
+    fi
+    remaining=$((CT_HOST_PROJECTION_RECORD_MAX_PAIRS - ${#CT_HOST_PROJECTION_CANDIDATES[@]}))
+    if (( remaining <= 0 )); then
+      CT_HOST_PROJECTION_COMPLETE=partial
+      return 0
+    fi
+    ct_host_projection_list_children "$source" "$remaining" || return $?
+    if (( ! CT_HOST_PROJECTION_CHILDREN_COMPLETE )); then
+      CT_HOST_PROJECTION_COMPLETE=partial
+    fi
+    local -a children=("${CT_HOST_PROJECTION_CHILDREN[@]}")
+    for child in "${children[@]}"; do
+      child_filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$child]:-}
+      ct_host_projection_add_fallback_candidate "$child" "$child_filesystem" "$((depth + 1))" || return $?
+    done
+    return 0
+  fi
+  [[ -n ${CT_HOST_PROJECTION_CANDIDATES[$source]+set} ]] && return 0
+  if (( ${#CT_HOST_PROJECTION_CANDIDATES[@]} >= CT_HOST_PROJECTION_RECORD_MAX_PAIRS )); then
+    CT_HOST_PROJECTION_COMPLETE=partial
+    return 0
+  fi
+  CT_HOST_PROJECTION_CANDIDATES["$source"]=$target
+}
+
+# Build the recursive fallback strategy from safe host-root leaves and
+# separately mounted descendants. Decomposition and enumeration are cold only.
 ct_host_projection_build_fallback() {
   local root=${CT_HOST_PROJECTION_SOURCE_ROOT:-/} source filesystem index
   declare -gA CT_HOST_PROJECTION_CANDIDATES=()
   CT_HOST_PROJECTION_COMPLETE=complete
+  [[ $CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH =~ ^[0-9]+$ ]] || return 1
   ct_host_projection_read_mountinfo || return 1
 
-  CT_HOST_PROJECTION_TOP_LEVEL=()
-  ct_host_projection_list_top_level "$root" || return $?
-  for source in "${CT_HOST_PROJECTION_TOP_LEVEL[@]}"; do
+  ct_host_projection_list_children "$root" "$CT_HOST_PROJECTION_RECORD_MAX_PAIRS" || return $?
+  local -a top_level=("${CT_HOST_PROJECTION_CHILDREN[@]}")
+  if (( ! CT_HOST_PROJECTION_CHILDREN_COMPLETE )); then
+    CT_HOST_PROJECTION_COMPLETE=partial
+  fi
+  for source in "${top_level[@]}"; do
     filesystem=${CT_HOST_PROJECTION_MOUNT_TYPES[$source]:-}
-    if ct_host_projection_has_excluded_descendant "$source"; then
-      CT_HOST_PROJECTION_COMPLETE=partial
-      continue
-    fi
-    ct_host_projection_add_candidate "$source" "$filesystem" 1 || return $?
+    ct_host_projection_add_fallback_candidate "$source" "$filesystem" 0 || return $?
   done
   for index in "${!CT_HOST_PROJECTION_MOUNT_PATHS[@]}"; do
     source=${CT_HOST_PROJECTION_MOUNT_PATHS[index]}
     filesystem=${CT_HOST_PROJECTION_MOUNT_FILESYSTEMS[index]}
     [[ $source == "$root" ]] && continue
-    ct_host_projection_has_excluded_descendant "$source" && {
-      CT_HOST_PROJECTION_COMPLETE=partial
-      continue
-    }
-    ct_host_projection_add_candidate "$source" "$filesystem" 1 || return $?
+    ct_host_projection_add_fallback_candidate "$source" "$filesystem" 0 || return $?
   done
   ct_host_projection_finalize_candidates fallback
 }
@@ -915,6 +1000,8 @@ ct_host_projection_validate_fallback() {
       || ct_host_projection_has_excluded_descendant "$source" \
       || ! ct_host_projection_target_eligible "${targets[index]}" \
       || ! ct_host_projection_target_eligible "${CT_HOST_PROJECTION_RESOLVED_NOW[index]}" \
+      || ct_host_projection_has_excluded_descendant "${targets[index]}" \
+      || ct_host_projection_has_excluded_descendant "${CT_HOST_PROJECTION_RESOLVED_NOW[index]}" \
       || [[ ${CT_HOST_PROJECTION_RESOLVED_NOW[index]} != "${targets[index]}" ]]; then
       CT_HOST_PROJECTION_COMPLETE=partial
       continue

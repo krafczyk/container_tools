@@ -22,10 +22,15 @@ mkdir -p "$work/root" "$work/cache"
 fixture_root="$work/root"
 mkdir -p "$fixture_root"
 mkdir -p "$fixture_root/usr" "$fixture_root/var" "$fixture_root/run/netns" "$fixture_root/data"
+mkdir -p "$fixture_root/run/service/nested-api" "$fixture_root/run/service/kept"
+mkdir -p "$fixture_root/run/docker/netns"
+: > "$fixture_root/run/service-file"
+chmod 000 "$fixture_root/run/docker"
 mkdir -p "$fixture_root/space dir" "$fixture_root"/$'tab\tdir' "$fixture_root"/$'slash\\dir'
 mkdir -p "$fixture_root/proc" "$fixture_root/sys" "$fixture_root/dev"
 ln -s usr "$fixture_root/bin"
 ln -s proc "$fixture_root/kernel-link"
+ln -s missing-target "$fixture_root/broken-link"
 
 mountinfo="$work/mountinfo"
 cat > "$mountinfo" <<EOF
@@ -41,6 +46,8 @@ cat > "$mountinfo" <<EOF
 33 24 0:2 / $fixture_root/sys rw,relatime - sysfs sysfs rw
 34 24 0:3 / $fixture_root/dev rw,relatime - devtmpfs devtmpfs rw
 35 27 0:4 / $fixture_root/run/netns rw,relatime - nsfs nsfs rw
+36 27 0:5 / $fixture_root/run/service/nested-api rw,relatime - nsfs nsfs rw
+37 27 0:6 / $fixture_root/run/docker/netns rw,relatime - nsfs nsfs rw
 EOF
 
 CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
@@ -148,12 +155,24 @@ ct_host_projection_render_mounts podman
 
 ct_host_projection_build_fallback
 fallback_count=${#CT_HOST_PROJECTION_SOURCES[@]}
+[[ $CT_HOST_PROJECTION_COMPLETE == complete ]] || {
+  printf '%s\n' 'bounded fallback decomposition did not preserve complete ordinary content' >&2
+  exit 1
+}
 [[ ${CT_HOST_PROJECTION_SOURCES[0]} == "$fixture_root/bin" || ${CT_HOST_PROJECTION_SOURCES[0]} == "$fixture_root/data" ]]
 assert_not_contains "$fixture_root/proc"
 assert_not_contains "$fixture_root/sys"
 assert_not_contains "$fixture_root/dev"
+assert_not_contains "$fixture_root/broken-link"
 assert_not_contains "$fixture_root/kernel-link"
+assert_not_contains "$fixture_root/run"
+assert_not_contains "$fixture_root/run/docker"
+assert_not_contains "$fixture_root/run/docker/netns"
 assert_not_contains "$fixture_root/run/netns"
+assert_not_contains "$fixture_root/run/service"
+assert_not_contains "$fixture_root/run/service/nested-api"
+assert_contains "$fixture_root/run/service/kept"
+assert_contains "$fixture_root/run/service-file"
 previous=
 for source in "${CT_HOST_PROJECTION_SOURCES[@]}"; do
   [[ -z $previous || $previous < $source ]] || {
@@ -163,8 +182,81 @@ for source in "${CT_HOST_PROJECTION_SOURCES[@]}"; do
   previous=$source
 done
 
+default_split_depth=${CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH:-64}
+CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH=1
+ct_host_projection_build_fallback
+[[ $CT_HOST_PROJECTION_COMPLETE == partial ]] || {
+  printf '%s\n' 'fallback split-depth exhaustion did not remain explicitly partial' >&2
+  exit 1
+}
+assert_not_contains "$fixture_root/run"
+assert_not_contains "$fixture_root/run/service"
+CT_HOST_PROJECTION_FALLBACK_MAX_DEPTH=$default_split_depth
+ct_host_projection_build_fallback
+
+# Top-level kernel API trees are outside the projection contract. Omitting only
+# those trees must not make an otherwise complete fallback warn or refuse.
+excluded_root="$work/excluded-only-root"
+mkdir -p "$excluded_root/usr" "$excluded_root/proc" "$excluded_root/sys" "$excluded_root/dev"
+excluded_mountinfo="$work/excluded-only-mountinfo"
+cat > "$excluded_mountinfo" <<EOF
+24 1 8:1 / / rw,relatime - ext4 /dev/root rw
+25 24 8:2 / $excluded_root/usr rw,relatime - ext4 /dev/sda rw
+26 24 0:1 / $excluded_root/proc rw,relatime - proc proc rw
+27 24 0:2 / $excluded_root/sys rw,relatime - sysfs sysfs rw
+28 24 0:3 / $excluded_root/dev rw,relatime - devtmpfs devtmpfs rw
+EOF
+CT_HOST_PROJECTION_SOURCE_ROOT="$excluded_root"
+CT_HOST_PROJECTION_MOUNTINFO="$excluded_mountinfo"
+ct_host_projection_build_fallback
+[[ $CT_HOST_PROJECTION_COMPLETE == complete && ${#CT_HOST_PROJECTION_SOURCES[@]} -eq 1 \
+  && ${CT_HOST_PROJECTION_SOURCES[0]} == "$excluded_root/usr" ]] || {
+  printf '%s\n' 'intentional top-level kernel exclusions made fallback projection incomplete' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_SOURCE_ROOT="$fixture_root"
+CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
+ct_host_projection_build_fallback
+
+# Enumeration returns only a deterministic bounded prefix and marks omitted
+# entries explicitly rather than loading every child into the parent shell.
+bounded_root="$work/bounded-root"
+mkdir -p "$bounded_root/c" "$bounded_root/a" "$bounded_root/b"
+ct_host_projection_list_children "$bounded_root" 2
+[[ $CT_HOST_PROJECTION_CHILDREN_COMPLETE == 0 \
+  && ${#CT_HOST_PROJECTION_CHILDREN[@]} == 2 \
+  && ${CT_HOST_PROJECTION_CHILDREN[0]} == "$bounded_root/a" \
+  && ${CT_HOST_PROJECTION_CHILDREN[1]} == "$bounded_root/b" ]] || {
+  printf '%s\n' 'fallback child enumeration did not return a bounded lexical prefix' >&2
+  exit 1
+}
+default_record_max_bytes=$CT_HOST_PROJECTION_RECORD_MAX_BYTES
+CT_HOST_PROJECTION_RECORD_MAX_BYTES=$((${#bounded_root} + 3))
+ct_host_projection_list_children "$bounded_root" 3
+[[ $CT_HOST_PROJECTION_CHILDREN_COMPLETE == 0 \
+  && ${#CT_HOST_PROJECTION_CHILDREN[@]} == 1 \
+  && ${CT_HOST_PROJECTION_CHILDREN[0]} == "$bounded_root/a" ]] || {
+  printf '%s\n' 'fallback child enumeration exceeded its byte cap' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_RECORD_MAX_BYTES=$default_record_max_bytes
+
+current_policy_version=$CT_HOST_PROJECTION_POLICY_VERSION
+legacy_partial_keys=()
+for legacy_policy_version in host-projection-v1 host-projection-v2 host-projection-v3 host-projection-v4; do
+  CT_HOST_PROJECTION_POLICY_VERSION=$legacy_policy_version
+  ct_host_projection_selection_key docker image:one option-a numeric-supplementary
+  legacy_partial_keys+=("$CT_HOST_PROJECTION_SELECTION_KEY")
+done
+CT_HOST_PROJECTION_POLICY_VERSION=$current_policy_version
 ct_host_projection_selection_key docker image:one option-a numeric-supplementary
 key_a=$CT_HOST_PROJECTION_SELECTION_KEY
+for legacy_partial_key in "${legacy_partial_keys[@]}"; do
+  [[ $legacy_partial_key != "$key_a" ]] || {
+    printf '%s\n' 'decomposed fallback reused a legacy partial selection record' >&2
+    exit 1
+  }
+done
 ct_host_projection_selection_key docker image:one option-a numeric-supplementary
 [[ $key_a == "$CT_HOST_PROJECTION_SELECTION_KEY" ]]
 MOUNT_ARGS=(--bind "$fixture_root/data:/container/extra")
@@ -257,6 +349,57 @@ unset CT_HOST_PROJECTION_COLD_DEADLINE
   printf '%s\n' 'top-level fallback enumeration exceeded its aggregate deadline' >&2
   exit 1
 }
+
+# Sorting and producer status are part of the same bounded enumeration. A hung
+# or failed sorter cannot escape the deadline or publish a false complete plan.
+slow_sort_bin="$work/slow-sort-bin"
+mkdir "$slow_sort_bin"
+cat > "$slow_sort_bin/sort" <<'EOF'
+#!/usr/bin/env bash
+case "$(cat "$(dirname "$0")/mode")" in
+  slow-sort)
+    printf '%s\n' "$$" > "$(dirname "$0")/sort-pid"
+    sleep 5
+    ;;
+  fail-sort) exit 9 ;;
+esac
+exec /usr/bin/sort "$@"
+EOF
+cat > "$slow_sort_bin/find" <<'EOF'
+#!/usr/bin/env bash
+[[ $(cat "$(dirname "$0")/mode") != fail-find ]] || exit 8
+exec /usr/bin/find "$@"
+EOF
+chmod 755 "$slow_sort_bin/sort"
+chmod 755 "$slow_sort_bin/find"
+printf '%s\n' slow-sort > "$slow_sort_bin/mode"
+planning_started=$SECONDS
+CT_HOST_PROJECTION_COLD_DEADLINE=$((SECONDS + 1))
+if PATH="$slow_sort_bin:$PATH" ct_host_projection_build_fallback; then
+  printf '%s\n' 'hung fallback sort succeeded' >&2
+  exit 1
+fi
+unset CT_HOST_PROJECTION_COLD_DEADLINE
+(( SECONDS - planning_started < 4 )) || {
+  printf '%s\n' 'fallback sort exceeded its aggregate deadline' >&2
+  exit 1
+}
+slow_sort_pid=$(<"$slow_sort_bin/sort-pid")
+if kill -0 "$slow_sort_pid" 2>/dev/null; then
+  printf '%s\n' 'timed-out fallback sorter remained alive' >&2
+  exit 1
+fi
+printf '%s\n' fail-sort > "$slow_sort_bin/mode"
+if PATH="$slow_sort_bin:$PATH" ct_host_projection_build_fallback; then
+  printf '%s\n' 'failed fallback sort produced a selection' >&2
+  exit 1
+fi
+printf '%s\n' fail-find > "$slow_sort_bin/mode"
+if PATH="$slow_sort_bin:$PATH" ct_host_projection_build_fallback; then
+  printf '%s\n' 'failed fallback enumeration produced a selection' >&2
+  exit 1
+fi
+
 ct_host_projection_cache_read "$key_a"
 if PATH="$slow_bin:$PATH" CT_HOST_PROJECTION_PLAN_TIMEOUT=0.1 ct_host_projection_validate_fallback auto; then
   printf '%s\n' 'hung aggregate fallback validation succeeded' >&2
@@ -289,6 +432,29 @@ ct_host_projection_validate_fallback auto
 }
 rm -- "$fixture_root/bin"
 ln -s usr "$fixture_root/bin"
+
+# A warm lexical alias can remain unchanged while a new excluded mount appears
+# beneath its canonical target. Validation must omit that alias rather than
+# importing the new kernel-backed subtree through a recursive bind.
+target_descendant_key=9999999999999999999999999999999999999999999999999999999999999999
+target_descendant="$fixture_root/target-descendant"
+target_alias="$fixture_root/target-alias"
+mkdir -p "$target_descendant/ordinary" "$target_descendant/kernel-api"
+ln -s target-descendant "$target_alias"
+CT_HOST_PROJECTION_SOURCES=("$target_alias")
+CT_HOST_PROJECTION_TARGETS=("$(realpath "$target_alias")")
+ct_host_projection_cache_write "$target_descendant_key" fallback complete primary-only target-descendant
+cp "$mountinfo" "$work/mountinfo-target-descendant"
+printf '98 24 0:98 / %s rw,relatime - nsfs nsfs rw\n' \
+  "$target_descendant/kernel-api" >> "$work/mountinfo-target-descendant"
+CT_HOST_PROJECTION_MOUNTINFO="$work/mountinfo-target-descendant"
+ct_host_projection_cache_read "$target_descendant_key"
+ct_host_projection_validate_fallback auto
+[[ ${#CT_HOST_PROJECTION_SOURCES[@]} == 0 && $CT_HOST_PROJECTION_COMPLETE == partial ]] || {
+  printf '%s\n' 'cached alias imported a new excluded mount beneath its canonical target' >&2
+  exit 1
+}
+CT_HOST_PROJECTION_MOUNTINFO="$mountinfo"
 
 # Existing mount descriptors must compare source and destination fields exactly,
 # rather than accepting destination prefixes.
