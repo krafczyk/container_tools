@@ -1,0 +1,152 @@
+cmake_minimum_required(VERSION 3.20)
+
+project(container_tools VERSION 1.0.0 LANGUAGES C)
+
+include(GNUInstallDirs)
+include(CTest)
+include(cmake/ContainerToolsWarnings.cmake)
+
+set(CONTAINER_TOOLS_VENDOR_DIGESTS
+  "vendor/tomlc17/tomlc17.c=f28f3742808505b5c55189b72cf62705e824276eca6533b36e8751a8433482aa"
+  "vendor/tomlc17/tomlc17.h=eef9a891b93fc6235a9552db16286cefc684be8fae49018bedf1c6ab9ca55b87"
+  "vendor/tomlc17/LICENSE=e6eae7966fa001217173768e984f758fd49cef45afb2e8f471e947a9712f06c9"
+  "vendor/yyjson/yyjson.c=ac2e9bbb2e2d9149d90878d40506a1d624fa0b33c979a11b61075c54782c6d6a"
+  "vendor/yyjson/yyjson.h=175867c5493a5df648cec566717fa1c29aa2f6096f5f0cf1efad0b65e1f6d7b3"
+  "vendor/yyjson/LICENSE=45e384d3d52c73cba3a64d6e6c25d47cd738cd8a55c30629e3201046eda62947"
+)
+foreach(vendor_digest IN LISTS CONTAINER_TOOLS_VENDOR_DIGESTS)
+  string(REPLACE "=" ";" vendor_digest_parts "${vendor_digest}")
+  list(GET vendor_digest_parts 0 vendor_file)
+  list(GET vendor_digest_parts 1 vendor_expected_digest)
+  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${vendor_file}" vendor_actual_digest)
+  if(NOT vendor_actual_digest STREQUAL vendor_expected_digest)
+    message(FATAL_ERROR "vendored provenance drift: ${vendor_file}")
+  endif()
+endforeach()
+
+set(CONTAINER_TOOLS_PRODUCT_VERSION "1.0.0-dev" CACHE STRING
+    "Immutable container-tools product version")
+set(CONTAINER_TOOLS_PACKAGE_EPOCH "1" CACHE STRING
+    "Immutable container-tools package epoch")
+if(NOT CONTAINER_TOOLS_PRODUCT_VERSION MATCHES
+   "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
+  message(FATAL_ERROR "container-tools requires a semantic product version")
+endif()
+if(NOT CONTAINER_TOOLS_PACKAGE_EPOCH MATCHES "^[0-9]+$")
+  message(FATAL_ERROR "container-tools requires a numeric package epoch")
+endif()
+option(CONTAINER_TOOLS_STATIC "Link the package executable statically" ON)
+option(CONTAINER_TOOLS_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+if(CONTAINER_TOOLS_STATIC AND CONTAINER_TOOLS_SANITIZERS)
+  message(FATAL_ERROR "sanitizer builds must use CONTAINER_TOOLS_STATIC=OFF")
+endif()
+if(CONTAINER_TOOLS_SANITIZERS)
+  add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+  add_link_options(-fsanitize=address,undefined)
+endif()
+
+execute_process(
+  COMMAND git rev-parse HEAD
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+  OUTPUT_VARIABLE CONTAINER_TOOLS_SOURCE_COMMIT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE CONTAINER_TOOLS_GIT_RESULT
+)
+string(LENGTH "${CONTAINER_TOOLS_SOURCE_COMMIT}" CONTAINER_TOOLS_SOURCE_COMMIT_LENGTH)
+if(NOT CONTAINER_TOOLS_GIT_RESULT EQUAL 0 OR
+   NOT CONTAINER_TOOLS_SOURCE_COMMIT MATCHES "^[0-9a-f]+$" OR
+   NOT CONTAINER_TOOLS_SOURCE_COMMIT_LENGTH EQUAL 40)
+  message(FATAL_ERROR "container-tools requires an exact 40-hex source commit")
+endif()
+
+string(TOLOWER "${CMAKE_SYSTEM_PROCESSOR}" CONTAINER_TOOLS_ARCHITECTURE)
+if(NOT CONTAINER_TOOLS_ARCHITECTURE MATCHES "^[a-z0-9_.-]+$")
+  message(FATAL_ERROR "container-tools requires a non-empty portable target architecture")
+endif()
+
+function(container_tools_component_digest output)
+  set(contents "")
+  foreach(source IN LISTS ARGN)
+    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_digest)
+    string(APPEND contents "${source}:${source_digest}\n")
+  endforeach()
+  string(SHA256 result "${contents}")
+  set(${output} "${result}" PARENT_SCOPE)
+endfunction()
+
+container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
+  src/main.c src/cli.c src/package.c vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
+  vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
+container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
+container_tools_component_digest(CONTAINER_TOOLS_METADATA_DIGEST cmake/release.json.in)
+container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md)
+container_tools_component_digest(CONTAINER_TOOLS_LICENSES_DIGEST
+  LICENSE-APACHE LICENSE-MIT vendor/tomlc17/LICENSE vendor/yyjson/LICENSE)
+container_tools_component_digest(CONTAINER_TOOLS_PROTOCOLS_DIGEST protocols/ct-mount-plan-v1.md)
+string(SHA256 CONTAINER_TOOLS_BUILD_IDENTITY
+  "${CONTAINER_TOOLS_PRODUCT_VERSION}:${PROJECT_VERSION_MAJOR}:${CONTAINER_TOOLS_PACKAGE_EPOCH}:${CONTAINER_TOOLS_ARCHITECTURE}:${CONTAINER_TOOLS_SOURCE_COMMIT}:${CONTAINER_TOOLS_EXECUTABLE_DIGEST}:${CONTAINER_TOOLS_SCRIPTS_DIGEST}")
+
+configure_file(src/package_identity.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/package_identity.h" @ONLY)
+configure_file(cmake/release.json.in "${CMAKE_CURRENT_BINARY_DIR}/release.json" @ONLY)
+foreach(script ct_exec.sh ct_shell.sh ct_instance_exec.sh ct_mount_detector.sh ct_args.sh)
+  set(CONTAINER_TOOLS_COMPAT_SCRIPT "${script}")
+  configure_file(cmake/compat.sh.in "${CMAKE_CURRENT_BINARY_DIR}/${script}" @ONLY)
+endforeach()
+
+add_library(container_tools_toml STATIC vendor/tomlc17/tomlc17.c)
+target_include_directories(container_tools_toml PRIVATE vendor/tomlc17)
+
+add_library(container_tools_json STATIC vendor/yyjson/yyjson.c)
+target_include_directories(container_tools_json PRIVATE vendor/yyjson)
+
+add_library(container_tools_core STATIC src/cli.c src/package.c)
+target_include_directories(container_tools_core PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_link_libraries(container_tools_core PRIVATE container_tools_toml container_tools_json)
+container_tools_enable_warnings(container_tools_core)
+
+add_executable(container-tools src/main.c)
+target_link_libraries(container-tools PRIVATE container_tools_core)
+target_include_directories(container-tools PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+container_tools_enable_warnings(container-tools)
+if(CONTAINER_TOOLS_STATIC)
+  target_link_options(container-tools PRIVATE -static)
+endif()
+
+install(TARGETS container-tools RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(PROGRAMS
+  "${CMAKE_CURRENT_BINARY_DIR}/ct_exec.sh"
+  "${CMAKE_CURRENT_BINARY_DIR}/ct_shell.sh"
+  "${CMAKE_CURRENT_BINARY_DIR}/ct_instance_exec.sh"
+  "${CMAKE_CURRENT_BINARY_DIR}/ct_mount_detector.sh"
+  "${CMAKE_CURRENT_BINARY_DIR}/ct_args.sh"
+  DESTINATION "${CMAKE_INSTALL_BINDIR}")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release.json" README.md
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools")
+install(DIRECTORY examples/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/examples")
+install(DIRECTORY protocols/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/protocols")
+install(FILES LICENSE-APACHE LICENSE-MIT
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/licenses")
+install(FILES vendor/tomlc17/LICENSE
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/licenses" RENAME tomlc17-LICENSE)
+install(FILES vendor/yyjson/LICENSE
+  DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/licenses" RENAME yyjson-LICENSE)
+
+if(BUILD_TESTING)
+  add_executable(test_cli tests/test_cli.c)
+  target_link_libraries(test_cli PRIVATE container_tools_core)
+  target_include_directories(test_cli PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  container_tools_enable_warnings(test_cli)
+  add_test(NAME container_tools_cli COMMAND test_cli)
+
+  add_executable(test_package tests/test_package.c)
+  target_link_libraries(test_package PRIVATE container_tools_core)
+  target_include_directories(test_package PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  container_tools_enable_warnings(test_package)
+  add_test(NAME container_tools_package COMMAND test_package)
+
+  if(CONTAINER_TOOLS_STATIC)
+    configure_file(tests/test_install.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake" @ONLY)
+    add_test(NAME container_tools_install COMMAND "${CMAKE_COMMAND}" -P
+      "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake")
+  endif()
+endif()

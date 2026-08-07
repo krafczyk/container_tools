@@ -1,0 +1,86 @@
+set(prefix "@CMAKE_BINARY_DIR@/path/bin/container-tools parent/installed prefix")
+set(moved_parent "@CMAKE_BINARY_DIR@/moved")
+file(REMOVE_RECURSE "${prefix}" "${moved_parent}")
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@" --prefix "${prefix}"
+  RESULT_VARIABLE install_result
+)
+if(NOT install_result EQUAL 0)
+  message(FATAL_ERROR "install failed")
+endif()
+
+execute_process(
+  COMMAND "${prefix}/bin/container-tools" package verify --json
+  RESULT_VARIABLE verify_result
+  OUTPUT_VARIABLE verify_output
+)
+if(NOT verify_result EQUAL 0 OR NOT verify_output MATCHES "container-tools.release/v1")
+  message(FATAL_ERROR "installed package did not verify")
+endif()
+
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${prefix}/bin:$ENV{PATH}" container-tools --version --json
+  RESULT_VARIABLE path_result
+  OUTPUT_VARIABLE path_output
+)
+if(NOT path_result EQUAL 0 OR NOT path_output STREQUAL verify_output)
+  message(FATAL_ERROR "PATH selected an incoherent package")
+endif()
+
+function(expect_not_implemented)
+  execute_process(
+    COMMAND "${prefix}/bin/container-tools" ${ARGN}
+    RESULT_VARIABLE command_result
+    ERROR_VARIABLE command_error
+  )
+  if(NOT command_result EQUAL 70 OR NOT command_error MATCHES "not implemented")
+    message(FATAL_ERROR "bootstrap command was not a typed not-implemented result: ${ARGN}")
+  endif()
+endfunction()
+
+expect_not_implemented(exec -- image command)
+expect_not_implemented(shell -- image)
+expect_not_implemented(instance exec -- image command)
+expect_not_implemented(instance identity)
+expect_not_implemented(mount detect --)
+expect_not_implemented(mount args "path with spaces")
+expect_not_implemented(runtime exec --backend docker -- docker run)
+expect_not_implemented(buildx exec --architecture x86_64 -- docker buildx build)
+expect_not_implemented(host exec -- command)
+expect_not_implemented(host doctor --json)
+
+file(MAKE_DIRECTORY "${moved_parent}")
+file(RENAME "${prefix}" "${moved_parent}/container tools")
+execute_process(
+  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
+  RESULT_VARIABLE moved_result
+)
+if(NOT moved_result EQUAL 0)
+  message(FATAL_ERROR "moved complete prefix did not verify")
+endif()
+
+file(APPEND "${moved_parent}/container tools/bin/ct_args.sh" "# changed\n")
+execute_process(
+  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
+  RESULT_VARIABLE changed_script_result
+)
+if(changed_script_result EQUAL 0)
+  message(FATAL_ERROR "changed compatibility script was accepted")
+endif()
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@" --prefix "${moved_parent}/container tools"
+  RESULT_VARIABLE reinstall_result
+)
+if(NOT reinstall_result EQUAL 0)
+  message(FATAL_ERROR "failed to restore changed compatibility script")
+endif()
+
+file(REMOVE "${moved_parent}/container tools/bin/ct_args.sh")
+execute_process(
+  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
+  RESULT_VARIABLE incomplete_result
+)
+if(incomplete_result EQUAL 0)
+  message(FATAL_ERROR "incomplete prefix was accepted")
+endif()

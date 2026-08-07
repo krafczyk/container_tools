@@ -3,6 +3,37 @@
 `ct_exec.sh` and `ct_shell.sh` normalize foreground mounts and launch behavior
 across Docker, Podman, SingularityCE, and Apptainer.
 
+## C11 Package Bootstrap
+
+The C11 package bootstrap installs one static `container-tools` executable,
+five generated compatibility-script trampolines, and immutable package metadata
+under a caller-selected prefix. It does not replace the current Bash callers in
+this unit. Native behavior commands intentionally return exit status `70` with
+a `not implemented` diagnostic until their corresponding migration units land.
+
+The closed native command hierarchy is `exec`, `shell`, `instance exec`,
+`instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
+exec`, `host exec`, `host doctor`, and `package verify`. `--help`, `--version`,
+and `--version --json` are global. `package verify [--json]` validates the
+static executable, generated release metadata, and all sibling trampolines
+before reporting the immutable identity. Any missing or mixed package component
+fails with exit status `78` before command behavior, state access, or backend
+probing.
+
+Install with CMake's normal prefix selection, for example:
+
+```sh
+cmake -S . -B /tmp/mkchad-v1/container-tools-c11/release -DCMAKE_BUILD_TYPE=Release
+cmake --build /tmp/mkchad-v1/container-tools-c11/release
+cmake --install /tmp/mkchad-v1/container-tools-c11/release --prefix /opt/container-tools
+/opt/container-tools/bin/container-tools package verify --json
+```
+
+The executable and scripts resolve their sibling metadata, so a complete prefix
+can move as a unit. Selection through `PATH` or an exact executable/script path
+uses that selected prefix; mixing files from two prefixes is rejected. The
+bootstrap is not a release-complete replacement for the retained Bash surface.
+
 ## Semantic Mount Plans
 
 Every non-dry-run foreground launch on a local runtime endpoint and every
