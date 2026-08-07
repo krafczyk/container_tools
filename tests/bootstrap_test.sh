@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/host-root-projection}
+work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/container-tools-c11}
 root=${2:?pass the container_tools checkout}
 root=$(realpath "$root")
-[[ $work == /tmp/mkchad-v1/host-root-projection/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/host-root-projection' >&2; exit 2; }
+[[ $work == /tmp/mkchad-v1/container-tools-c11/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/container-tools-c11' >&2; exit 2; }
 [[ ! -e $work ]] || { printf '%s\n' 'test directory already exists' >&2; exit 2; }
 
 fake="$work/fake-bin"

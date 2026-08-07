@@ -2,11 +2,11 @@
 set -euo pipefail
 export LC_ALL=C
 
-work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/host-root-projection}
+work=${1:?pass a task-specific directory beneath /tmp/mkchad-v1/container-tools-c11}
 helper=${2:?pass the ct_instance_exec.sh path}
 helper=$(realpath "$helper")
 work=$(realpath -m -- "$work")
-[[ $work == /tmp/mkchad-v1/host-root-projection/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/host-root-projection' >&2; exit 2; }
+[[ $work == /tmp/mkchad-v1/container-tools-c11/* ]] || { printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/container-tools-c11' >&2; exit 2; }
 [[ ! -e $work ]] || { printf '%s\n' 'test directory already exists' >&2; exit 2; }
 
 fake="$work/fake-bin"

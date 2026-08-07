@@ -19,8 +19,9 @@ if [ ! -f "$arg_file" ]; then
   exit 1
 fi
 
-# Read file arguments into an array.
-# This splits the file contents on whitespace.
+# Read file arguments into an array. Whitespace tokenization is the legacy
+# mount-configuration contract characterized by the U1 parity vectors.
+# shellcheck disable=SC2207
 file_args=( $(<"$arg_file") )
 
 # Shift off the file argument; remaining arguments form our extra args.

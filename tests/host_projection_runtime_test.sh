@@ -4,8 +4,9 @@
 # report can support a backend claim.
 set -euo pipefail
 
-readonly schema='container-tools.host-projection-runtime/v1'
-readonly work_root='/tmp/mkchad-v1/host-root-projection-host'
+readonly host_schema='container-tools.host-projection-runtime/v1'
+readonly bash_baseline_schema='container-tools.host-projection-runtime/bash-baseline-v1'
+readonly work_root='/tmp/mkchad-v1/container-tools-c11/host-projection-runtime'
 readonly warm_sample_count=20
 readonly operation_capture_fd=190
 readonly probe_tag_capture_fd=191
@@ -18,11 +19,14 @@ tool_root=$(realpath "$script_dir/..")
 source_commit=$(git -C "$tool_root" rev-parse HEAD 2>/dev/null || printf '%s' unknown)
 architecture=$(uname -m)
 caller_group=$(id -g)
+schema=$host_schema
+bash_baseline=0
 
 usage() {
-  printf '%s\n' 'usage: host_projection_runtime_test.sh --backend docker|podman|singularity|apptainer --image LOCAL_IMAGE --work /tmp/mkchad-v1/host-root-projection-host/RUN_ID [--force-fallback]'
+  printf '%s\n' 'usage: host_projection_runtime_test.sh --backend docker|podman|singularity|apptainer --image LOCAL_IMAGE --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/RUN_ID [--force-fallback] [--bash-baseline]'
   printf '%s\n' '       host_projection_runtime_test.sh --validate-report REPORT.json'
   printf '%s\n' '       host_projection_runtime_test.sh --validate-fixture-report REPORT.json'
+  printf '%s\n' '       host_projection_runtime_test.sh --validate-bash-baseline-report REPORT.json'
 }
 
 json_string() {
@@ -37,8 +41,8 @@ json_string() {
 source_manifest() {
   local file file_digest manifest_digest
   manifest_digest=$({
-    for file in ct_args.sh ct_mount_detector.sh ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_test.sh tests/host_projection_runtime_test.sh; do
-      file_digest=$(sha256sum "$tool_root/$file")
+    for file in ct_args.sh ct_mount_detector.sh ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_test.sh tests/runtime_config_test.sh tests/host_projection_runtime_test.sh tests/parity_test.sh tests/fixtures/bash-baseline/contracts.tsv tests/fixtures/bash-baseline/mount.conf tests/fixtures/bash-baseline/expected-results.tsv; do
+      file_digest=$(sha256sum "$tool_root/$file") || return 1
       printf '%s\0%s\0' "$file" "${file_digest%% *}"
     done
   } | sha256sum)
@@ -237,6 +241,16 @@ if [[ ${1:-} == --validate-fixture-report ]]; then
   exit "$status"
 fi
 
+if [[ ${1:-} == --validate-bash-baseline-report ]]; then
+  [[ $# == 2 ]] || { usage >&2; exit 2; }
+  command -v jq >/dev/null 2>&1 || { printf '%s\n' 'host report validation requires jq' >&2; exit 77; }
+  schema=$bash_baseline_schema
+  validate_report "$2" bash-baseline
+  status=$?
+  (( status == 2 )) && exit 2
+  exit "$status"
+fi
+
 backend=
 image=
 work=
@@ -268,6 +282,11 @@ while [[ $# -gt 0 ]]; do
       force_fallback=1
       shift
       ;;
+    --bash-baseline)
+      [[ $bash_baseline == 0 ]] || { usage >&2; exit 2; }
+      bash_baseline=1
+      shift
+      ;;
     *) usage >&2; exit 2 ;;
   esac
 done
@@ -284,8 +303,14 @@ if [[ $backend == singularity || $backend == apptainer ]]; then
 fi
 
 manifest_current=$(source_manifest)
-evidence_kind=${CT_HOST_PROJECTION_RUNTIME_FIXTURE:+fixture}
-evidence_kind=${evidence_kind:-host}
+if [[ $bash_baseline == 1 ]]; then
+  [[ -z ${CT_HOST_PROJECTION_RUNTIME_FIXTURE:-} ]] || { printf '%s\n' 'Bash baseline evidence cannot use a fixture runtime' >&2; exit 2; }
+  schema=$bash_baseline_schema
+  evidence_kind=bash-baseline
+else
+  evidence_kind=${CT_HOST_PROJECTION_RUNTIME_FIXTURE:+fixture}
+  evidence_kind=${evidence_kind:-host}
+fi
 image_id=unavailable
 image_digest=unavailable
 cache_filesystem=unavailable
@@ -346,7 +371,7 @@ if ! runtime_path=$(command -v -- "$backend"); then
   exit 77
 fi
 runtime_path=$(realpath -- "$runtime_path") || setup_failure runtime-unavailable
-if [[ $evidence_kind == host && $runtime_path == /tmp/mkchad-v1/host-root-projection/* ]]; then
+if [[ $evidence_kind != fixture && $runtime_path == /tmp/mkchad-v1/container-tools-c11/* ]]; then
   setup_failure fixture-runtime-unlabeled
 fi
 backend_executable_digest=$(sha256sum -- "$runtime_path" | cut -d' ' -f1) || setup_failure runtime-unavailable

@@ -1,0 +1,4 @@
+schema	container-tools.bash-baseline-fixtures/v1
+mount-arguments	pass	argv
+dry-exec	pass	dry-run
+remote-exec	pass	remote-launch

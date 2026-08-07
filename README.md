@@ -112,29 +112,30 @@ their native inherited caller groups. Selection policy is launcher state, not a
 
 `tests/host_projection_runtime_test.sh` is the cumulative, opt-in host evidence
 runner. It never pulls images or contacts a registry. Supply one already-local
-image or absolute SIF path and a fresh work directory under the documented
-root. Run one available backend at a time:
+image or absolute SIF path and a fresh work directory under
+`/tmp/mkchad-v1/container-tools-c11/host-projection-runtime`. Run one available
+backend at a time:
 
 ```sh
 CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   bash tests/host_projection_runtime_test.sh \
   --backend docker --image "$CT_HOST_TEST_DOCKER_IMAGE" \
-  --work /tmp/mkchad-v1/host-root-projection-host/docker-RUN_ID
+  --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/docker-RUN_ID
 
 CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   bash tests/host_projection_runtime_test.sh \
   --backend podman --image "$CT_HOST_TEST_PODMAN_IMAGE" \
-  --work /tmp/mkchad-v1/host-root-projection-host/podman-RUN_ID
+  --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/podman-RUN_ID
 
 CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   bash tests/host_projection_runtime_test.sh \
   --backend singularity --image "$CT_HOST_TEST_SINGULARITY_SIF" \
-  --work /tmp/mkchad-v1/host-root-projection-host/singularity-RUN_ID
+  --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/singularity-RUN_ID
 
 CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   bash tests/host_projection_runtime_test.sh \
   --backend apptainer --image "$CT_HOST_TEST_APPTAINER_SIF" \
-  --work /tmp/mkchad-v1/host-root-projection-host/apptainer-RUN_ID
+  --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/apptainer-RUN_ID
 ```
 
 Every syntactically valid non-help invocation that can create its work directory
@@ -173,6 +174,14 @@ SingularityCE and Apptainer execute and clean up their run-owned persistent
 instance. This development environment currently has none of Docker, Podman,
 SingularityCE, or Apptainer available, so all four real-runtime claims remain
 unclaimed; deterministic fake-runtime results are not backend evidence.
+
+Use `--bash-baseline` before the C11 transition to retain an exact-source Bash
+report for one available runtime and immutable local image. It emits the closed
+`container-tools.host-projection-runtime/bash-baseline-v1` schema with
+`"evidence_kind":"bash-baseline"`; its existing case results contain the
+semantic outcomes, operation classes, and cleanup result. Validate it with
+`--validate-bash-baseline-report`. Fixture runtimes are rejected in this mode,
+and an unavailable runtime reports `unavailable` without making a parity claim.
 
 `ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
 service that must retain its image mount after the launching command exits. It

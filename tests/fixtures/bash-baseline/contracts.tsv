@@ -1,0 +1,8 @@
+schema	container-tools.bash-baseline-fixtures/v1
+mount-arguments	ct_args.sh	argv	pass	whitespace-tokenized-config-and-delimiter-preservation
+dry-exec	ct_exec.sh	dry-run	pass	no-projection-or-manifest-state
+remote-exec	ct_exec.sh	remote-launch	pass	no-local-manifest
+bootstrap	ct_exec.sh,ct_shell.sh	argv-and-status	pass	all-four-outer-runtime-shapes
+persistent	ct_instance_exec.sh	state-and-cleanup	pass	create-reuse-mismatch-concurrency-interruption
+projection	ct_exec.sh,ct_shell.sh	manifest-and-diagnostics	pass	direct-fallback-none-and-source-mutation
+runtime-config	ct_library.sh	config-and-buildx-cache	pass	success-failure-and-private-storage

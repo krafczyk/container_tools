@@ -126,6 +126,7 @@ mount_points=()
 
 # Read /proc/mounts line by line.
 # Fields in /proc/mounts: device mount_point fs_type options dump pass
+# shellcheck disable=SC2034 # Only mount_point and fs_type are consumed.
 while read -r device mount_point fs_type options dump pass; do
   # Always skip the root mount.
   if [ "$mount_point" = "/" ]; then

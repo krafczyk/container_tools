@@ -2,12 +2,12 @@
 # shellcheck disable=SC2034 # The sourced library consumes fixture globals dynamically.
 set -euo pipefail
 
-work=${1:?pass /tmp/mkchad-v1/host-root-projection work directory}
+work=${1:?pass /tmp/mkchad-v1/container-tools-c11 work directory}
 root=${2:?pass the container_tools checkout}
 root=$(realpath "$root")
 work=$(realpath -m -- "$work")
-[[ $work == /tmp/mkchad-v1/host-root-projection/* ]] || {
-  printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/host-root-projection' >&2
+[[ $work == /tmp/mkchad-v1/container-tools-c11/* ]] || {
+  printf '%s\n' 'test directory must be beneath /tmp/mkchad-v1/container-tools-c11' >&2
   exit 2
 }
 [[ ! -e $work ]] || {
@@ -1598,7 +1598,7 @@ if bash "$runner" --backend docker --image image:local --work "$work/not-an-appr
   printf '%s\n' 'runtime runner accepted an unsafe work root' >&2
   exit 1
 fi
-runtime_work="/tmp/mkchad-v1/host-root-projection-host/disabled-$$"
+runtime_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/disabled-$$"
 [[ ! -e $runtime_work ]] || { printf '%s\n' 'runtime runner fixture already exists' >&2; exit 1; }
 set +e
 runtime_report=$(PATH="/usr/bin:/bin" bash "$runner" --backend docker --image image:local --work "$runtime_work")
@@ -1608,6 +1608,29 @@ set -e
   && $runtime_report == *'"id":"HP-HOST-006","status":"skip","reason":"backend-inapplicable"'* \
   && -f "$runtime_work/report.json" ]] || {
   printf '%s\n' 'disabled runtime runner did not emit its unavailable report' >&2
+  exit 1
+}
+
+# A Bash-baseline report has its own closed evidence kind. Unavailable native
+# prerequisites stay explicit and cannot become a runtime parity claim.
+baseline_runtime_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/bash-baseline-disabled-$$"
+set +e
+baseline_runtime_report=$(PATH="/usr/bin:/bin" bash "$runner" --bash-baseline --backend docker --image image:local --work "$baseline_runtime_work")
+baseline_runtime_status=$?
+set -e
+[[ $baseline_runtime_status == 77 \
+  && $baseline_runtime_report == *'"schema":"container-tools.host-projection-runtime/bash-baseline-v1"'* \
+  && $baseline_runtime_report == *'"evidence_kind":"bash-baseline"'* \
+  && -f "$baseline_runtime_work/report.json" ]] || {
+  printf '%s\n' 'disabled Bash baseline runner did not emit its unavailable report' >&2
+  exit 1
+}
+set +e
+bash "$runner" --validate-bash-baseline-report "$baseline_runtime_work/report.json"
+baseline_validate_status=$?
+set -e
+[[ $baseline_validate_status == 77 ]] || {
+  printf '%s\n' 'Bash baseline validator did not preserve unavailable status' >&2
   exit 1
 }
 
@@ -1665,7 +1688,31 @@ esac
 EOF
 chmod 755 "$runtime_fake/docker"
 
-runtime_unlabeled_work="/tmp/mkchad-v1/host-root-projection-host/fake-unlabeled-$$"
+# The Bash-baseline evidence kind never admits deterministic fake runtimes.
+baseline_fixture_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/bash-baseline-fixture-$$"
+set +e
+PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
+  bash "$runner" --bash-baseline --backend docker --image image:local --work "$baseline_fixture_work" >/dev/null 2>&1
+baseline_fixture_status=$?
+set -e
+[[ $baseline_fixture_status == 2 && ! -e $baseline_fixture_work ]] || {
+  printf '%s\n' 'Bash baseline runner accepted deterministic fixture evidence' >&2
+  exit 1
+}
+
+baseline_unlabeled_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/bash-baseline-unlabeled-$$"
+set +e
+baseline_unlabeled_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
+  bash "$runner" --bash-baseline --backend docker --image image:local --work "$baseline_unlabeled_work")
+baseline_unlabeled_status=$?
+set -e
+[[ $baseline_unlabeled_status == 77 \
+  && $baseline_unlabeled_report == *'"reason":"fixture-runtime-unlabeled"'* ]] || {
+  printf '%s\n' 'Bash baseline runner accepted an unlabeled disposable runtime' >&2
+  exit 1
+}
+
+runtime_unlabeled_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-unlabeled-$$"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   MKCHAD_TEST_RUNTIME_COUNT="$work/unlabeled-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_unlabeled_work/results" \
@@ -1678,7 +1725,7 @@ set -e
   exit 1
 }
 
-runtime_enabled_work="/tmp/mkchad-v1/host-root-projection-host/fake-enabled-$$"
+runtime_enabled_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-enabled-$$"
 mkdir -p "${runtime_enabled_work%/*}"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
@@ -1727,7 +1774,7 @@ set -e
   exit 1
 }
 
-runtime_abort_work="/tmp/mkchad-v1/host-root-projection-host/fake-abort-$$"
+runtime_abort_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-abort-$$"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 CT_HOST_PROJECTION_RUNTIME_ABORT_AFTER_COLD=1 \
@@ -1741,7 +1788,7 @@ set -e
   exit 1
 }
 
-runtime_setup_abort_work="/tmp/mkchad-v1/host-root-projection-host/fake-setup-abort-$$"
+runtime_setup_abort_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-setup-abort-$$"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 CT_HOST_PROJECTION_RUNTIME_ABORT_DURING_SETUP=1 \
@@ -1755,7 +1802,7 @@ set -e
   exit 1
 }
 
-runtime_forced_work="/tmp/mkchad-v1/host-root-projection-host/fake-forced-$$"
+runtime_forced_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-forced-$$"
 set +e
 runtime_report=$(PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
@@ -1854,7 +1901,7 @@ EOF
 chmod 755 "$native_fake/singularity"
 native_image="$work/local-image.sif"
 : > "$native_image"
-runtime_native_work="/tmp/mkchad-v1/host-root-projection-host/fake-native-$$"
+runtime_native_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-native-$$"
 set +e
 runtime_report=$(PATH="$native_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 \
   CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
@@ -1894,7 +1941,7 @@ set -e
   exit 1
 }
 
-runtime_missing_work="/tmp/mkchad-v1/host-root-projection-host/fake-missing-$$"
+runtime_missing_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-missing-$$"
 set +e
 PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 MKCHAD_TEST_SKIP_RESULT=warm-20 \
   MKCHAD_TEST_RUNTIME_COUNT="$work/runtime-missing-count" MKCHAD_TEST_RUNTIME_RESULTS="$runtime_missing_work/results" \
@@ -1906,7 +1953,7 @@ set -e
   exit 1
 }
 
-runtime_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-image-mutation-$$"
+runtime_mutation_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-image-mutation-$$"
 image_id_file="$work/image-id"
 set +e
 PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 MKCHAD_TEST_MUTATE_IMAGE=1 \
@@ -1922,7 +1969,7 @@ set -e
 
 # A payload can recreate the old projected adapter pathname, but later host
 # dispatches continue through the unlinked descriptor rather than that file.
-runtime_adapter_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-adapter-mutation-$$"
+runtime_adapter_mutation_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-adapter-mutation-$$"
 set +e
 PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
   MKCHAD_TEST_MUTATE_ADAPTER="$runtime_adapter_mutation_work/adapter/docker" \
@@ -1940,12 +1987,15 @@ set -e
 # Copying the closed source set lets the fake mutate an exact launch file
 # without touching this checkout; mixed source bytes must fail the report.
 source_copy="$work/source-copy"
-mkdir -p "$source_copy/tests"
+mkdir -p "$source_copy/tests/fixtures/bash-baseline"
 cp "$root"/ct_args.sh "$root"/ct_mount_detector.sh "$root"/ct_library.sh "$root"/ct_exec.sh \
   "$root"/ct_shell.sh "$root"/ct_instance_exec.sh "$source_copy"
 cp "$root"/tests/bootstrap_test.sh "$root"/tests/instance_exec_test.sh "$root"/tests/host_projection_test.sh \
-  "$root"/tests/host_projection_runtime_test.sh "$source_copy/tests"
-runtime_source_mutation_work="/tmp/mkchad-v1/host-root-projection-host/fake-source-mutation-$$"
+  "$root"/tests/runtime_config_test.sh "$root"/tests/host_projection_runtime_test.sh "$root"/tests/parity_test.sh \
+  "$source_copy/tests"
+cp "$root"/tests/fixtures/bash-baseline/contracts.tsv "$root"/tests/fixtures/bash-baseline/mount.conf \
+  "$root"/tests/fixtures/bash-baseline/expected-results.tsv "$source_copy/tests/fixtures/bash-baseline"
+runtime_source_mutation_work="/tmp/mkchad-v1/container-tools-c11/host-projection-runtime/fake-source-mutation-$$"
 set +e
 PATH="$runtime_fake:$PATH" CT_HOST_PROJECTION_RUNTIME_TEST=1 CT_HOST_PROJECTION_RUNTIME_FIXTURE=1 \
   MKCHAD_TEST_MUTATE_SOURCE="$source_copy/ct_exec.sh" MKCHAD_TEST_RUNTIME_COUNT="$work/source-mutation-count" \
