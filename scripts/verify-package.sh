@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Verify one closed container-tools archive without selecting or installing it.
 set -euo pipefail
+umask 077
 
 usage() {
   printf '%s\n' 'usage: verify-package.sh --archive FILE --sha256 64_HEX --version VERSION --source-commit 40_HEX --architecture ARCH --libc musl|glibc [--work-root ABSOLUTE_DIR]' >&2
@@ -27,7 +28,7 @@ while (($#)); do
     *) usage ;;
   esac
 done
-[[ -f $archive && $work_root == /tmp/mkchad-v1/container-tools-c11/* ]] || usage
+[[ -f $archive && $work_root == /* ]] || usage
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
 [[ $digest =~ ^[0-9a-f]{64}$ && $source_commit =~ ^[0-9a-f]{40}$ && $architecture =~ ^[a-z0-9_.-]+$ && $libc =~ ^(musl|glibc)$ ]] || usage
 [[ $(sha256sum "$archive" | awk '{print $1}') == "$digest" ]] || {
