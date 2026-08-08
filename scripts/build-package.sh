@@ -102,8 +102,10 @@ cmp -s "$work/archive-files.actual" "$package_root/archive-files.txt" || {
   exit 78
 }
 timestamp=$(git -C "$source_root" show -s --format=%ct "$source_commit")
+# POSIX tar otherwise records source atime/ctime in PAX extended headers.
+# gzip -n fixes its header timestamp and omits the source filename.
 tar --format=posix --sort=name --mtime="@$timestamp" --owner=0 --group=0 --numeric-owner \
-  -C "$work" -czf "$archive" "$archive_name"
+  --pax-option=delete=atime,delete=ctime -C "$work" -cf - "$archive_name" | gzip -n > "$archive"
 (cd "$output_dir" && sha256sum "$(basename "$archive")" > "$(basename "$checksum")")
 trap - EXIT
 rm -rf -- "$work"

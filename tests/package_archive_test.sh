@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise archive refusal paths locally; acceptance requires the production static toolchain.
+# Exercise archive refusal paths and production archive reproducibility locally.
 set -euo pipefail
 
 root=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -121,15 +121,28 @@ if bash "$work/dirty-source/scripts/build-package.sh" --build-root "$work/dirty-
   exit 1
 fi
 
-# A release candidate supplies a static archive through this explicit test input.
-archive=${CT_PACKAGE_ARCHIVE:-}
-digest=${CT_PACKAGE_SHA256:-}
-if [[ -z $archive || -z $digest ]]; then
-  printf '%s\n' 'package archive acceptance unavailable: no production static archive supplied' >&2
+# Production archives require a static musl compiler; ordinary test coverage above
+# remains credential-free and this is the sole unavailable gate.
+compiler=${CT_MUSL_CC:-musl-gcc}
+if ! command -v "$compiler" >/dev/null; then
+  printf '%s\n' 'package archive reproducibility unavailable: requested musl compiler is absent' >&2
   exit 77
 fi
-bash "$root/scripts/verify-package.sh" --archive "$archive" --sha256 "$digest" \
-  --version "${CT_PACKAGE_VERSION:?}" --source-commit "${CT_PACKAGE_SOURCE_COMMIT:?}" \
-  --architecture "${CT_PACKAGE_ARCHITECTURE:-$architecture}" --libc "${CT_PACKAGE_LIBC:?}" \
+
+for build_number in 1 2; do
+  bash "$root/scripts/build-package.sh" --build-root "$work/build-$build_number" \
+    --source-commit "$commit" --output-dir "$work/out-$build_number" --libc musl
+done
+archive_name="container-tools-${version}-${architecture}-musl-${commit}.tar.gz"
+archive_one="$work/out-1/$archive_name"
+archive_two="$work/out-2/$archive_name"
+digest_one=$(sha256sum "$archive_one" | awk '{print $1}')
+digest_two=$(sha256sum "$archive_two" | awk '{print $1}')
+cmp -s "$archive_one" "$archive_two" && [[ $digest_one == "$digest_two" ]] || {
+  printf '%s\n' 'package builds produced different archive bytes' >&2
+  exit 1
+}
+bash "$root/scripts/verify-package.sh" --archive "$archive_one" --sha256 "$digest_one" \
+  --version "$version" --source-commit "$commit" --architecture "$architecture" --libc musl \
   --work-root "$work/verify"
 printf '%s\n' 'container-tools package archive tests passed'
