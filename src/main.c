@@ -52,6 +52,8 @@ static const char *ct_command_name(enum ct_command command)
   return "unknown";
 }
 
+static int ct_runtime_exec(int argument_count, char **arguments);
+
 static int ct_internal_compatibility(int argument_count, char **arguments)
 {
   if (argument_count < 4 ||
@@ -63,8 +65,22 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
   if (ct_package_validate(stderr) != 0) {
     return CT_EXIT_PACKAGE;
   }
-  (void)fprintf(stderr, "container-tools: not implemented: compat %s\n", arguments[3]);
-  return CT_EXIT_NOT_IMPLEMENTED;
+  if (strcmp(arguments[3], "ct_exec.sh") == 0) {
+    return ct_runtime_foreground_command(argument_count - 4, arguments + 4, 0);
+  }
+  if (strcmp(arguments[3], "ct_shell.sh") == 0) {
+    return ct_runtime_foreground_command(argument_count - 4, arguments + 4, 1);
+  }
+  if (strcmp(arguments[3], "ct_instance_exec.sh") == 0) {
+    return ct_instance_command(argument_count - 4, arguments + 4, 0);
+  }
+  if (strcmp(arguments[3], "ct_mount_detector.sh") == 0) {
+    return ct_mount_detect_command(argument_count - 4, arguments + 4);
+  }
+  if (strcmp(arguments[3], "ct_args.sh") == 0) {
+    return ct_mount_args_command(argument_count - 4, arguments + 4);
+  }
+  return CT_EXIT_PACKAGE;
 }
 
 static int ct_runtime_exec(int argument_count, char **arguments)

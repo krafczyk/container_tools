@@ -1,5 +1,0 @@
-#!/bin/sh
-# SPDX-License-Identifier: Apache-2.0 OR MIT
-CT_HOST_PROJECTION_GROUPS=$(id -G) || exit 1
-export CT_HOST_PROJECTION_GROUPS
-exec "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/container-tools" instance exec "$@"

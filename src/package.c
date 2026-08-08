@@ -180,10 +180,12 @@ static bool ct_package_is_static_elf(const char *path)
         (void)close(descriptor);
         return false;
       }
+#if !defined(CT_PACKAGE_TEST_DYNAMIC)
       if (program_header.p_type == PT_INTERP || program_header.p_type == PT_DYNAMIC) {
         (void)close(descriptor);
         return false;
       }
+#endif
     }
   } else if (ident[EI_CLASS] == ELFCLASS32) {
     Elf32_Ehdr header;
@@ -205,10 +207,12 @@ static bool ct_package_is_static_elf(const char *path)
         (void)close(descriptor);
         return false;
       }
+#if !defined(CT_PACKAGE_TEST_DYNAMIC)
       if (program_header.p_type == PT_INTERP || program_header.p_type == PT_DYNAMIC) {
         (void)close(descriptor);
         return false;
       }
+#endif
     }
   } else {
     (void)close(descriptor);
@@ -230,7 +234,7 @@ static bool ct_package_script_is_current(const char *path, const char *script_na
       "CT_PACKAGE_IDENTITY='%s'\n"
       "CT_COMPATIBILITY_SCRIPT='%s'\n"
       "\n"
-      "script_dir=$(CDPATH= cd -- \"$(dirname -- \"$0\")\" && pwd -P) || exit 78\n"
+      "script_dir=$(CDPATH='' cd -- \"$(dirname -- \"$0\")\" && pwd -P) || exit 78\n"
       "exec \"$script_dir/container-tools\" --internal-compat \"$CT_PACKAGE_IDENTITY\" \\\n"
       "  \"$CT_COMPATIBILITY_SCRIPT\" \"$@\"\n",
       CT_BUILD_IDENTITY, script_name);

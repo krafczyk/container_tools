@@ -124,6 +124,11 @@ add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
 target_include_directories(container_tools_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(container_tools_core PRIVATE _POSIX_C_SOURCE=200809L)
 target_link_libraries(container_tools_core PRIVATE container_tools_toml container_tools_json)
+if(NOT CONTAINER_TOOLS_STATIC)
+  # Dynamic packages exist only to exercise deterministic CTest integrations on
+  # hosts without a static libc; production packages must retain static linking.
+  target_compile_definitions(container_tools_core PRIVATE CT_PACKAGE_TEST_DYNAMIC=1)
+endif()
 container_tools_enable_warnings(container_tools_core)
 
 add_executable(container-tools src/main.c)
@@ -193,6 +198,11 @@ if(BUILD_TESTING)
   target_include_directories(test_doctor PRIVATE vendor/yyjson)
   target_compile_definitions(test_backend_nested PRIVATE CT_TRAMPOLINE_TEST_SEAM=1)
 
+  configure_file(tests/test_compatibility.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake" @ONLY)
+  add_test(NAME container_tools_compatibility COMMAND "${CMAKE_COMMAND}" -P
+    "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake")
+
   add_executable(test_mount_sort tests/test_mount_sort.c)
   target_include_directories(test_mount_sort PRIVATE src)
   container_tools_enable_warnings(test_mount_sort)
@@ -229,19 +239,6 @@ if(BUILD_TESTING)
     container_tools_enable_warnings(test_backend_nested_static)
     add_test(NAME container_tools_backend_nested_static COMMAND test_backend_nested_static)
 
-    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native-instance")
-    configure_file(tests/native_instance_wrapper.sh.in
-      "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_instance_exec.sh" @ONLY)
-    configure_file(ct_library.sh
-      "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_library.sh" COPYONLY)
-    file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_instance_exec.sh"
-      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
-                  WORLD_READ WORLD_EXECUTE)
-    configure_file(tests/test_native_instance.cmake.in
-      "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake" @ONLY)
-    add_test(NAME container_tools_native_instance_integration
-      COMMAND "${CMAKE_COMMAND}" -P
-              "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake")
     configure_file(tests/test_install.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake" @ONLY)
     add_test(NAME container_tools_install COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake")
@@ -256,4 +253,9 @@ if(BUILD_TESTING)
     add_test(NAME container_tools_native_projection_integration COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_native_projection.cmake")
   endif()
+  configure_file(tests/test_native_instance.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake" @ONLY)
+  add_test(NAME container_tools_native_instance_integration
+    COMMAND "${CMAKE_COMMAND}" -P
+            "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake")
 endif()

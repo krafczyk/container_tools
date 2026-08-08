@@ -41,7 +41,7 @@ json_string() {
 source_manifest() {
   local file file_digest manifest_digest
   manifest_digest=$({
-    for file in ct_args.sh ct_mount_detector.sh ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_test.sh tests/runtime_config_test.sh tests/host_projection_runtime_test.sh tests/parity_test.sh tests/fixtures/bash-baseline/contracts.tsv tests/fixtures/bash-baseline/mount.conf tests/fixtures/bash-baseline/expected-results.tsv; do
+    for file in ct_args.sh ct_mount_detector.sh ct_library.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_runtime_test.sh tests/parity_test.sh tests/fixtures/bash-baseline/contracts.tsv tests/fixtures/bash-baseline/mount.conf tests/fixtures/bash-baseline/expected-results.tsv; do
       file_digest=$(sha256sum "$tool_root/$file") || return 1
       printf '%s\0%s\0' "$file" "${file_digest%% *}"
     done

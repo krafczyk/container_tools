@@ -189,14 +189,6 @@ export CT_HOST_PROJECTION_EXECUTABLE="$fake/apptainer"
 export CT_HOST_PROJECTION_BOOT_ID=instance-test-boot
 CT_HOST_PROJECTION_GROUPS="$(id -G)"
 export CT_HOST_PROJECTION_GROUPS
-# shellcheck disable=SC1090
-. "$(dirname "$helper")/ct_library.sh"
-ct_host_projection_selection_key apptainer "$image_path" '' native-inherited
-selection_key=$CT_HOST_PROJECTION_SELECTION_KEY
-CT_HOST_PROJECTION_SOURCES=("$bind_source")
-CT_HOST_PROJECTION_TARGETS=("$(realpath "$bind_source")")
-ct_host_projection_cache_write "$selection_key" fallback complete native-inherited proven
-
 contains_line() {
   local file=$1
   local expected=$2
@@ -208,7 +200,7 @@ contains_line() {
 }
 
 invoke() {
-  "$helper" --apptainer --ct-instance-root "$instance_root" \
+  CT_HOST_PROJECTION_GROUPS="$MKCHAD_TEST_GROUPS" "$helper" --apptainer --ct-instance-root "$instance_root" \
     --ct-bind "$bind_source:$work/container bind" \
     --ct-env 'TEST_VALUE=space value' \
     --ct-bootstrap "$bootstrap" \

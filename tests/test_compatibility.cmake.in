@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+set(prefix_a "@CMAKE_BINARY_DIR@/compatibility-prefix-a")
+set(prefix_b "@CMAKE_BINARY_DIR@/compatibility-prefix-b")
+set(work "/tmp/mkchad-v1/container-tools-c11/compatibility-integration")
+file(REMOVE_RECURSE "${prefix_a}" "${prefix_b}" "${work}")
+file(MAKE_DIRECTORY "${work}/fake-bin" "${work}/copied" "${work}/symlink")
+
+foreach(prefix IN ITEMS "${prefix_a}" "${prefix_b}")
+  execute_process(
+    COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@" --prefix "${prefix}"
+    RESULT_VARIABLE install_result)
+  if(NOT install_result EQUAL 0)
+    message(FATAL_ERROR "compatibility prefix install failed")
+  endif()
+endforeach()
+
+function(expect_result expected description)
+  execute_process(COMMAND ${ARGN} RESULT_VARIABLE actual
+    OUTPUT_VARIABLE command_output ERROR_VARIABLE command_error)
+  if(NOT actual EQUAL expected)
+    message(FATAL_ERROR "${description}: expected ${expected}, got ${actual}: ${command_error}")
+  endif()
+endfunction()
+
+file(WRITE "${work}/mount.conf" "--exclude-path /one path --add-path /two\n")
+foreach(prefix IN ITEMS "${prefix_a}" "${prefix_b}")
+  execute_process(COMMAND "${prefix}/bin/ct_args.sh" "${work}/mount.conf" --exclude-path /three
+    RESULT_VARIABLE args_result OUTPUT_VARIABLE args_output)
+  if(NOT args_result EQUAL 0 OR
+     NOT args_output STREQUAL "--exclude-path /one path /three --add-path /two\n")
+    message(FATAL_ERROR "installed ct_args.sh did not preserve legacy argument grouping")
+  endif()
+endforeach()
+
+expect_result(0 "ct_mount_detector.sh help"
+  "${prefix_a}/bin/ct_mount_detector.sh" --help)
+expect_result(0 "ct_exec.sh dry run"
+  "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1
+  "${prefix_a}/bin/ct_exec.sh" --docker --ct-host-root disabled image command)
+expect_result(0 "ct_shell.sh dry run"
+  "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1
+  "${prefix_a}/bin/ct_shell.sh" --docker --ct-host-root disabled image)
+file(WRITE "${work}/image.sif" "fixture\n")
+expect_result(0 "ct_instance_exec.sh dry run"
+  "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1 "HOME=${work}"
+  "${prefix_a}/bin/ct_instance_exec.sh" --apptainer --ct-instance-root "${work}/instance-root" --
+  "${work}/image.sif" /bin/true)
+if(EXISTS "${work}/instance-root")
+  message(FATAL_ERROR "compatibility dry instance created state")
+endif()
+
+file(WRITE "${work}/fake-bin/docker" "#!/bin/sh\nexit \"$CT_COMPAT_STATUS\"\n")
+file(CHMOD "${work}/fake-bin/docker"
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+expect_result(37 "ct_exec.sh payload exit propagation"
+  "@CMAKE_COMMAND@" -E env "PATH=${work}/fake-bin:$ENV{PATH}" CT_COMPAT_STATUS=37
+  DOCKER_HOST=tcp://remote.invalid "${prefix_a}/bin/ct_exec.sh" --docker image command)
+file(WRITE "${work}/fake-bin/docker" "#!/bin/sh\nkill -TERM $$\n")
+expect_result(143 "ct_exec.sh payload signal propagation"
+  "@CMAKE_COMMAND@" -E env "PATH=${work}/fake-bin:$ENV{PATH}"
+  DOCKER_HOST=tcp://remote.invalid "${prefix_a}/bin/ct_exec.sh" --docker image command)
+
+file(WRITE "${work}/fake-bin/container-tools" "#!/bin/sh\nexit 99\n")
+file(CHMOD "${work}/fake-bin/container-tools"
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+expect_result(0 "compatibility script selected hostile-PATH-safe sibling"
+  "@CMAKE_COMMAND@" -E env "PATH=${work}/fake-bin:$ENV{PATH}"
+  "${prefix_a}/bin/ct_mount_detector.sh" --help)
+
+file(COPY "${prefix_a}/bin/ct_args.sh" DESTINATION "${work}/copied")
+expect_result(127 "copied compatibility script without a package"
+  "${work}/copied/ct_args.sh" "${work}/mount.conf")
+file(CREATE_LINK "${prefix_a}/bin/ct_args.sh" "${work}/symlink/ct_args.sh" SYMBOLIC)
+expect_result(127 "symlinked compatibility script outside its package"
+  "${work}/symlink/ct_args.sh" "${work}/mount.conf")
+
+file(COPY "${prefix_a}" DESTINATION "${work}/non-executable")
+file(CHMOD "${work}/non-executable/compatibility-prefix-a/bin/container-tools"
+  PERMISSIONS OWNER_READ OWNER_WRITE GROUP_READ WORLD_READ)
+expect_result(126 "non-executable sibling container-tools"
+  "${work}/non-executable/compatibility-prefix-a/bin/ct_args.sh" "${work}/mount.conf")
+file(COPY "${prefix_a}" DESTINATION "${work}/wrong-identity")
+file(READ "${work}/wrong-identity/compatibility-prefix-a/bin/ct_args.sh" identity_script)
+string(REGEX REPLACE "CT_PACKAGE_IDENTITY='[^']+'"
+  "CT_PACKAGE_IDENTITY='wrong-identity'" identity_script "${identity_script}")
+file(WRITE "${work}/wrong-identity/compatibility-prefix-a/bin/ct_args.sh" "${identity_script}")
+expect_result(78 "wrong compatibility identity"
+  "${work}/wrong-identity/compatibility-prefix-a/bin/ct_args.sh" "${work}/mount.conf")

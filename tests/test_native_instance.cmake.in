@@ -12,8 +12,8 @@ if(NOT install_result EQUAL 0)
 endif()
 execute_process(
   COMMAND "@CMAKE_CURRENT_SOURCE_DIR@/tests/instance_exec_test.sh"
-          "${work}"
-          "@CMAKE_CURRENT_BINARY_DIR@/native-instance/ct_instance_exec.sh"
+           "${work}"
+           "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/ct_instance_exec.sh"
   RESULT_VARIABLE result
 )
 if(NOT result EQUAL 0)
@@ -21,11 +21,11 @@ if(NOT result EQUAL 0)
 endif()
 execute_process(
   COMMAND bash "@CMAKE_CURRENT_SOURCE_DIR@/tests/mixed_instance_reuse_test.sh"
-          "${work}"
-          "@CMAKE_CURRENT_SOURCE_DIR@/ct_instance_exec.sh"
-          "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/container-tools"
+           "${work}"
+           "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/ct_instance_exec.sh"
+           "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/container-tools"
   RESULT_VARIABLE mixed_result
 )
 if(NOT mixed_result EQUAL 0)
-  message(FATAL_ERROR "mixed Bash/C persistent-instance reuse failed: ${mixed_result}")
+  message(FATAL_ERROR "mixed compatibility/native persistent-instance reuse failed: ${mixed_result}")
 endif()

@@ -1,15 +1,18 @@
 # Container Tools
 
-`ct_exec.sh` and `ct_shell.sh` normalize foreground mounts and launch behavior
-across Docker, Podman, SingularityCE, and Apptainer.
+`ct_exec.sh` and `ct_shell.sh` preserve the foreground command names used by
+existing callers across Docker, Podman, SingularityCE, and Apptainer.
 
 ## C11 Package Bootstrap
 
-The C11 package bootstrap installs one static `container-tools` executable,
-five generated compatibility-script trampolines, and immutable package metadata
-under a caller-selected prefix. It does not replace the current Bash callers in
-this unit. Native `exec`, `shell`, and persistent `instance` operations now own
-their runtime behavior. Selected-root `host exec` validates strict profiles,
+The C11 package installs one static `container-tools` executable, five generated
+compatibility-script trampolines, and immutable package metadata under a
+caller-selected prefix. The installed compatibility commands delegate directly
+to the native `exec`, `shell`, `instance exec`, `mount detect`, and `mount args`
+operations; they have no Bash fallback. Each script invokes only its sibling
+`container-tools`, so copying or symlinking it outside the package `bin/`
+directory fails explicitly rather than selecting `PATH`. `ct_library.sh` is a
+migration-only source interface for U9 consumers and is not installed. Selected-root `host exec` validates strict profiles,
 the exact configured mount-plan, command, cwd, environment, and entry point,
 then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
 rewrite execution without launching an outer container runtime.
@@ -64,8 +67,7 @@ cmake --install /tmp/mkchad-v1/container-tools-c11/release --prefix /opt/contain
 
 The executable and scripts resolve their sibling metadata, so a complete prefix
 can move as a unit. Selection through `PATH` or an exact executable/script path
-uses that selected prefix; mixing files from two prefixes is rejected. The
-bootstrap is not a release-complete replacement for the retained Bash surface.
+uses that selected prefix; mixing files from two prefixes is rejected.
 
 ## Persistent Instance Identity
 
