@@ -100,12 +100,18 @@ if [[ $mode == verify ]]; then
 fi
 
 managed="$prefix/.container-tools"
-validate_projection_slots
-mkdir -p -- "$recovery" "$prefix"
-chmod 700 -- "$recovery"
 umask 077
-exec 9>"$recovery/container-tools-install.lock"
+mkdir -p -- "$prefix" "$managed"
+[[ -d $managed && ! -L $managed ]] || {
+  printf 'install-package: unmanaged prefix collision: %s\n' "$managed" >&2
+  exit 78
+}
+chmod 700 -- "$managed"
+exec 9>"$managed/container-tools-install.lock"
 flock -x 9
+validate_projection_slots
+mkdir -p -- "$recovery"
+chmod 700 -- "$recovery"
 identity="$version-$architecture-$libc-$source_commit"
 transaction="$recovery/$identity"
 state="$transaction/state"

@@ -29,6 +29,36 @@ expect_invalid_archive() {
   fi
   rm -rf -- "$work/invalid-verify"
 }
+
+self_authorized="$work/self-authorized/$archive_root"
+while IFS= read -r path; do
+  [[ $path == ./ ]] && { mkdir -p -- "$self_authorized"; continue; }
+  if [[ $path == */ ]]; then
+    mkdir -p -- "$self_authorized/${path%/}"
+  else
+    mkdir -p -- "$(dirname -- "$self_authorized/$path")"
+    : > "$self_authorized/$path"
+  fi
+done < "$root/scripts/package-files.txt"
+printf '{"schema":"container-tools.archive/v1","version":"1.0.0","architecture":"%s","libc":"glibc","source_commit":"%s"}\n' \
+  "$architecture" "$commit" > "$self_authorized/archive.json"
+printf '{"product_version":"1.0.0","source_commit":"%s","architecture":"%s"}\n' \
+  "$commit" "$architecture" > "$self_authorized/share/container-tools/release.json"
+printf '%s\n' unexpected > "$self_authorized/extra-file"
+(cd "$work/self-authorized" && find "$archive_root" -print | LC_ALL=C sort > "$self_authorized/archive-files.txt")
+tar -C "$work/self-authorized" -czf "$work/self-authorized.tar.gz" "$archive_root"
+self_authorized_digest=$(sha256sum "$work/self-authorized.tar.gz" | awk '{print $1}')
+if bash "$root/scripts/verify-package.sh" --archive "$work/self-authorized.tar.gz" \
+  --sha256 "$self_authorized_digest" --version 1.0.0 --source-commit "$commit" \
+  --architecture "$architecture" --libc glibc --work-root "$work/self-authorized-verify" \
+  2>"$work/self-authorized.stderr"; then
+  printf '%s\n' 'package verifier accepted a self-authorized extra file' >&2
+  exit 1
+fi
+grep -Fq 'verify-package: archive has missing or extra entries' "$work/self-authorized.stderr" || {
+  printf '%s\n' 'package verifier did not reject the self-authorized extra file at the layout boundary' >&2
+  exit 1
+}
 tar -C "$work/malicious" -czf "$work/extra.tar.gz" "$archive_root"
 expect_invalid_archive "$work/extra.tar.gz"
 extra_digest=$(sha256sum "$work/extra.tar.gz" | awk '{print $1}')

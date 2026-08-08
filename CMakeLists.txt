@@ -213,6 +213,8 @@ if(BUILD_TESTING)
     add_test(NAME container_tools_package_install
       COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_install_test.sh")
     set_tests_properties(container_tools_package_install PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME container_tools_installer_lock
+      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_lock_test.sh")
   endif()
 
   add_executable(test_mount_sort tests/test_mount_sort.c)

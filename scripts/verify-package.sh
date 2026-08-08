@@ -31,6 +31,7 @@ done
 [[ -f $archive && $work_root == /* ]] || usage
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
 [[ $digest =~ ^[0-9a-f]{64}$ && $source_commit =~ ^[0-9a-f]{40}$ && $architecture =~ ^[a-z0-9_.-]+$ && $libc =~ ^(musl|glibc)$ ]] || usage
+script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 [[ $(sha256sum "$archive" | awk '{print $1}') == "$digest" ]] || {
   printf '%s\n' 'verify-package: checksum mismatch' >&2; exit 78; }
 root="container-tools-${version}-${architecture}-${libc}-${source_commit}"
@@ -45,9 +46,13 @@ tar -tvzf "$archive" | awk '$1 !~ /^[-d]/ { exit 1 }' || {
 tar -xzf "$archive" -C "$work"
 package_root="$work/$root"
 sort -u "$work/names" | sed 's:/$::' > "$work/actual"
-sort -u "$package_root/archive-files.txt" > "$work/expected"
-cmp -s "$work/actual" "$work/expected" || {
-  printf '%s\n' 'verify-package: archive has missing or extra entries' >&2; exit 78; }
+awk -v root="$root" '{ path=$0; sub(/\/$/, "", path); print path == "." ? root : root "/" path }' \
+  "$script_dir/package-files.txt" | LC_ALL=C sort -u > "$work/expected"
+if ! cmp -s "$work/actual" "$work/expected" ||
+   ! cmp -s "$package_root/archive-files.txt" "$work/expected"; then
+  printf '%s\n' 'verify-package: archive has missing or extra entries' >&2
+  exit 78
+fi
 for path in README.md LICENSE-APACHE LICENSE-MIT archive.json archive-files.txt \
   vendor/tomlc17/PROVENANCE.md vendor/tomlc17/LICENSE vendor/yyjson/PROVENANCE.md vendor/yyjson/LICENSE \
   bin/container-tools bin/ct_exec.sh bin/ct_shell.sh bin/ct_instance_exec.sh bin/ct_mount_detector.sh bin/ct_args.sh \

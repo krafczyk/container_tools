@@ -33,10 +33,14 @@ extern char *realpath(const char *restrict path, char *restrict resolved_path);
 #define CT_INSTANCE_ENVIRONMENT_MAX 128U
 #define CT_INSTANCE_GROUP_MAX 1024U
 #define CT_INSTANCE_MOUNT_MAX (CT_MOUNT_MAX_PATHS * 2U + CT_HOST_PROJECTION_MAX_ENTRIES * 2U + CT_INSTANCE_EXPLICIT_MAX * 2U + 16U)
-#define CT_INSTANCE_FIELD_MAX (CT_INSTANCE_MOUNT_MAX * 3U + 256U)
+#define CT_INSTANCE_FIXED_FIELD_MAX 16U
+#define CT_INSTANCE_FIELD_MAX (CT_INSTANCE_MOUNT_MAX * 3U + CT_INSTANCE_GROUP_MAX + CT_INSTANCE_FIXED_FIELD_MAX)
 #define CT_INSTANCE_ARGUMENT_MAX (CT_INSTANCE_MOUNT_MAX * 2U + CT_INSTANCE_ENVIRONMENT_MAX * 2U + 32U)
 #define CT_INSTANCE_PATH_MAX 4096U
 #define CT_INSTANCE_DESCRIPTOR_MAX (CT_INSTANCE_PATH_MAX * 2U + 64U)
+
+_Static_assert(CT_INSTANCE_FIELD_MAX <= CT_PROFILE_MAX_FIELDS,
+               "profile field capacity must cover persistent instances");
 
 struct ct_instance_bind {
   char source[CT_INSTANCE_PATH_MAX];
@@ -487,6 +491,14 @@ done:
   return result;
 }
 
+static int ct_instance_field_append(const char **fields, size_t *field_count,
+                                    const char *value)
+{
+  if (*field_count >= CT_INSTANCE_FIELD_MAX) return 1;
+  fields[(*field_count)++] = value;
+  return 0;
+}
+
 static int ct_instance_groups(const char **fields, size_t *field_count,
                               char values[][32], size_t value_count)
 {
@@ -534,7 +546,7 @@ static int ct_instance_groups(const char **fields, size_t *field_count,
                  (unsigned long)groups[index]) >= (int)sizeof(values[used])) {
       return 1;
     }
-    fields[(*field_count)++] = values[used++];
+    if (ct_instance_field_append(fields, field_count, values[used++]) != 0) return 1;
   }
   return 0;
 }
@@ -703,17 +715,22 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
                               "/.container-tools-mount-plan", "manifest-internal",
                               "read-only", "runtime-default", 0, 0, 0) != 0) goto done;
   }
-  fields[field_count++] = request->backend;
-  if (request->runtime_argument != NULL) fields[field_count++] = request->runtime_argument;
-  fields[field_count++] = uid;
-  fields[field_count++] = host;
-  fields[field_count++] = home;
-  fields[field_count++] = request->root;
-  fields[field_count++] = prepared->image_real;
-  fields[field_count++] = prepared->image_identity;
-  fields[field_count++] = bootstrap_identity;
-  fields[field_count++] = "ct-instance-profile-v3";
-  fields[field_count++] = "ct-host-projection-profile-v1";
+  if (ct_instance_field_append(fields, &field_count, request->backend) != 0 ||
+      (request->runtime_argument != NULL &&
+       ct_instance_field_append(fields, &field_count,
+                                request->runtime_argument) != 0) ||
+      ct_instance_field_append(fields, &field_count, uid) != 0 ||
+      ct_instance_field_append(fields, &field_count, host) != 0 ||
+      ct_instance_field_append(fields, &field_count, home) != 0 ||
+      ct_instance_field_append(fields, &field_count, request->root) != 0 ||
+      ct_instance_field_append(fields, &field_count, prepared->image_real) != 0 ||
+      ct_instance_field_append(fields, &field_count,
+                               prepared->image_identity) != 0 ||
+      ct_instance_field_append(fields, &field_count, bootstrap_identity) != 0 ||
+      ct_instance_field_append(fields, &field_count,
+                               "ct-instance-profile-v3") != 0 ||
+      ct_instance_field_append(fields, &field_count,
+                               "ct-host-projection-profile-v1") != 0) goto done;
   projection_fields[projection_count++] = "ct-host-projection-profile-v1";
   projection_fields[projection_count++] = "host-projection-v6";
   projection_fields[projection_count++] = projection.strategy;
@@ -728,23 +745,26 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
   }
   if (ct_profile_digest_fields(projection_fields, projection_count,
                                projection_digest) != 0) goto done;
-  fields[field_count++] = projection_digest;
-  fields[field_count++] = uid;
-  fields[field_count++] = gid;
-  fields[field_count++] = projection.group_mode;
-  if (ct_instance_groups(fields, &field_count, group_values,
-                         CT_INSTANCE_GROUP_MAX) != 0) goto done;
+  if (ct_instance_field_append(fields, &field_count, projection_digest) != 0 ||
+      ct_instance_field_append(fields, &field_count, uid) != 0 ||
+      ct_instance_field_append(fields, &field_count, gid) != 0 ||
+      ct_instance_field_append(fields, &field_count, projection.group_mode) != 0 ||
+      ct_instance_groups(fields, &field_count, group_values,
+                          CT_INSTANCE_GROUP_MAX) != 0) goto done;
   for (index = 0U; index < prepared->mount_count; ++index) {
-    fields[field_count++] = prepared->mounts[index].generated ? "--mount" : "--bind";
-    fields[field_count++] = prepared->mounts[index].descriptor;
+    if (ct_instance_field_append(
+            fields, &field_count,
+            prepared->mounts[index].generated ? "--mount" : "--bind") != 0 ||
+        ct_instance_field_append(fields, &field_count,
+                                 prepared->mounts[index].descriptor) != 0) goto done;
   }
   for (index = 0U; index < prepared->mount_count; ++index) {
     if (prepared->mounts[index].profile_identity != NULL) {
-      fields[field_count++] = prepared->mounts[index].profile_identity;
+      if (ct_instance_field_append(fields, &field_count,
+                                   prepared->mounts[index].profile_identity) != 0) goto done;
     }
   }
-  if (field_count > CT_INSTANCE_FIELD_MAX ||
-      ct_profile_digest_fields(fields, field_count, prepared->digest) != 0 ||
+  if (ct_profile_digest_fields(fields, field_count, prepared->digest) != 0 ||
       snprintf(prepared->name, sizeof(prepared->name), "mkchad-%.32s",
                prepared->digest) >= (int)sizeof(prepared->name) ||
       !ct_instance_assets_current(request, prepared, bootstrap_real,

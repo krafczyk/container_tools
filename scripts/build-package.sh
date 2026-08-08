@@ -85,7 +85,13 @@ cp -- "$source_root/vendor/tomlc17/PROVENANCE.md" "$source_root/vendor/tomlc17/L
 cp -- "$source_root/vendor/yyjson/PROVENANCE.md" "$source_root/vendor/yyjson/LICENSE" "$package_root/vendor/yyjson/"
 printf '{"schema":"container-tools.archive/v1","version":"%s","architecture":"%s","libc":"%s","source_commit":"%s"}\n' \
   "$version" "$architecture" "$libc" "$source_commit" > "$package_root/archive.json"
-(cd "$work" && find "$archive_name" -print | LC_ALL=C sort > "$package_root/archive-files.txt")
+awk -v root="$archive_name" '{ path=$0; sub(/\/$/, "", path); print path == "." ? root : root "/" path }' \
+  "$source_root/scripts/package-files.txt" | LC_ALL=C sort -u > "$package_root/archive-files.txt"
+(cd "$work" && find "$archive_name" -print | LC_ALL=C sort > "$work/archive-files.actual")
+cmp -s "$work/archive-files.actual" "$package_root/archive-files.txt" || {
+  printf '%s\n' 'build-package: installed package layout is not allowlisted' >&2
+  exit 78
+}
 timestamp=$(git -C "$source_root" show -s --format=%ct "$source_commit")
 tar --format=posix --sort=name --mtime="@$timestamp" --owner=0 --group=0 --numeric-owner \
   -C "$work" -czf "$archive" "$archive_name"

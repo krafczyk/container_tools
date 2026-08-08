@@ -11,6 +11,9 @@
 int main(void)
 {
   char *dry[] = {"--docker", "--ct-host-root", "disabled", "image", "command"};
+  char *duplicate_shell[] = {"--docker", "--ct-container-shell", "/bin/sh", "--ct-container-shell", "/bin/bash", "image", "command"};
+  char *duplicate_host_root[] = {"--docker", "--ct-host-root", "required", "--ct-host-root", "disabled", "image", "command"};
+  char *duplicate_refresh[] = {"--docker", "--ct-host-root-refresh", "--ct-host-root-refresh", "image", "command"};
   char work[] = "/tmp/mkchad-v1/container-tools-c11/native-runtime-test.XXXXXX";
   char fake[4096], source[4096], alias[4096], alias_binding[8192], binding[8192], log[4096], state[4096], mountinfo[4096], path[8192];
   char *launch[] = {"--docker", "--ct-host-root", "required", "--ct-bind", binding, "image", "command"};
@@ -18,7 +21,10 @@ int main(void)
   FILE *stream;
   char contents[16384];
   size_t bytes;
-  if (setenv("CT_DRY_RUN", "1", 1) != 0 || ct_runtime_foreground_command(5, dry, 0) != 0) return 1;
+  if (setenv("CT_DRY_RUN", "1", 1) != 0 || ct_runtime_foreground_command(5, dry, 0) != 0 ||
+      ct_runtime_foreground_command(7, duplicate_shell, 0) != 64 ||
+      ct_runtime_foreground_command(7, duplicate_host_root, 0) != 64 ||
+      ct_runtime_foreground_command(5, duplicate_refresh, 0) != 64) return 1;
   if (unsetenv("CT_DRY_RUN") != 0 || mkdtemp(work) == NULL ||
       snprintf(fake, sizeof(fake), "%s/fake", work) >= (int)sizeof(fake) || mkdir(fake, 0700) != 0 ||
       snprintf(source, sizeof(source), "%s/source", work) >= (int)sizeof(source) || mkdir(source, 0700) != 0 ||

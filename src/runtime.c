@@ -180,7 +180,8 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   char manifest_path[CT_RUNTIME_PATH_MAX], state_root[CT_RUNTIME_PATH_MAX], cache_root[CT_RUNTIME_PATH_MAX], uid_gid[64], cwd[CT_RUNTIME_PATH_MAX];
   char *command[CT_RUNTIME_MAX_ARGUMENTS] = {NULL};
   size_t bind_count = 0U, environment_count = 0U, entry_count = 0U, mask_count = 0U, mount_string_count = CT_RUNTIME_MAX_ENTRIES, payload_index = 1U, index, command_count = 0U;
-  int delimited = 0, dry, remote, refresh = 0, result = 125;
+  int delimited = 0, dry, remote, refresh = 0, host_root_seen = 0;
+  int container_shell_seen = 0, result = 125;
 
   if (argument_count < 2 || arguments == NULL || !ct_runtime_backend(arguments[0])) { (void)fputs("container-tools: exec: container backend is required\n", stderr); return 64; }
   backend = ct_runtime_backend_name(arguments[0]);
@@ -204,9 +205,9 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
     }
     if (strcmp(option, "--ct-env") == 0) { if (index + 1U >= (size_t)argument_count || environment_count == CT_RUNTIME_MAX_ENTRIES || !ct_runtime_env_valid(arguments[index + 1U])) return 64; environment[environment_count++] = arguments[index + 1U]; index += 2U; continue; }
     if (strcmp(option, "--ct-bootstrap") == 0) { if (bootstrap != NULL || index + 1U >= (size_t)argument_count || !ct_runtime_path_valid(arguments[index + 1U]) || access(arguments[index + 1U], R_OK | X_OK) != 0) return 64; bootstrap = arguments[index + 1U]; index += 2U; continue; }
-    if (strcmp(option, "--ct-container-shell") == 0) { if (index + 1U >= (size_t)argument_count || arguments[index + 1U][0] != '/') return 64; container_shell = arguments[index + 1U]; index += 2U; continue; }
-    if (strcmp(option, "--ct-host-root") == 0) { if (index + 1U >= (size_t)argument_count || (strcmp(arguments[index + 1U], "auto") != 0 && strcmp(arguments[index + 1U], "required") != 0 && strcmp(arguments[index + 1U], "disabled") != 0)) return 64; host_root = arguments[index + 1U]; index += 2U; continue; }
-    if (strcmp(option, "--ct-host-root-refresh") == 0) { refresh = 1; ++index; continue; }
+    if (strcmp(option, "--ct-container-shell") == 0) { if (container_shell_seen || index + 1U >= (size_t)argument_count || arguments[index + 1U][0] != '/') return 64; container_shell = arguments[index + 1U]; container_shell_seen = 1; index += 2U; continue; }
+    if (strcmp(option, "--ct-host-root") == 0) { if (host_root_seen || index + 1U >= (size_t)argument_count || (strcmp(arguments[index + 1U], "auto") != 0 && strcmp(arguments[index + 1U], "required") != 0 && strcmp(arguments[index + 1U], "disabled") != 0)) return 64; host_root = arguments[index + 1U]; host_root_seen = 1; index += 2U; continue; }
+    if (strcmp(option, "--ct-host-root-refresh") == 0) { if (refresh) return 64; refresh = 1; ++index; continue; }
     break;
   }
   if (!delimited) payload_index = index;

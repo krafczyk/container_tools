@@ -78,9 +78,9 @@ directory, and declared static libc family. It never overwrites an existing
 archive or checksum. Musl archives use `musl-gcc` by default (overridable with
 `CT_MUSL_CC`); glibc archives require a glibc compiler selected through `CC` or
 the host default. `scripts/verify-package.sh` checks an externally supplied
-checksum, closed archive layout, archive/release identity, static ELF linkage,
-machine identity, and the installed package's two identity reports in a private
-temporary extraction.
+checksum, the verifier-owned closed archive layout, archive/release identity,
+static ELF linkage, machine identity, and the installed package's two identity
+reports in a private temporary extraction.
 
 `scripts/install-package.sh` uses `--check`, `--apply`, or `--verify` with the
 same archive identity. `--apply` requires a private recovery directory, holds a
@@ -200,9 +200,11 @@ and are prepended without replacing image paths or caller-provided equivalent
 Use `--ct-host-root required` to refuse the payload unless the current complete
 projection is available. `--ct-host-root-refresh` ignores a warm record for one
 launch and performs a new cold proof; a failed refresh does not consume the old
-record. Automatic launches warn and retain the existing launch behavior when a
-projection is unavailable or partial. Explicit remote Docker/Podman endpoint
-selectors are intentionally unavailable because their daemon host is not local.
+record. Foreground singleton options reject duplicates rather than selecting a
+last value. Automatic launches warn and retain the existing launch behavior
+when a projection is unavailable or partial. Explicit remote Docker/Podman
+endpoint selectors are intentionally unavailable because their daemon host is
+not local.
 `--ct-host-root disabled` deliberately emits no generated `/host` projection
 while retaining the local semantic manifest for the remaining launcher mounts.
 Top-level kernel API exclusions are complete by definition and do not produce

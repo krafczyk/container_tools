@@ -5,8 +5,6 @@
 
 #include <string.h>
 
-#define CT_PROFILE_MAX_FIELDS 2048U
-
 int ct_profile_digest_fields(const char *const fields[], size_t field_count,
                              char digest[CT_PROFILE_DIGEST_HEX_LENGTH])
 {
