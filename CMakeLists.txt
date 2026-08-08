@@ -202,6 +202,15 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake" @ONLY)
   add_test(NAME container_tools_compatibility COMMAND "${CMAKE_COMMAND}" -P
     "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake")
+  find_program(CONTAINER_TOOLS_BASH bash)
+  if(CONTAINER_TOOLS_BASH)
+    add_test(NAME container_tools_package_archive
+      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_archive_test.sh")
+    set_tests_properties(container_tools_package_archive PROPERTIES SKIP_RETURN_CODE 77)
+    add_test(NAME container_tools_package_install
+      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_install_test.sh")
+    set_tests_properties(container_tools_package_install PROPERTIES SKIP_RETURN_CODE 77)
+  endif()
 
   add_executable(test_mount_sort tests/test_mount_sort.c)
   target_include_directories(test_mount_sort PRIVATE src)

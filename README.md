@@ -11,8 +11,8 @@ caller-selected prefix. The installed compatibility commands delegate directly
 to the native `exec`, `shell`, `instance exec`, `mount detect`, and `mount args`
 operations; they have no Bash fallback. Each script invokes only its sibling
 `container-tools`, so copying or symlinking it outside the package `bin/`
-directory fails explicitly rather than selecting `PATH`. `ct_library.sh` is a
-migration-only source interface for U9 consumers and is not installed. Selected-root `host exec` validates strict profiles,
+directory fails explicitly rather than selecting `PATH`. There is no sourceable
+Bash library in the package or repository product surface. Selected-root `host exec` validates strict profiles,
 the exact configured mount-plan, command, cwd, environment, and entry point,
 then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
 rewrite execution without launching an outer container runtime.
@@ -68,6 +68,28 @@ cmake --install /tmp/mkchad-v1/container-tools-c11/release --prefix /opt/contain
 The executable and scripts resolve their sibling metadata, so a complete prefix
 can move as a unit. Selection through `PATH` or an exact executable/script path
 uses that selected prefix; mixing files from two prefixes is rejected.
+
+## Archive And Prefix Installation
+
+`scripts/build-package.sh` creates one deterministic native archive only from a
+clean checkout at the requested 40-hex commit. It requires an absolute disposable
+build root below `/tmp/mkchad-v1/container-tools-c11`, a semantic version, output
+directory, and declared static libc family. It never overwrites an existing
+archive or checksum. Musl archives use `musl-gcc` by default (overridable with
+`CT_MUSL_CC`); glibc archives require a glibc compiler selected through `CC` or
+the host default. `scripts/verify-package.sh` checks an externally supplied
+checksum, closed archive layout, archive/release identity, static ELF linkage,
+machine identity, and the installed package's two identity reports in a private
+temporary extraction.
+
+`scripts/install-package.sh` uses `--check`, `--apply`, or `--verify` with the
+same archive identity. `--apply` requires a private recovery directory, holds a
+prefix transaction lock, stages and verifies the archive, and atomically changes
+one package-current pointer. A package-managed prefix exposes `bin` and `share`
+through that pointer, so its observable package is always one complete identity
+or fails closed during a recoverable interrupted exposure. The installer refuses
+unmanaged `bin` or `share` collisions; it does not claim that multiple directory
+renames are atomic and does not adopt raw source or partial package trees.
 
 ## Persistent Instance Identity
 

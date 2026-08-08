@@ -5,4 +5,4 @@ remote-exec	ct_exec.sh	remote-launch	pass	no-local-manifest
 bootstrap	ct_exec.sh,ct_shell.sh	argv-and-status	pass	all-four-outer-runtime-shapes
 persistent	ct_instance_exec.sh	state-and-cleanup	pass	create-reuse-mismatch-concurrency-interruption
 projection	ct_exec.sh,ct_shell.sh	manifest-and-diagnostics	pass	direct-fallback-none-and-source-mutation
-runtime-config	ct_library.sh	config-and-buildx-cache	pass	success-failure-and-private-storage
+runtime-config	container-tools runtime exec,buildx exec	config-and-buildx-cache	pass	success-failure-and-private-storage

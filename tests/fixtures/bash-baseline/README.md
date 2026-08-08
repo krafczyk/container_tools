@@ -7,7 +7,6 @@ runtime listings, or mutable temporary paths. `tests/parity_test.sh
 --generate-fixtures` produces the complete directory and `--verify-fixtures`
 rejects drift.
 
-The vectors are exercised against the current Bash entry points with isolated
-HOME, XDG, runtime, and fake-backend roots. A later installed native package
-uses the same driver and fixture directory; it must not copy `ct_library.sh`
-into this tree.
+The immutable vectors record historical behavior with isolated HOME, XDG,
+runtime, and fake-backend roots. They are evidence only: a later installed
+native package uses the same data without retaining a sourceable Bash oracle.

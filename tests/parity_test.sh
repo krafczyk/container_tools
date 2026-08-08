@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Run neutral U1 vectors against the current Bash implementation or a later
-# installed native package without carrying the Bash implementation as fixture data.
+# Run immutable U1 vectors against an installed native package.
 set -euo pipefail
 
 readonly fixture_schema='schema	container-tools.bash-baseline-fixtures/v1'
@@ -9,7 +8,7 @@ readonly fixture_root_name='bash-baseline'
 usage() {
   printf '%s\n' 'usage: parity_test.sh --generate-fixtures DIRECTORY'
   printf '%s\n' '       parity_test.sh --verify-fixtures'
-  printf '%s\n' '       parity_test.sh --implementation bash|native --root DIRECTORY --work /tmp/mkchad-v1/container-tools-c11/RUN_ID'
+  printf '%s\n' '       parity_test.sh --implementation native --root DIRECTORY --work /tmp/mkchad-v1/container-tools-c11/RUN_ID'
 }
 
 script_dir=$(dirname "$(realpath "$0")")
@@ -25,7 +24,7 @@ write_contracts() {
     $'bootstrap\tct_exec.sh,ct_shell.sh\targv-and-status\tpass\tall-four-outer-runtime-shapes' \
     $'persistent\tct_instance_exec.sh\tstate-and-cleanup\tpass\tcreate-reuse-mismatch-concurrency-interruption' \
     $'projection\tct_exec.sh,ct_shell.sh\tmanifest-and-diagnostics\tpass\tdirect-fallback-none-and-source-mutation' \
-    $'runtime-config\tct_library.sh\tconfig-and-buildx-cache\tpass\tsuccess-failure-and-private-storage' \
+    $'runtime-config\tcontainer-tools runtime exec,buildx exec\tconfig-and-buildx-cache\tpass\tsuccess-failure-and-private-storage' \
     > "$destination/contracts.tsv"
   printf '%s\n' '--exclude-path /vector path --add-path /literal;delimiter' > "$destination/mount.conf"
   printf '%s\n' "$fixture_schema" \
@@ -96,9 +95,6 @@ mkdir -p -- "$work/home" "$work/xdg-config" "$work/xdg-state" "$work/runtime" "$
 chmod 700 -- "$work/home" "$work/xdg-config" "$work/xdg-state" "$work/runtime"
 
 case "$implementation" in
-  bash)
-    [[ -x $root/ct_exec.sh && -x $root/ct_args.sh && -f $root/ct_library.sh ]] || { usage >&2; exit 2; }
-    ;;
   native)
     # Installed compatibility entry points exercise the same neutral vectors
     # after U8 without preserving the private Bash implementation boundary.
