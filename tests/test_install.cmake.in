@@ -80,7 +80,26 @@ expect_success(mount detect --help)
 file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add-path /two\n")
 expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)
 expect_success(runtime exec --backend podman -- /bin/true)
-expect_not_implemented(host exec -- command)
+file(WRITE "${CMAKE_BINARY_DIR}/host.toml"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+execute_process(
+  COMMAND "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/host.toml" -- /bin/true
+  RESULT_VARIABLE host_result
+  ERROR_VARIABLE host_error
+)
+if(NOT host_result EQUAL 125 OR NOT host_error MATCHES "nested backend unavailable")
+  message(FATAL_ERROR "installed host command did not complete selected-root planning")
+endif()
+execute_process(
+  COMMAND "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/host.toml" -- missing-host-command
+  RESULT_VARIABLE missing_host_result
+  ERROR_VARIABLE missing_host_error
+)
+if(NOT missing_host_result EQUAL 127 OR NOT missing_host_error MATCHES "command not found")
+  message(FATAL_ERROR "installed host command did not preserve not-found phase")
+endif()
 expect_not_implemented(host doctor --json)
 
 file(MAKE_DIRECTORY "${moved_parent}")

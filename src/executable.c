@@ -1,0 +1,353 @@
+/* SPDX-License-Identifier: Apache-2.0 OR MIT */
+#include "executable.h"
+
+#include "path_map.h"
+
+#include <fcntl.h>
+#include <errno.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+
+static enum ct_executable_status ct_executable_open(
+    const struct ct_path_map *map, const char *target, int *descriptor,
+    char visible[CT_HOST_PATH_MAX])
+{
+  struct stat status;
+  if (ct_path_map_visible(map, target, visible) != 0) {
+    return CT_EXECUTABLE_INCOMPATIBLE;
+  }
+  *descriptor = open(visible, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (*descriptor < 0) {
+    return errno == ENOENT || errno == ENOTDIR ? CT_EXECUTABLE_NOT_FOUND
+                                               : CT_EXECUTABLE_IO;
+  }
+  if (fstat(*descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
+    (void)close(*descriptor);
+    *descriptor = -1;
+    return CT_EXECUTABLE_INCOMPATIBLE;
+  }
+  if (access(visible, X_OK) != 0) {
+    (void)close(*descriptor);
+    *descriptor = -1;
+    return CT_EXECUTABLE_INCOMPATIBLE;
+  }
+  {
+    struct stat final;
+    if (stat(visible, &final) != 0 || final.st_dev != status.st_dev ||
+        final.st_ino != status.st_ino) {
+      (void)close(*descriptor);
+      *descriptor = -1;
+      return CT_EXECUTABLE_IO;
+    }
+  }
+  return CT_EXECUTABLE_OK;
+}
+
+static enum ct_executable_status ct_executable_find(
+    const struct ct_host_profile *profile, const struct ct_path_map *map,
+    const char *path_override, const char *command, int *descriptor,
+    char target[CT_HOST_PATH_MAX], char visible[CT_HOST_PATH_MAX])
+{
+  size_t index;
+  if (strchr(command, '/') != NULL) {
+    if (ct_host_path_validate(command) != 0 ||
+        ct_host_copy_bounded(target, CT_HOST_PATH_MAX, command) != 0) {
+      return CT_EXECUTABLE_INCOMPATIBLE;
+    }
+    return ct_executable_open(map, target, descriptor, visible);
+  }
+  if (path_override != NULL) {
+    const char *cursor = path_override;
+    while (*cursor != '\0') {
+      const char *end = strchr(cursor, ':');
+      const size_t length = end == NULL ? strlen(cursor) : (size_t)(end - cursor);
+      char directory[CT_HOST_PATH_MAX];
+      enum ct_executable_status result;
+      if (length == 0U || length >= sizeof(directory)) {
+        return CT_EXECUTABLE_INCOMPATIBLE;
+      }
+      memcpy(directory, cursor, length);
+      directory[length] = '\0';
+      if (ct_host_path_validate(directory) != 0 ||
+          snprintf(target, CT_HOST_PATH_MAX, "%s/%s", directory, command) >=
+              (int)CT_HOST_PATH_MAX) return CT_EXECUTABLE_INCOMPATIBLE;
+      result = ct_executable_open(map, target, descriptor, visible);
+      if (result == CT_EXECUTABLE_OK) return result;
+      if (result != CT_EXECUTABLE_NOT_FOUND) return result;
+      if (end == NULL) break;
+      cursor = end + 1;
+    }
+    return CT_EXECUTABLE_NOT_FOUND;
+  }
+  for (index = 0U; index < profile->path_count; ++index) {
+    enum ct_executable_status result;
+    if (snprintf(target, CT_HOST_PATH_MAX, "%s/%s", profile->path[index],
+                 command) >= (int)CT_HOST_PATH_MAX) {
+      return CT_EXECUTABLE_INCOMPATIBLE;
+    }
+    result = ct_executable_open(map, target, descriptor, visible);
+    if (result == CT_EXECUTABLE_OK) return result;
+    if (result != CT_EXECUTABLE_NOT_FOUND) return result;
+  }
+  return CT_EXECUTABLE_NOT_FOUND;
+}
+
+struct ct_executable_env_command {
+  char command[CT_HOST_PATH_MAX];
+  char path[CT_HOST_PATH_MAX];
+  int path_override;
+};
+
+static int ct_executable_env_token(const char **position,
+                                   char token[CT_HOST_PATH_MAX])
+{
+  const char *cursor = *position;
+  size_t used = 0U;
+  char quote = '\0';
+  while (*cursor == ' ' || *cursor == '\t') ++cursor;
+  if (*cursor == '\0') {
+    *position = cursor;
+    return 1;
+  }
+  while (*cursor != '\0' &&
+         (quote != '\0' || (*cursor != ' ' && *cursor != '\t'))) {
+    const char byte = *cursor++;
+    if (quote == '\0' && (byte == '\'' || byte == '"')) {
+      quote = byte;
+      continue;
+    }
+    if (quote != '\0' && byte == quote) {
+      quote = '\0';
+      continue;
+    }
+    if (byte == '\\' || byte == '$' || used + 1U >= CT_HOST_PATH_MAX) return 1;
+    token[used++] = byte;
+  }
+  if (quote != '\0' || used == 0U) return 1;
+  token[used] = '\0';
+  *position = cursor;
+  return 0;
+}
+
+static int ct_executable_env_assignment(const char *token, const char **value)
+{
+  const char *equals = strchr(token, '=');
+  const char *cursor;
+  if (equals == NULL || equals == token ||
+      !((token[0] >= 'A' && token[0] <= 'Z') ||
+        (token[0] >= 'a' && token[0] <= 'z') || token[0] == '_')) return 0;
+  for (cursor = token + 1; cursor < equals; ++cursor) {
+    if (!((*cursor >= 'A' && *cursor <= 'Z') ||
+          (*cursor >= 'a' && *cursor <= 'z') ||
+          (*cursor >= '0' && *cursor <= '9') || *cursor == '_')) return 0;
+  }
+  *value = equals + 1;
+  return 1;
+}
+
+static int ct_executable_env_parse(const char *argument,
+                                   struct ct_executable_env_command *result)
+{
+  const char *cursor = argument;
+  int options = 1;
+  memset(result, 0, sizeof(*result));
+  if (strncmp(cursor, "-S", 2U) != 0 ||
+      (cursor[2] != ' ' && cursor[2] != '\t')) {
+    const char *assignment;
+    return cursor[0] == '-' || strchr(cursor, ' ') != NULL ||
+                   strchr(cursor, '\t') != NULL ||
+                   ct_executable_env_assignment(cursor, &assignment) != 0 ||
+                   ct_host_copy_bounded(result->command,
+                                        sizeof(result->command), cursor) != 0
+               ? 1
+               : 0;
+  }
+  cursor += 2;
+  for (;;) {
+    char token[CT_HOST_PATH_MAX];
+    const char *assignment;
+    if (ct_executable_env_token(&cursor, token) != 0) return 1;
+    if (options && strcmp(token, "--") == 0) {
+      options = 0;
+      continue;
+    }
+    if (options && (strcmp(token, "-i") == 0 ||
+                    strcmp(token, "--ignore-environment") == 0)) {
+      if (ct_host_copy_bounded(result->path, sizeof(result->path),
+                               "/bin:/usr/bin") != 0) return 1;
+      result->path_override = 1;
+      continue;
+    }
+    if (options && (strcmp(token, "-u") == 0 ||
+                    strcmp(token, "--unset") == 0 ||
+                    strcmp(token, "-C") == 0 ||
+                    strcmp(token, "--chdir") == 0 ||
+                    strcmp(token, "-a") == 0 ||
+                    strcmp(token, "--argv0") == 0)) {
+      char operand[CT_HOST_PATH_MAX];
+      if (ct_executable_env_token(&cursor, operand) != 0) return 1;
+      if ((strcmp(token, "-u") == 0 || strcmp(token, "--unset") == 0) &&
+          strcmp(operand, "PATH") == 0) {
+        if (ct_host_copy_bounded(result->path, sizeof(result->path),
+                                 "/bin:/usr/bin") != 0) return 1;
+        result->path_override = 1;
+      }
+      continue;
+    }
+    if (options && strncmp(token, "--unset=", 8U) == 0) {
+      if (strcmp(token + 8U, "PATH") == 0) {
+        if (ct_host_copy_bounded(result->path, sizeof(result->path),
+                                 "/bin:/usr/bin") != 0) return 1;
+        result->path_override = 1;
+      }
+      continue;
+    }
+    if (options && (strncmp(token, "--chdir=", 8U) == 0 ||
+                    strncmp(token, "--argv0=", 8U) == 0)) continue;
+    if (ct_executable_env_assignment(token, &assignment) != 0) {
+      if ((size_t)(assignment - token) == 5U &&
+          strncmp(token, "PATH=", 5U) == 0) {
+        if (ct_host_copy_bounded(result->path, sizeof(result->path),
+                                 assignment) != 0 || result->path[0] == '\0') {
+          return 1;
+        }
+        result->path_override = 1;
+      }
+      continue;
+    }
+    if (token[0] == '-' ||
+        ct_host_copy_bounded(result->command, sizeof(result->command),
+                             token) != 0) return 1;
+    return 0;
+  }
+}
+
+enum ct_executable_status ct_executable_resolve(
+    const struct ct_host_profile *profile, const struct ct_path_map *map,
+    const char *command,
+    struct ct_executable *executable)
+{
+  enum ct_executable_status result;
+  char current[CT_HOST_PATH_MAX], visible[CT_HOST_PATH_MAX];
+  char pending_env_command[CT_HOST_PATH_MAX] = "";
+  char pending_env_path[CT_HOST_PATH_MAX] = "";
+  int pending_env_path_override = 0;
+  int descriptor = -1;
+  size_t depth;
+  if (profile == NULL || map == NULL || command == NULL || command[0] == '\0' ||
+      executable == NULL) return CT_EXECUTABLE_INCOMPATIBLE;
+  memset(executable, 0, sizeof(*executable));
+  executable->descriptor = -1;
+  result = ct_executable_find(profile, map, NULL, command, &descriptor, current,
+                              visible);
+  if (result != CT_EXECUTABLE_OK) return result;
+  executable->descriptor = descriptor;
+  if (ct_host_copy_bounded(executable->target_path,
+                           sizeof(executable->target_path), current) != 0 ||
+      ct_host_copy_bounded(executable->visible_path,
+                           sizeof(executable->visible_path), visible) != 0) goto invalid;
+  for (depth = 0U; depth < CT_EXECUTABLE_MAX_STAGES; ++depth) {
+    struct ct_executable_stage *stage = &executable->stages[depth];
+    size_t previous;
+    if (ct_host_copy_bounded(stage->target_path, sizeof(stage->target_path),
+                             current) != 0) goto invalid;
+    for (previous = 0U; previous < depth; ++previous) {
+      if (strcmp(executable->stages[previous].target_path, current) == 0) goto invalid;
+    }
+    executable->stage_count = depth + 1U;
+    if (ct_elf_inspect(descriptor, &stage->elf) == 0) {
+      if (pending_env_command[0] != '\0') {
+        if (descriptor != executable->descriptor) (void)close(descriptor);
+        descriptor = -1;
+        result = ct_executable_find(
+            profile, map,
+            pending_env_path_override != 0 ? pending_env_path : NULL,
+            pending_env_command, &descriptor, current, visible);
+        pending_env_command[0] = '\0';
+        pending_env_path[0] = '\0';
+        pending_env_path_override = 0;
+        if (result != CT_EXECUTABLE_OK) goto failed;
+        continue;
+      }
+      if (descriptor != executable->descriptor) (void)close(descriptor);
+      return CT_EXECUTABLE_OK;
+    }
+    if (depth + 1U == CT_EXECUTABLE_MAX_STAGES ||
+        ct_shebang_parse(descriptor, &stage->shebang) != 0) goto invalid;
+    stage->is_shebang = 1;
+    if (descriptor != executable->descriptor) (void)close(descriptor);
+    descriptor = -1;
+    if (stage->shebang.uses_env != 0) {
+      struct ct_executable_env_command env;
+      if (ct_executable_env_parse(stage->shebang.argument, &env) != 0 ||
+          ct_host_copy_bounded(pending_env_command,
+                               sizeof(pending_env_command), env.command) != 0 ||
+          (env.path_override != 0 &&
+           ct_host_copy_bounded(pending_env_path, sizeof(pending_env_path),
+                                env.path) != 0)) {
+        goto invalid;
+      }
+      pending_env_path_override = env.path_override;
+      result = ct_executable_find(profile, map, NULL,
+                                  stage->shebang.interpreter, &descriptor,
+                                  current, visible);
+    } else {
+      result = ct_executable_find(profile, map, NULL,
+                                  stage->shebang.interpreter, &descriptor,
+                                  current, visible);
+    }
+    if (result != CT_EXECUTABLE_OK) goto failed;
+  }
+invalid:
+  result = CT_EXECUTABLE_INCOMPATIBLE;
+failed:
+  if (descriptor >= 0 && descriptor != executable->descriptor) {
+    (void)close(descriptor);
+  }
+  ct_executable_close(executable);
+  return result;
+}
+
+void ct_executable_close(struct ct_executable *executable)
+{
+  if (executable != NULL && executable->descriptor >= 0) { (void)close(executable->descriptor); executable->descriptor = -1; }
+}
+
+static int ct_executable_stable(int descriptor, struct stat *before)
+{
+  struct stat after;
+  return fstat(descriptor, &after) != 0 || after.st_dev != before->st_dev || after.st_ino != before->st_ino || after.st_size != before->st_size || after.st_mtim.tv_sec != before->st_mtim.tv_sec || after.st_mtim.tv_nsec != before->st_mtim.tv_nsec;
+}
+
+int ct_executable_admit_trampoline(int executable_descriptor, int control_descriptor, const char *build_identity)
+{
+  struct stat executable, current, control;
+  struct ct_elf_info elf;
+  char record[512];
+  const char prefix[] = "container-tools-control-v1\n";
+  const size_t identity_length = build_identity == NULL ? 0U : strlen(build_identity);
+  const size_t expected = sizeof(prefix) - 1U + identity_length + 1U;
+  ssize_t received;
+  if (executable_descriptor < 0 || control_descriptor < 0 ||
+      build_identity == NULL || identity_length == 0U ||
+      expected >= sizeof(record) ||
+      fstat(executable_descriptor, &executable) != 0 ||
+      fstat(control_descriptor, &control) != 0 ||
+      stat("/proc/self/exe", &current) != 0 ||
+      executable.st_dev != current.st_dev || executable.st_ino != current.st_ino ||
+      ct_elf_inspect(executable_descriptor, &elf) != 0 ||
+      elf.kind != CT_ELF_STATIC ||
+      !S_ISREG(executable.st_mode) || !S_ISREG(control.st_mode) ||
+      control.st_size != (off_t)expected) return 1;
+  received = pread(control_descriptor, record, sizeof(record), 0);
+  if (received != (ssize_t)expected ||
+      memcmp(record, prefix, sizeof(prefix) - 1U) != 0 ||
+      memcmp(record + sizeof(prefix) - 1U, build_identity, identity_length) != 0 ||
+      record[expected - 1U] != '\n' ||
+      ct_executable_stable(executable_descriptor, &executable) != 0 ||
+      ct_executable_stable(control_descriptor, &control) != 0) return 1;
+  return 0;
+}

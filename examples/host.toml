@@ -1,0 +1,17 @@
+version = 1
+default_profile = "host"
+
+[profiles.host]
+root = "/host"
+root_access = "inherit"
+semantics = "full-root"
+mount_plan = "/.container-tools-mount-plan"
+cwd_unmapped = "error"
+path = ["/usr/local/bin", "/usr/bin", "/bin"]
+environment_remove = ["LD_PRELOAD"]
+
+[[profiles.host.projections]]
+visible = "/workspace"
+target = "/workspace"
+access = "inherit"
+required = true

@@ -80,11 +80,14 @@ container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   src/process.c src/process.h src/runtime.c src/runtime.h src/backend_outer.c src/backend_outer.h
   src/host_projection.c src/host_projection.h src/mount_plan.c src/mount_plan.h src/sha256.c src/sha256.h
   src/profile.c src/profile.h src/state.c src/state.h src/instance.c src/instance.h
+  src/host_config.c src/host_config.h src/path_map.c src/path_map.h src/executable.c src/executable.h
+  src/elf.c src/elf.h src/shebang.c src/shebang.h src/supervisor.c src/supervisor.h
+  src/supervisor_process.c src/supervisor_process.h
   vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
   vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
 container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
 container_tools_component_digest(CONTAINER_TOOLS_METADATA_DIGEST cmake/release.json.in)
-container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md)
+container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md examples/host.toml docs/host-execution.md)
 container_tools_component_digest(CONTAINER_TOOLS_LICENSES_DIGEST
   LICENSE-APACHE LICENSE-MIT vendor/tomlc17/LICENSE vendor/yyjson/LICENSE)
 container_tools_component_digest(CONTAINER_TOOLS_PROTOCOLS_DIGEST protocols/ct-mount-plan-v1.md)
@@ -107,9 +110,10 @@ target_include_directories(container_tools_json PRIVATE vendor/yyjson)
 set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c src/buildx.c
   src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
-  src/profile.c src/state.c src/instance.c)
+  src/profile.c src/state.c src/instance.c src/host_config.c src/path_map.c src/executable.c src/elf.c
+  src/shebang.c src/supervisor.c src/supervisor_process.c)
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
-target_include_directories(container_tools_core PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_include_directories(container_tools_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(container_tools_core PRIVATE _POSIX_C_SOURCE=200809L)
 target_link_libraries(container_tools_core PRIVATE container_tools_toml container_tools_json)
 container_tools_enable_warnings(container_tools_core)
@@ -125,9 +129,10 @@ endif()
 if(BUILD_TESTING)
   # The forced-timeout seam is isolated from the production executable.
   add_library(container_tools_test_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
-  target_include_directories(container_tools_test_core PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_include_directories(container_tools_test_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(container_tools_test_core PRIVATE
-    _POSIX_C_SOURCE=200809L CT_STORAGE_TIMEOUT_TEST_SEAM=1)
+    _POSIX_C_SOURCE=200809L CT_STORAGE_TIMEOUT_TEST_SEAM=1
+    CT_SUPERVISOR_TEST_SEAM=1)
   target_link_libraries(container_tools_test_core PRIVATE container_tools_toml container_tools_json)
   container_tools_enable_warnings(container_tools_test_core)
 
@@ -149,6 +154,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release.json" README.md
   DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools")
 install(DIRECTORY examples/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/examples")
 install(DIRECTORY protocols/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/protocols")
+install(FILES docs/host-execution.md DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/docs")
 install(FILES LICENSE-APACHE LICENSE-MIT
   DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/licenses")
 install(FILES vendor/tomlc17/LICENSE
@@ -169,7 +175,7 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_package)
   add_test(NAME container_tools_package COMMAND test_package)
 
-  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance)
+  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance host_config path_map executable supervisor)
     add_executable(test_${test_name} tests/test_${test_name}.c)
     target_link_libraries(test_${test_name} PRIVATE container_tools_test_core)
     target_include_directories(test_${test_name} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -190,6 +196,13 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_buildx_child)
 
   if(CONTAINER_TOOLS_STATIC)
+    add_executable(test_executable_static tests/test_executable.c)
+    target_link_libraries(test_executable_static PRIVATE container_tools_test_core)
+    target_include_directories(test_executable_static PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_options(test_executable_static PRIVATE -static)
+    container_tools_enable_warnings(test_executable_static)
+    add_test(NAME container_tools_executable_static COMMAND test_executable_static)
+
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native-instance")
     configure_file(tests/native_instance_wrapper.sh.in
       "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_instance_exec.sh" @ONLY)

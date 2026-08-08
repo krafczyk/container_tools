@@ -9,8 +9,10 @@ The C11 package bootstrap installs one static `container-tools` executable,
 five generated compatibility-script trampolines, and immutable package metadata
 under a caller-selected prefix. It does not replace the current Bash callers in
 this unit. Native `exec`, `shell`, and persistent `instance` operations now own
-their runtime behavior; selected-root `host` operations remain typed
-not-implemented commands until their corresponding units land.
+their runtime behavior. Selected-root `host exec` now validates strict profiles,
+the exact configured mount-plan, command, cwd, environment, and entry point
+before returning a typed backend-unavailable result; nested dispatch remains
+deferred to U7.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
@@ -69,8 +71,8 @@ read-only bind a validated `ct-mount-plan-v1` record.
 Every non-dry-run foreground launch on a local runtime endpoint and every
 persistent instance start mounts one read-only, versioned semantic mount-plan
 manifest at the stable in-container selector `/.container-tools-mount-plan`. A
-future host bridge reads that bound file directly; it must not scan host state
-and infer a plan hash. Automatic launches through an explicit remote
+selected-root `host exec` reads that bound file directly; it never scans host
+state or infers a plan hash. Automatic launches through an explicit remote
 Docker/Podman endpoint retain the existing remote launch without a local-only
 manifest bind; required host projection already rejects those endpoints.
 
