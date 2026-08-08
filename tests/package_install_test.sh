@@ -16,7 +16,7 @@ args=(--archive "$archive" --sha256 "$digest" --version "${CT_PACKAGE_VERSION:?}
   --source-commit "${CT_PACKAGE_SOURCE_COMMIT:?}" --architecture "${CT_PACKAGE_ARCHITECTURE:?}" \
   --libc "${CT_PACKAGE_LIBC:?}")
 installer=(bash "$root/scripts/install-package.sh")
-"${installer[@]}" --check "${args[@]}"
+"${installer[@]}" --check "${args[@]}" --prefix "$work/check-prefix"
 "${installer[@]}" --apply "${args[@]}" --prefix "$work/prefix-a" --recovery-dir "$work/recovery-a"
 "${installer[@]}" --verify "${args[@]}" --prefix "$work/prefix-a"
 [[ -f $work/prefix-a/share/container-tools/release.json ]] || {

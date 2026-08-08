@@ -32,7 +32,7 @@ while (($#)); do
 done
 [[ -n $mode ]] || usage
 if [[ $mode == check ]]; then
-  [[ -z $prefix && -z $recovery ]] || usage
+  [[ $prefix == /* && -z $recovery ]] || usage
 elif [[ $mode == apply ]]; then
   [[ $prefix == /* && $recovery == /* ]] || usage
 else
@@ -56,7 +56,39 @@ validate_projections() {
   projection_is_owned "$prefix/share/container-tools" ../.container-tools/current/share/container-tools
 }
 
-if [[ $mode == check ]]; then exec "$script_dir/verify-package.sh" "${verify_args[@]}"; fi
+validate_projection_slots() {
+  local directory name path
+  for directory in "$prefix/bin" "$prefix/share"; do
+    if [[ -e $directory || -L $directory ]]; then
+      [[ -d $directory && ! -L $directory ]] || {
+        printf 'install-package: unmanaged prefix collision: %s\n' "$directory" >&2
+        return 1
+      }
+    fi
+  done
+  for name in "${package_bins[@]}"; do
+    path="$prefix/bin/$name"
+    if [[ -e $path || -L $path ]]; then
+      projection_is_owned "$path" "../.container-tools/current/bin/$name" || {
+        printf 'install-package: unmanaged prefix collision: %s\n' "$path" >&2
+        return 1
+      }
+    fi
+  done
+  path="$prefix/share/container-tools"
+  if [[ -e $path || -L $path ]]; then
+    projection_is_owned "$path" ../.container-tools/current/share/container-tools || {
+      printf 'install-package: unmanaged prefix collision: %s\n' "$path" >&2
+      return 1
+    }
+  fi
+}
+
+if [[ $mode == check ]]; then
+  "$script_dir/verify-package.sh" "${verify_args[@]}" >/dev/null
+  validate_projection_slots
+  exit
+fi
 if [[ $mode == verify ]]; then
   "$script_dir/verify-package.sh" "${verify_args[@]}" >/dev/null
   validate_projections || { printf '%s\n' 'install-package: prefix is incomplete' >&2; exit 78; }
@@ -68,30 +100,7 @@ if [[ $mode == verify ]]; then
 fi
 
 managed="$prefix/.container-tools"
-for directory in "$prefix/bin" "$prefix/share"; do
-  if [[ -e $directory || -L $directory ]]; then
-    [[ -d $directory && ! -L $directory ]] || {
-      printf 'install-package: unmanaged prefix collision: %s\n' "$directory" >&2
-      exit 78
-    }
-  fi
-done
-for name in "${package_bins[@]}"; do
-  path="$prefix/bin/$name"
-  if [[ -e $path || -L $path ]]; then
-    projection_is_owned "$path" "../.container-tools/current/bin/$name" || {
-      printf 'install-package: unmanaged prefix collision: %s\n' "$path" >&2
-      exit 78
-    }
-  fi
-done
-path="$prefix/share/container-tools"
-if [[ -e $path || -L $path ]]; then
-  projection_is_owned "$path" ../.container-tools/current/share/container-tools || {
-    printf '%s\n' 'install-package: unmanaged prefix collision' >&2
-    exit 78
-  }
-fi
+validate_projection_slots
 mkdir -p -- "$recovery" "$prefix"
 chmod 700 -- "$recovery"
 umask 077
