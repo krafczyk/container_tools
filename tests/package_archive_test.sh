@@ -53,8 +53,10 @@ expect_invalid_archive "$work/duplicate.tar.gz"
 tar -C "$work/malicious" --transform="s,^$archive_root,$archive_root/../escape," \
   -czf "$work/traversal.tar.gz" "$archive_root"
 expect_invalid_archive "$work/traversal.tar.gz"
-if bash "$root/scripts/build-package.sh" --build-root "$work/build" --version 1.0.0 \
-  --source-commit "$commit" --output-dir "$work/out" --libc glibc; then
+git clone --quiet --no-hardlinks "$root" "$work/dirty-source"
+printf '%s\n' dirty > "$work/dirty-source/untracked"
+if bash "$work/dirty-source/scripts/build-package.sh" --build-root "$work/dirty-build" --version 1.0.0 \
+  --source-commit "$commit" --output-dir "$work/out" --libc musl; then
   printf '%s\n' 'package build accepted the dirty test checkout' >&2
   exit 1
 fi
