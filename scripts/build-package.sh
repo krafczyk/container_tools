@@ -26,7 +26,7 @@ while (($#)); do
   esac
 done
 [[ $build_root == /* && $output_dir == /* && $build_root == /tmp/mkchad-v1/container-tools-c11/* ]] || usage
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
 [[ $source_commit =~ ^[0-9a-f]{40}$ && $libc =~ ^(musl|glibc)$ ]] || usage
 
 source_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)

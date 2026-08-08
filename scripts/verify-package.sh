@@ -29,7 +29,7 @@ while (($#)); do
   esac
 done
 [[ -f $archive && $work_root == /* ]] || usage
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
+[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
 [[ $digest =~ ^[0-9a-f]{64}$ && $source_commit =~ ^[0-9a-f]{40}$ && $architecture =~ ^[a-z0-9_.-]+$ && $libc =~ ^(musl|glibc)$ ]] || usage
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 [[ $(sha256sum "$archive" | awk '{print $1}') == "$digest" ]] || {

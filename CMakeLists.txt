@@ -29,7 +29,7 @@ set(CONTAINER_TOOLS_PRODUCT_VERSION "1.0.0-dev" CACHE STRING
 set(CONTAINER_TOOLS_PACKAGE_EPOCH "1" CACHE STRING
     "Immutable container-tools package epoch")
 if(NOT CONTAINER_TOOLS_PRODUCT_VERSION MATCHES
-   "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
+   "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
   message(FATAL_ERROR "container-tools requires a semantic product version")
 endif()
 if(NOT CONTAINER_TOOLS_PACKAGE_EPOCH MATCHES "^[0-9]+$")

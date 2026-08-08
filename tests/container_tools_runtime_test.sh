@@ -180,7 +180,7 @@ esac
 
 # Real runs are deliberately admitted only after every immutable input is present.
 [[ $backend =~ ^(docker|podman|singularity|apptainer)$ && -n $image && -f $package && $package_sha256 =~ ^[0-9a-f]{64}$ &&
-  $package_version =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ && $package_source_commit =~ ^[0-9a-f]{40}$ &&
+  $package_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ && $package_source_commit =~ ^[0-9a-f]{40}$ &&
   $package_architecture =~ ^[a-z0-9_.-]+$ && $package_libc =~ ^(musl|glibc)$ && $work == "$work_root"/* && $work != "$work_root"/*/* && ! -e $work ]] || { usage >&2; exit 2; }
 if [[ $mode == run-parity ]]; then
   [[ -f $bash_baseline ]] || { printf '%s\n' 'native parity unavailable: retained Bash baseline is missing' >&2; exit 77; }

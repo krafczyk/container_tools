@@ -64,10 +64,18 @@ expect_invalid_archive "$work/extra.tar.gz"
 extra_digest=$(sha256sum "$work/extra.tar.gz" | awk '{print $1}')
 set +e
 bash "$root/scripts/verify-package.sh" --archive "$work/extra.tar.gz" --sha256 "$extra_digest" \
+  --version 01.0.0 --source-commit "$commit" --architecture "$architecture" --libc glibc \
+  --work-root "$work/invalid-leading-zero-version"
+leading_zero_status=$?
+bash "$root/scripts/verify-package.sh" --archive "$work/extra.tar.gz" --sha256 "$extra_digest" \
   --version ../escape --source-commit "$commit" --architecture "$architecture" --libc glibc \
   --work-root "$work/invalid-version"
 invalid_version_status=$?
 set -e
+[[ $leading_zero_status == 64 ]] || {
+  printf 'package verifier returned %s instead of usage for a leading-zero version\n' "$leading_zero_status" >&2
+  exit 1
+}
 [[ $invalid_version_status == 64 ]] || {
   printf 'package verifier returned %s instead of usage for an unsafe version\n' "$invalid_version_status" >&2
   exit 1
