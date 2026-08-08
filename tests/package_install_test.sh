@@ -23,7 +23,13 @@ installer=(bash "$root/scripts/install-package.sh")
   printf '%s\n' 'installer exposed a broken package share link' >&2
   exit 1
 }
+printf '%s\n' unrelated > "$work/prefix-a/bin/unrelated-tool"
+printf '%s\n' unrelated > "$work/prefix-a/share/unrelated-data"
 "${installer[@]}" --apply "${args[@]}" --prefix "$work/prefix-a" --recovery-dir "$work/recovery-a"
+[[ -f $work/prefix-a/bin/unrelated-tool && -f $work/prefix-a/share/unrelated-data ]] || {
+  printf '%s\n' 'installer replaced unrelated prefix content' >&2
+  exit 1
+}
 "${installer[@]}" --apply "${args[@]}" --prefix "$work/prefix-b" --recovery-dir "$work/recovery-b"
 mv "$work/prefix-b" "$work/moved-prefix"
 "${installer[@]}" --verify "${args[@]}" --prefix "$work/moved-prefix"
@@ -55,7 +61,8 @@ if "${installer[@]}" --apply "${args[@]}" --prefix "$work/corrupt-recovery" \
   printf '%s\n' 'installer resumed recovery state for different archive bytes' >&2
   exit 1
 fi
-mkdir -p -- "$work/unmanaged/bin"
+mkdir -p -- "$work/unmanaged/bin" "$work/unmanaged/share"
+printf '%s\n' unmanaged > "$work/unmanaged/bin/container-tools"
 if "${installer[@]}" --apply "${args[@]}" --prefix "$work/unmanaged" \
   --recovery-dir "$work/recovery-unmanaged"; then
   printf '%s\n' 'installer replaced an unmanaged prefix' >&2

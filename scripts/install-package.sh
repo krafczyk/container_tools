@@ -40,10 +40,26 @@ else
 fi
 script_dir=$(cd -- "$(dirname -- "$0")" && pwd -P)
 verify_args=(--archive "$archive" --sha256 "$digest" --version "$version" --source-commit "$source_commit" --architecture "$architecture" --libc "$libc")
+package_bins=(container-tools ct_exec.sh ct_shell.sh ct_instance_exec.sh ct_mount_detector.sh ct_args.sh)
+
+projection_is_owned() {
+  local path=$1 target=$2
+  [[ -L $path && $(readlink -- "$path") == "$target" ]]
+}
+
+validate_projections() {
+  local name
+  [[ -d $prefix/bin && ! -L $prefix/bin && -d $prefix/share && ! -L $prefix/share ]] || return 1
+  for name in "${package_bins[@]}"; do
+    projection_is_owned "$prefix/bin/$name" "../.container-tools/current/bin/$name" || return 1
+  done
+  projection_is_owned "$prefix/share/container-tools" ../.container-tools/current/share/container-tools
+}
+
 if [[ $mode == check ]]; then exec "$script_dir/verify-package.sh" "${verify_args[@]}"; fi
 if [[ $mode == verify ]]; then
   "$script_dir/verify-package.sh" "${verify_args[@]}" >/dev/null
-  [[ -x $prefix/bin/container-tools ]] || { printf '%s\n' 'install-package: prefix is incomplete' >&2; exit 78; }
+  validate_projections || { printf '%s\n' 'install-package: prefix is incomplete' >&2; exit 78; }
   observed=$("$prefix/bin/container-tools" package verify --json) || exit 78
   [[ $observed == *"\"product_version\":\"$version\""* &&
      $observed == *"\"source_commit\":\"$source_commit\""* &&
@@ -52,10 +68,26 @@ if [[ $mode == verify ]]; then
 fi
 
 managed="$prefix/.container-tools"
-if [[ -e $prefix/bin || -L $prefix/bin || -e $prefix/share || -L $prefix/share ]]; then
-  [[ -L $prefix/bin && -L $prefix/share &&
-     $(readlink -- "$prefix/bin") == .container-tools/current/bin &&
-     $(readlink -- "$prefix/share") == .container-tools/current/share ]] || {
+for directory in "$prefix/bin" "$prefix/share"; do
+  if [[ -e $directory || -L $directory ]]; then
+    [[ -d $directory && ! -L $directory ]] || {
+      printf 'install-package: unmanaged prefix collision: %s\n' "$directory" >&2
+      exit 78
+    }
+  fi
+done
+for name in "${package_bins[@]}"; do
+  path="$prefix/bin/$name"
+  if [[ -e $path || -L $path ]]; then
+    projection_is_owned "$path" "../.container-tools/current/bin/$name" || {
+      printf 'install-package: unmanaged prefix collision: %s\n' "$path" >&2
+      exit 78
+    }
+  fi
+done
+path="$prefix/share/container-tools"
+if [[ -e $path || -L $path ]]; then
+  projection_is_owned "$path" ../.container-tools/current/share/container-tools || {
     printf '%s\n' 'install-package: unmanaged prefix collision' >&2
     exit 78
   }
@@ -106,8 +138,17 @@ fi
     printf '%s\n' 'install-package: managed package identity mismatch' >&2
     exit 78
   }
-if [[ ! -e $prefix/bin && ! -L $prefix/bin ]]; then ln -s .container-tools/current/bin "$prefix/bin"; fi
-if [[ ! -e $prefix/share && ! -L $prefix/share ]]; then ln -s .container-tools/current/share "$prefix/share"; fi
+mkdir -p -- "$prefix/bin" "$prefix/share"
+for name in "${package_bins[@]}"; do
+  path="$prefix/bin/$name"
+  if [[ ! -e $path && ! -L $path ]]; then
+    ln -s "../.container-tools/current/bin/$name" "$path"
+  fi
+done
+path="$prefix/share/container-tools"
+if [[ ! -e $path && ! -L $path ]]; then
+  ln -s ../.container-tools/current/share/container-tools "$path"
+fi
 [[ ${CT_PACKAGE_INSTALL_INTERRUPT_AT:-} != after-links ]] || exit 99
 ln -sfn "versions/$identity" "$managed/.next"
 mv -Tf -- "$managed/.next" "$managed/current"

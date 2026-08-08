@@ -85,11 +85,12 @@ temporary extraction.
 `scripts/install-package.sh` uses `--check`, `--apply`, or `--verify` with the
 same archive identity. `--apply` requires a private recovery directory, holds a
 prefix transaction lock, stages and verifies the archive, and atomically changes
-one package-current pointer. A package-managed prefix exposes `bin` and `share`
-through that pointer, so its observable package is always one complete identity
-or fails closed during a recoverable interrupted exposure. The installer refuses
-unmanaged `bin` or `share` collisions; it does not claim that multiple directory
-renames are atomic and does not adopt raw source or partial package trees.
+one package-current pointer. Individual managed entries beneath `bin/` and
+`share/` resolve through that pointer, so unrelated prefix content can coexist
+while every container-tools entry observes one complete identity. The installer
+refuses collisions at its managed entries; it does not claim that multiple
+directory renames are atomic and does not adopt raw source or partial package
+trees.
 
 ## Persistent Instance Identity
 
