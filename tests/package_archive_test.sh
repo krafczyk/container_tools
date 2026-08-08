@@ -129,13 +129,16 @@ if ! command -v "$compiler" >/dev/null; then
   exit 77
 fi
 
-for build_number in 1 2; do
-  bash "$root/scripts/build-package.sh" --build-root "$work/build-$build_number" \
-    --source-commit "$commit" --output-dir "$work/out-$build_number" --libc musl
+for caller_umask in 022 077; do
+  (
+    umask "$caller_umask"
+    bash "$root/scripts/build-package.sh" --build-root "$work/build-$caller_umask" \
+      --source-commit "$commit" --output-dir "$work/out-$caller_umask" --libc musl
+  )
 done
 archive_name="container-tools-${version}-${architecture}-musl-${commit}.tar.gz"
-archive_one="$work/out-1/$archive_name"
-archive_two="$work/out-2/$archive_name"
+archive_one="$work/out-022/$archive_name"
+archive_two="$work/out-077/$archive_name"
 digest_one=$(sha256sum "$archive_one" | awk '{print $1}')
 digest_two=$(sha256sum "$archive_two" | awk '{print $1}')
 cmp -s "$archive_one" "$archive_two" && [[ $digest_one == "$digest_two" ]] || {

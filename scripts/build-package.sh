@@ -2,6 +2,9 @@
 # Build one deterministic, statically linked container-tools archive from an exact source tree.
 set -euo pipefail
 
+# Package data and directories must not inherit the caller's umask; executable modes stay intact.
+umask 022
+
 usage() {
   printf '%s\n' 'usage: build-package.sh --build-root ABSOLUTE_DIR --source-commit 40_HEX --output-dir ABSOLUTE_DIR --libc musl|glibc' >&2
   exit 64

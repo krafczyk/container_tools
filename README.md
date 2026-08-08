@@ -80,9 +80,9 @@ requires an absolute disposable build root below
 family. It never overwrites an existing archive or checksum. Musl archives use
 `musl-gcc` by default (overridable with `CT_MUSL_CC`); glibc archives require a
 glibc compiler selected through `CC` or the host default. Package bytes are
-reproducible for one source commit: layout is sorted, ownership and modification
-time are normalized, volatile PAX access/change times are omitted, and gzip
-headers carry no build-time name or timestamp.
+reproducible for one source commit: layout is sorted; ownership, modes, and
+modification time are normalized; volatile PAX access/change times are omitted;
+and gzip headers carry no build-time name or timestamp.
 `scripts/verify-package.sh` checks an externally supplied checksum, the
 verifier-owned closed archive layout, archive/release identity, static ELF
 linkage, machine identity, and the installed package's two identity reports in
