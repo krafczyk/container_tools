@@ -45,7 +45,7 @@ tar -tvzf "$archive" | awk '$1 !~ /^[-d]/ { exit 1 }' || {
   printf '%s\n' 'verify-package: links or special archive entries are forbidden' >&2; exit 78; }
 tar -xzf "$archive" -C "$work"
 package_root="$work/$root"
-sort -u "$work/names" | sed 's:/$::' > "$work/actual"
+LC_ALL=C sort -u "$work/names" | sed 's:/$::' > "$work/actual"
 awk -v root="$root" '{ path=$0; sub(/\/$/, "", path); print path == "." ? root : root "/" path }' \
   "$script_dir/package-files.txt" | LC_ALL=C sort -u > "$work/expected"
 if ! cmp -s "$work/actual" "$work/expected" ||
