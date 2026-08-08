@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <signal.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
 #include <sys/wait.h>
@@ -163,7 +164,9 @@ static void ct_supervisor_child(char *const arguments[], int start_gate,
                                 int ready, int report,
                                 const sigset_t *parent_mask,
                                 const struct sigaction *parent_sigchld,
-                                long long deadline)
+                                long long deadline,
+                                const struct ct_process_environment *environment,
+                                size_t environment_count)
 {
   struct sigaction action;
   sigset_t supervisor_mask = *parent_mask;
@@ -198,6 +201,7 @@ static void ct_supervisor_child(char *const arguments[], int start_gate,
         sigaction(SIGCHLD, parent_sigchld, NULL) != 0 || close(ready) != 0 ||
         close(report) != 0 ||
         sigprocmask(SIG_SETMASK, parent_mask, NULL) != 0) _exit(125);
+    if (ct_process_apply_environment(environment, environment_count) != 0) _exit(125);
     execvp(arguments[0], arguments);
     _exit(errno == ENOENT ? 127 : 126);
   }
@@ -326,8 +330,10 @@ static int ct_supervisor_status(int status)
                            : WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 125;
 }
 
-int ct_supervisor_probe(char *const arguments[],
-                        unsigned int timeout_milliseconds)
+enum ct_supervisor_probe_completion ct_supervisor_probe_environment_detailed(
+    char *const arguments[], unsigned int timeout_milliseconds,
+    const struct ct_process_environment *environment,
+    size_t environment_count, struct ct_supervisor_probe_result *result)
 {
   pid_t supervisor = -1;
   long long start;
@@ -337,7 +343,7 @@ int ct_supervisor_probe(char *const arguments[],
   int ready[2] = {-1, -1};
   int report[2] = {-1, -1};
   char prepared;
-  char result = 0;
+  char report_result = 0;
   bool ready_received = false;
   bool timed_out = false;
   bool child_done = false;
@@ -353,8 +359,16 @@ int ct_supervisor_probe(char *const arguments[],
   struct sigaction action, old_interrupt, old_terminate, old_child;
   sigset_t blocked, old_mask;
 
+  if (result == NULL) return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
+  result->status = 125;
+  result->infrastructure_failed = 1;
+  result->interrupted = 0;
   if (arguments == NULL || arguments[0] == NULL ||
-      timeout_milliseconds == 0U || timeout_milliseconds > 5000U) return 125;
+      environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
+      (environment_count != 0U && environment == NULL) ||
+      timeout_milliseconds == 0U || timeout_milliseconds > 5000U) {
+    return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
+  }
   ct_supervisor_process_owned_init(&owned);
 #ifdef CT_SUPERVISOR_TEST_SEAM
   process_options.force_pidfd_unavailable =
@@ -367,19 +381,21 @@ int ct_supervisor_probe(char *const arguments[],
   start = ct_supervisor_now();
   if (start < 0LL || prctl(PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) != 0 ||
       sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 ||
-      sigaddset(&blocked, SIGTERM) != 0 || sigaddset(&blocked, SIGCHLD) != 0 ||
-      sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) return 125;
+       sigaddset(&blocked, SIGTERM) != 0 || sigaddset(&blocked, SIGCHLD) != 0 ||
+       sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) {
+    return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
+  }
   deadline = start + (long long)timeout_milliseconds;
   if (sigaction(SIGCHLD, NULL, &old_child) != 0) {
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
-    return 125;
+    return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
   }
   memset(&action, 0, sizeof(action));
   action.sa_handler = SIG_DFL;
   if (sigemptyset(&action.sa_mask) != 0 ||
       sigaction(SIGCHLD, &action, NULL) != 0) {
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
-    return 125;
+    return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
   }
   child_normalized = true;
   if (pipe(start_gate) != 0 || pipe(ready) != 0 || pipe(report) != 0 ||
@@ -395,7 +411,8 @@ int ct_supervisor_probe(char *const arguments[],
     (void)close(ready[0]);
     (void)close(report[0]);
     ct_supervisor_child(arguments, start_gate[0], ready[1], report[1],
-                        &old_mask, &old_child, deadline);
+                        &old_mask, &old_child, deadline, environment,
+                        environment_count);
   }
   (void)close(ready[1]);
   ready[1] = -1;
@@ -540,8 +557,8 @@ cleanup:
     }
   }
   if (child_done) {
-    const ssize_t count = read(report[0], &result, 1U);
-    if (count != 1 || result != 'S') cleanup_failed = true;
+    const ssize_t count = read(report[0], &report_result, 1U);
+    if (count != 1 || report_result != 'S') cleanup_failed = true;
   } else if (supervisor > 0) {
     cleanup_failed = true;
   }
@@ -562,9 +579,37 @@ finish:
   if (ct_supervisor_interrupted != 0) {
     const int interrupted = (int)ct_supervisor_interrupted;
     ct_supervisor_interrupted = 0;
-    if (raise(interrupted) != 0) return 125;
-    return 128 + interrupted;
+    if (raise(interrupted) != 0) {
+      return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
+    }
+    result->status = 128 + interrupted;
+    result->infrastructure_failed = 0;
+    result->interrupted = 1;
+    return CT_SUPERVISOR_PROBE_COMPLETED;
   }
-  if (cleanup_failed || !child_done) return 125;
-  return timed_out ? 124 : ct_supervisor_status(status);
+  if (cleanup_failed || !child_done) {
+    return CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE;
+  }
+  result->status = timed_out ? 124 : ct_supervisor_status(status);
+  result->infrastructure_failed = 0;
+  return CT_SUPERVISOR_PROBE_COMPLETED;
+}
+
+int ct_supervisor_probe_environment(
+    char *const arguments[], unsigned int timeout_milliseconds,
+    const struct ct_process_environment *environment, size_t environment_count)
+{
+  struct ct_supervisor_probe_result result;
+  return ct_supervisor_probe_environment_detailed(
+             arguments, timeout_milliseconds, environment, environment_count,
+             &result) == CT_SUPERVISOR_PROBE_COMPLETED
+             ? result.status
+             : 125;
+}
+
+int ct_supervisor_probe(char *const arguments[],
+                        unsigned int timeout_milliseconds)
+{
+  return ct_supervisor_probe_environment(arguments, timeout_milliseconds, NULL,
+                                         0U);
 }

@@ -15,6 +15,8 @@
 int main(void)
 {
   char *const command[] = {"/bin/true", NULL};
+  char *const exit_42[] = {"/bin/sh", "-c", "exit 42", NULL};
+  char *const signaled[] = {"/bin/sh", "-c", "kill -TERM $$", NULL};
   const char *const invalid[] = {"nan", "NaN", "inf", "-inf", "1x", "0", NULL};
   char *const noisy[] = {"/bin/sh", "-c",
                          "printf control-out; printf control-err >&2", NULL};
@@ -25,6 +27,9 @@ int main(void)
   struct stat stdout_status, stderr_status;
   size_t index;
 
+  if (ct_process_run(command, NULL, 0U) != 0 ||
+      ct_process_run(exit_42, NULL, 0U) != 42 ||
+      ct_process_run(signaled, NULL, 0U) != 128 + SIGTERM) return 1;
   for (index = 0U; invalid[index] != NULL; ++index) {
     if (setenv("CT_RUNTIME_OPERATION_TIMEOUT", invalid[index], 1) != 0 ||
         ct_process_run_operation(command, "probe") != 125) return 1;

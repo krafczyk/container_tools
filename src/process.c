@@ -18,6 +18,26 @@
 static volatile sig_atomic_t ct_process_child_group;
 static volatile sig_atomic_t ct_process_interrupted;
 
+int ct_process_apply_environment(
+    const struct ct_process_environment *environment,
+    size_t environment_count)
+{
+  size_t index;
+  if (environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
+      (environment_count != 0U && environment == NULL)) {
+    return 1;
+  }
+  for (index = 0U; index < environment_count; ++index) {
+    if (environment[index].name == NULL ||
+        (environment[index].value == NULL
+             ? unsetenv(environment[index].name)
+             : setenv(environment[index].name, environment[index].value, 1)) != 0) {
+      return 1;
+    }
+  }
+  return 0;
+}
+
 static void ct_process_forward_signal(int signal_number)
 {
   ct_process_interrupted = signal_number;
@@ -146,6 +166,18 @@ static int ct_process_wait(pid_t child, int *status)
   return result == child ? 0 : 1;
 }
 
+static int ct_process_observe(pid_t child)
+{
+  siginfo_t information;
+  int result;
+
+  do {
+    memset(&information, 0, sizeof(information));
+    result = waitid(P_PID, (id_t)child, &information, WEXITED | WNOWAIT);
+  } while (result != 0 && errno == EINTR);
+  return result == 0 && information.si_pid == child ? 0 : 1;
+}
+
 int ct_process_run(char *const arguments[],
                    const struct ct_process_environment *environment,
                    size_t environment_count)
@@ -154,7 +186,6 @@ int ct_process_run(char *const arguments[],
   int status = 0;
   int ready[2] = {-1, -1};
   int release[2] = {-1, -1};
-  size_t index;
   struct sigaction action;
   struct sigaction old_interrupt;
   struct sigaction old_terminate;
@@ -165,9 +196,12 @@ int ct_process_run(char *const arguments[],
   bool terminate_installed = false;
   bool child_released = false;
   int mask_restore_result;
+  int observe_result;
+  int mask_block_result;
   int wait_result;
 
-  if (arguments == NULL || arguments[0] == NULL || environment_count > 32U ||
+  if (arguments == NULL || arguments[0] == NULL ||
+      environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
       (environment_count != 0U && environment == NULL)) return 64;
   if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 ||
       sigaddset(&blocked, SIGTERM) != 0 || sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) {
@@ -200,10 +234,7 @@ int ct_process_run(char *const arguments[],
         close(release[0]) != 0 || sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) {
       _exit(125);
     }
-    for (index = 0U; index < environment_count; ++index) {
-      if (environment[index].name == NULL || environment[index].value == NULL ||
-          setenv(environment[index].name, environment[index].value, 1) != 0) _exit(125);
-    }
+    if (ct_process_apply_environment(environment, environment_count) != 0) _exit(125);
     execvp(arguments[0], arguments);
     _exit(errno == ENOENT ? 127 : 126);
   }
@@ -237,15 +268,18 @@ int ct_process_run(char *const arguments[],
   if (ct_process_write_byte(release[1], 0) == 0) child_released = true;
   (void)close(release[1]);
   mask_restore_result = sigprocmask(SIG_SETMASK, &old_mask, NULL);
+  observe_result = ct_process_observe(child);
+  mask_block_result = sigprocmask(SIG_BLOCK, &blocked, NULL);
+  /* WNOWAIT keeps the PID/PGID non-reusable until the handler target is clear. */
+  ct_process_child_group = 0;
   wait_result = ct_process_wait(child, &status);
-  if (!child_released || mask_restore_result != 0 || wait_result != 0) {
-    ct_process_child_group = 0;
+  if (!child_released || mask_restore_result != 0 || observe_result != 0 ||
+      mask_block_result != 0 || wait_result != 0) {
     if (terminate_installed) (void)sigaction(SIGTERM, &old_terminate, NULL);
     if (interrupt_installed) (void)sigaction(SIGINT, &old_interrupt, NULL);
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
     return 125;
   }
-  ct_process_child_group = 0;
   if (sigaction(SIGTERM, &old_terminate, NULL) != 0 ||
       sigaction(SIGINT, &old_interrupt, NULL) != 0 ||
       sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) return 125;

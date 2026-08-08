@@ -22,6 +22,17 @@ struct ct_mount_plan_metadata {
   char group_mode[32];
   size_t entry_count;
 };
+/** Typed exact-manifest read outcomes used by host doctor diagnostics. */
+enum ct_mount_plan_read_status {
+  CT_MOUNT_PLAN_READ_OK = 0,
+  CT_MOUNT_PLAN_READ_ABSENT = 1,
+  CT_MOUNT_PLAN_READ_MALFORMED = 2,
+  CT_MOUNT_PLAN_READ_FUTURE = 3,
+  CT_MOUNT_PLAN_READ_DIGEST_MISMATCH = 4,
+  CT_MOUNT_PLAN_READ_SEMANTIC_INVALID = 5,
+  CT_MOUNT_PLAN_READ_CHANGED = 6,
+  CT_MOUNT_PLAN_READ_IO = 7
+};
 
 /** Validate the frozen ct-mount-plan-v1 semantic grammar and bounds. */
 int ct_mount_plan_validate(const struct ct_mount_plan *plan);
@@ -58,6 +69,10 @@ int ct_mount_plan_visit(const unsigned char *bytes, size_t length,
  */
 int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata,
                        ct_mount_plan_entry_visitor visitor, void *context);
+/** Read one exact manifest and retain its typed failure class. */
+enum ct_mount_plan_read_status ct_mount_plan_read_status(
+    const char *path, struct ct_mount_plan_metadata *metadata,
+    ct_mount_plan_entry_visitor visitor, void *context);
 /** Publish one content-addressed plan in state_root and return its immutable path. */
 int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_root, char path[4096]);
 /** Return nonzero when a writable source would expose private manifest state. */

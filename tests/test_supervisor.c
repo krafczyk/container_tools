@@ -159,6 +159,14 @@ int main(int argument_count, char **arguments)
   if (ct_supervisor_probe(true_command, 500U) != 0) return 11;
   if (ct_supervisor_probe(status_command, 500U) != 42) return 12;
   if (ct_supervisor_probe(status_125_command, 500U) != 125) return 13;
+  {
+    struct ct_supervisor_probe_result result;
+    if (ct_supervisor_probe_environment_detailed(
+            status_125_command, 500U, NULL, 0U, &result) !=
+            CT_SUPERVISOR_PROBE_COMPLETED ||
+        result.status != 125 || result.infrastructure_failed != 0 ||
+        result.interrupted != 0) return 72;
+  }
   if (ct_supervisor_probe(status_255_command, 500U) != 255) return 14;
   if (ct_supervisor_probe(signal_command, 500U) != 128 + SIGUSR1) return 15;
   if (ct_supervisor_probe(leader_command, 500U) != 42) return 16;
@@ -269,11 +277,16 @@ int main(int argument_count, char **arguments)
       pause_milliseconds(5000L);
       _exit(0);
     }
+    struct ct_supervisor_probe_result result;
     if (pipe(descriptors) != 0 ||
         snprintf(number, sizeof(number), "%d", descriptors[1]) >=
             (int)sizeof(number) ||
         (started = now_milliseconds()) < 0LL ||
-        ct_supervisor_probe(failure_command, 20U) != 125 ||
+        ct_supervisor_probe_environment_detailed(
+            failure_command, 20U, NULL, 0U, &result) !=
+            CT_SUPERVISOR_PROBE_INFRASTRUCTURE_FAILURE ||
+        result.status != 125 || result.infrastructure_failed == 0 ||
+        result.interrupted != 0 ||
         (finished = now_milliseconds()) < 0LL || finished - started > 2500LL ||
         close(descriptors[1]) != 0 ||
         read(descriptors[0], &escaped, sizeof(escaped)) !=

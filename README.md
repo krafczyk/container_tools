@@ -9,10 +9,10 @@ The C11 package bootstrap installs one static `container-tools` executable,
 five generated compatibility-script trampolines, and immutable package metadata
 under a caller-selected prefix. It does not replace the current Bash callers in
 this unit. Native `exec`, `shell`, and persistent `instance` operations now own
-their runtime behavior. Selected-root `host exec` now validates strict profiles,
-the exact configured mount-plan, command, cwd, environment, and entry point
-before returning a typed backend-unavailable result; nested dispatch remains
-deferred to U7.
+their runtime behavior. Selected-root `host exec` validates strict profiles,
+the exact configured mount-plan, command, cwd, environment, and entry point,
+then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
+rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
@@ -22,6 +22,36 @@ static executable, generated release metadata, and all sibling trampolines
 before reporting the immutable identity. Any missing or mixed package component
 fails with exit status `78` before command behavior, state access, or backend
 probing.
+
+`container-tools host exec [--config PATH] [--profile NAME]
+[--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] -- COMMAND`
+uses Bubblewrap, then PRoot, then rewrite. Forced backends never fall back.
+Unknown, empty, missing, or duplicate backend selectors fail with usage status
+before configuration, manifest, allocation, or backend access. `--verbose`
+writes a bounded profile/backend selection diagnostic to stderr before dispatch.
+Rewrite is automatic only for `semantics = "rewrite"`; a full-root profile must
+opt in with `--allow-degraded=rewrite`. It warns and intentionally does not
+promise selected-root semantics for descendants. Its warning names the requested
+semantics, Bubblewrap and PRoot selection outcomes, the entry-point-only rewrite,
+and the resulting descendant limitations. `container-tools host doctor
+[--config PATH] [--profile NAME] [--verbose] --json` emits one closed
+`container-tools.host-doctor/v1` object. A valid diagnosis exits zero even when
+no backend is usable; unusable manifests are reported without backend probing.
+Invalid configuration or incomplete report construction exits 125 without
+partial JSON. Doctor `--verbose` writes its bounded backend-order selection
+diagnostic to stderr; JSON stdout remains machine-only.
+
+Nested backend lookup uses the caller PATH and freezes the selected Bubblewrap
+or PRoot executable to an absolute caller-namespace path before probing or
+launching. Profile environment operations still apply to the payload, but
+cannot hide or substitute the selected backend. Automatic fallback requires a
+fully cleaned probe failure or timeout; supervisor setup or cleanup uncertainty
+returns 125, and doctor emits no JSON.
+
+Bubblewrap uses its supported default non-CLOEXEC descriptor inheritance rather
+than an unsupported descriptor-count option. Its semantic probe verifies the
+planned cwd, one parent-admitted projection identity, and a descendant
+trampoline exec before it reports ready.
 
 Install with CMake's normal prefix selection, for example:
 

@@ -24,11 +24,12 @@ int main(void)
 {
   char work[] = "/tmp/mkchad-v1/container-tools-c11/executable.XXXXXX";
   char control[4096], direct[4096], env_script[4096], env_split[4096];
-  char env_assignment[4096], env_ignore[4096];
+  char env_assignment[4096], env_ignore[4096], env_malformed[4096];
   char recursive_a[4096], recursive_b[4096], missing[4096], nonexec[4096];
   char fifo[4096];
   const char identity[] = "unit-build-identity";
   int descriptor;
+  int generated_control;
   int executable = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
   struct ct_elf_info elf;
   static struct ct_host_profile profile;
@@ -40,7 +41,8 @@ int main(void)
       snprintf(env_script, sizeof(env_script), "%s/env", work) >= (int)sizeof(env_script) ||
       snprintf(env_split, sizeof(env_split), "%s/env-s", work) >= (int)sizeof(env_split) ||
       snprintf(env_assignment, sizeof(env_assignment), "%s/env-assignment", work) >= (int)sizeof(env_assignment) ||
-      snprintf(env_ignore, sizeof(env_ignore), "%s/env-ignore", work) >= (int)sizeof(env_ignore) ||
+       snprintf(env_ignore, sizeof(env_ignore), "%s/env-ignore", work) >= (int)sizeof(env_ignore) ||
+       snprintf(env_malformed, sizeof(env_malformed), "%s/env-malformed", work) >= (int)sizeof(env_malformed) ||
       snprintf(recursive_a, sizeof(recursive_a), "%s/a", work) >= (int)sizeof(recursive_a) ||
       snprintf(recursive_b, sizeof(recursive_b), "%s/b", work) >= (int)sizeof(recursive_b) ||
       snprintf(missing, sizeof(missing), "%s/missing", work) >= (int)sizeof(missing) ||
@@ -54,11 +56,17 @@ int main(void)
            ? ct_executable_admit_trampoline(executable, descriptor, identity) != 0
            : ct_executable_admit_trampoline(executable, descriptor, identity) == 0)) return 3;
   if (ct_executable_admit_trampoline(executable, descriptor, "wrong") == 0) return 5;
+  generated_control = ct_executable_control_open(identity);
+  if (generated_control < 0 ||
+      (elf.kind == CT_ELF_STATIC &&
+       ct_executable_admit_trampoline(executable, generated_control, identity) != 0) ||
+      close(generated_control) != 0) return 5;
   if (write_executable(direct, "#!/bin/sh\n", 0700) != 0 ||
       write_executable(env_script, "#!/usr/bin/env sh\n", 0700) != 0 ||
       write_executable(env_split, "#!/usr/bin/env -S 'sh' -e\n", 0700) != 0 ||
-      write_executable(env_assignment, "#!/usr/bin/env -S FOO=x sh\n", 0700) != 0 ||
-      write_executable(env_ignore, "#!/usr/bin/env -S -i sh\n", 0700) != 0 ||
+       write_executable(env_assignment, "#!/usr/bin/env -S FOO=x sh\n", 0700) != 0 ||
+       write_executable(env_ignore, "#!/usr/bin/env -S -i sh\n", 0700) != 0 ||
+       write_executable(env_malformed, "#!/usr/bin/env -S sh 'unterminated\n", 0700) != 0 ||
       write_executable(missing, "#!/missing/interpreter\n", 0700) != 0 ||
       write_executable(nonexec, "#!/bin/sh\n", 0600) != 0) return 6;
   if (mkfifo(fifo, 0600) != 0) return 6;
@@ -76,8 +84,9 @@ int main(void)
   ct_path_map_init(&map);
   if (ct_path_map_set_root(&map, "/") != 0 ||
       ct_path_map_add(&map, work, "/overlay", "inherit", 0U, 0U) != 0 ||
-      ct_executable_resolve(&profile, &map, "sh", &resolved) != CT_EXECUTABLE_OK ||
-      resolved.stage_count != 1U || resolved.stages[0].elf.kind != CT_ELF_DYNAMIC) return 8;
+       ct_executable_resolve(&profile, &map, "sh", &resolved) != CT_EXECUTABLE_OK ||
+       resolved.stage_count != 1U || resolved.stages[0].elf.kind != CT_ELF_DYNAMIC ||
+       resolved.stages[0].descriptor < 0 || resolved.loader_descriptor < 0) return 8;
   ct_executable_close(&resolved);
   if (ct_executable_resolve(&profile, &map, direct, &resolved) != CT_EXECUTABLE_OK ||
       resolved.stage_count != 2U || resolved.stages[0].is_shebang == 0 ||
@@ -90,7 +99,8 @@ int main(void)
       resolved.stage_count != 3U || resolved.stages[0].shebang.uses_env == 0) return 10;
   ct_executable_close(&resolved);
   if (ct_executable_resolve(&profile, &map, env_split, &resolved) != CT_EXECUTABLE_OK ||
-      resolved.stage_count != 3U) return 11;
+       resolved.stage_count != 3U || resolved.stages[0].env_argument_count != 1U ||
+       strcmp(resolved.stages[0].env_arguments[0], "-e") != 0) return 11;
   ct_executable_close(&resolved);
   if (ct_executable_resolve(&profile, &map, env_assignment, &resolved) !=
           CT_EXECUTABLE_OK || resolved.stage_count != 3U) return 11;
@@ -105,15 +115,18 @@ int main(void)
           CT_EXECUTABLE_NOT_FOUND ||
       ct_executable_resolve(&profile, &map, nonexec, &resolved) !=
           CT_EXECUTABLE_INCOMPATIBLE ||
-      ct_executable_resolve(&profile, &map, fifo, &resolved) !=
-          CT_EXECUTABLE_INCOMPATIBLE ||
+       ct_executable_resolve(&profile, &map, fifo, &resolved) !=
+           CT_EXECUTABLE_INCOMPATIBLE ||
+       ct_executable_resolve(&profile, &map, env_malformed, &resolved) !=
+           CT_EXECUTABLE_INCOMPATIBLE ||
       ct_executable_resolve(&profile, &map, "not-present-container-tools-test", &resolved) !=
           CT_EXECUTABLE_NOT_FOUND) return 12;
   ct_path_map_destroy(&map);
   if (close(executable) != 0 || close(descriptor) != 0 || unlink(control) != 0 ||
        unlink(direct) != 0 || unlink(env_script) != 0 || unlink(env_split) != 0 ||
       unlink(env_assignment) != 0 ||
-      unlink(env_ignore) != 0 ||
+       unlink(env_ignore) != 0 ||
+       unlink(env_malformed) != 0 ||
       unlink(recursive_a) != 0 || unlink(recursive_b) != 0 || unlink(missing) != 0 ||
       unlink(nonexec) != 0 || unlink(fifo) != 0 || rmdir(work) != 0) return 13;
   return 0;

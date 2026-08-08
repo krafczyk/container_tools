@@ -81,15 +81,100 @@ file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add
 expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)
 expect_success(runtime exec --backend podman -- /bin/true)
 file(WRITE "${CMAKE_BINARY_DIR}/host.toml"
-  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\nenvironment_remove = [\"CT_REMOVE_ME\"]\n[profiles.root.environment]\nCT_U7_VALUE = \"planned\"\n")
 execute_process(
-  COMMAND "${prefix}/bin/container-tools" host exec
-          --config "${CMAKE_BINARY_DIR}/host.toml" -- /bin/true
+  COMMAND "@CMAKE_COMMAND@" -E env CT_REMOVE_ME=secret
+          "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/host.toml" --backend rewrite --verbose -- /usr/bin/env
   RESULT_VARIABLE host_result
+  OUTPUT_VARIABLE host_output
   ERROR_VARIABLE host_error
 )
-if(NOT host_result EQUAL 125 OR NOT host_error MATCHES "nested backend unavailable")
-  message(FATAL_ERROR "installed host command did not complete selected-root planning")
+if(NOT host_result EQUAL 0 OR NOT host_error MATCHES "selection profile=root backend=rewrite" OR
+   NOT host_error MATCHES "selected rewrite entry-point behavior" OR
+   NOT host_output MATCHES "CT_U7_VALUE=planned" OR host_output MATCHES "CT_REMOVE_ME=secret")
+  message(FATAL_ERROR "installed host command did not execute the selected-root rewrite plan: ${host_error}")
+endif()
+
+# These wrappers deterministically fail probes. They are not Bubblewrap or
+# PRoot evidence; the installed static executable remains the payload fixture.
+set(fake_backend_dir "${CMAKE_BINARY_DIR}/fake-nested-backends")
+set(fake_backend_log "${CMAKE_BINARY_DIR}/fake-nested-backends.log")
+file(MAKE_DIRECTORY "${fake_backend_dir}")
+file(WRITE "${fake_backend_dir}/bwrap"
+  "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = --probe ]; then printf 'bubblewrap probe\\n' >>\"$CT_U7_BACKEND_LOG\"; exit 17; fi\ndone\nprintf 'bubblewrap launch\\n' >>\"$CT_U7_BACKEND_LOG\"\nexit 99\n")
+file(WRITE "${fake_backend_dir}/proot"
+  "#!/bin/sh\nfor argument in \"$@\"; do\n  if [ \"$argument\" = --probe ]; then printf 'proot probe\\n' >>\"$CT_U7_BACKEND_LOG\"; exit 18; fi\ndone\nprintf 'proot launch\\n' >>\"$CT_U7_BACKEND_LOG\"\nexit 98\n")
+file(CHMOD "${fake_backend_dir}/bwrap" "${fake_backend_dir}/proot"
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+              WORLD_READ WORLD_EXECUTE)
+file(WRITE "${CMAKE_BINARY_DIR}/full-root.toml"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${fake_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${fake_backend_log}"
+          "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/full-root.toml" -- /bin/sh -c "printf payload; exit 42"
+  RESULT_VARIABLE full_root_without_consent_result
+  OUTPUT_VARIABLE full_root_without_consent_output
+  ERROR_VARIABLE full_root_without_consent_error
+)
+file(READ "${fake_backend_log}" full_root_without_consent_log)
+if(NOT full_root_without_consent_result EQUAL 125 OR
+   NOT full_root_without_consent_output STREQUAL "" OR
+   NOT full_root_without_consent_log STREQUAL "bubblewrap probe\nproot probe\n" OR
+   full_root_without_consent_error MATCHES "selected rewrite entry-point behavior")
+  message(FATAL_ERROR "full-root execution rewrote or dispatched without consent")
+endif()
+file(REMOVE "${fake_backend_log}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${fake_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${fake_backend_log}"
+          "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/full-root.toml" --allow-degraded=rewrite --
+          /bin/sh -c "printf payload; exit 42"
+  RESULT_VARIABLE full_root_with_consent_result
+  OUTPUT_VARIABLE full_root_with_consent_output
+  ERROR_VARIABLE full_root_with_consent_error
+)
+file(READ "${fake_backend_log}" full_root_with_consent_log)
+if(NOT full_root_with_consent_result EQUAL 42 OR
+   NOT full_root_with_consent_output STREQUAL "payload" OR
+   NOT full_root_with_consent_log STREQUAL "bubblewrap probe\nproot probe\n" OR
+   NOT full_root_with_consent_error MATCHES "requested semantics full-root" OR
+   NOT full_root_with_consent_error MATCHES "bubblewrap=probe-failed, proot=probe-failed" OR
+   NOT full_root_with_consent_error MATCHES "descendants do not receive" OR
+   NOT full_root_with_consent_error MATCHES "read-only access is not enforced")
+  message(FATAL_ERROR "full-root consent did not dispatch exactly one rewrite payload")
+endif()
+file(REMOVE "${fake_backend_log}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${fake_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${fake_backend_log}"
+          "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/full-root.toml" --backend rewrite --
+          /bin/sh -c "printf payload; exit 42"
+  RESULT_VARIABLE forced_rewrite_without_consent_result
+  OUTPUT_VARIABLE forced_rewrite_without_consent_output
+)
+if(NOT forced_rewrite_without_consent_result EQUAL 125 OR
+   NOT forced_rewrite_without_consent_output STREQUAL "" OR EXISTS "${fake_backend_log}")
+  message(FATAL_ERROR "forced rewrite bypassed the full-root consent policy")
+endif()
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${fake_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${fake_backend_log}"
+          "${prefix}/bin/container-tools" host exec
+          --config "${CMAKE_BINARY_DIR}/full-root.toml" --backend rewrite
+          --allow-degraded=rewrite -- /bin/sh -c "printf payload; exit 42"
+  RESULT_VARIABLE forced_rewrite_with_consent_result
+  OUTPUT_VARIABLE forced_rewrite_with_consent_output
+  ERROR_VARIABLE forced_rewrite_with_consent_error
+)
+if(NOT forced_rewrite_with_consent_result EQUAL 42 OR
+   NOT forced_rewrite_with_consent_output STREQUAL "payload" OR EXISTS "${fake_backend_log}" OR
+   NOT forced_rewrite_with_consent_error MATCHES "bubblewrap=not-attempted, proot=not-attempted")
+  message(FATAL_ERROR "forced rewrite consent did not produce one explicit rewrite dispatch")
 endif()
 execute_process(
   COMMAND "${prefix}/bin/container-tools" host exec
@@ -100,7 +185,289 @@ execute_process(
 if(NOT missing_host_result EQUAL 127 OR NOT missing_host_error MATCHES "command not found")
   message(FATAL_ERROR "installed host command did not preserve not-found phase")
 endif()
-expect_not_implemented(host doctor --json)
+execute_process(
+  COMMAND "${prefix}/bin/container-tools" host doctor
+          --config "${CMAKE_BINARY_DIR}/host.toml" --verbose --json
+  RESULT_VARIABLE doctor_result
+  OUTPUT_VARIABLE doctor_output
+  ERROR_VARIABLE doctor_error
+)
+if(NOT doctor_result EQUAL 0 OR NOT doctor_output MATCHES "container-tools.host-doctor/v1" OR
+   NOT doctor_output MATCHES "\"name\":\"rewrite\"" OR
+   doctor_output MATCHES "selection" OR
+   NOT doctor_error MATCHES "selection profile=root backend=bubblewrap,proot,rewrite")
+  message(FATAL_ERROR "installed host doctor did not emit one complete report")
+endif()
+
+# The scripts below emulate only the generated Bubblewrap argv and then enter
+# the production descriptor trampoline. They are not Bubblewrap/PRoot evidence.
+set(u7_root "${CMAKE_BINARY_DIR}/u7-selected-root")
+set(u7_workspace "${CMAKE_BINARY_DIR}/u7-cargo-workspace")
+set(u7_slurm "${CMAKE_BINARY_DIR}/u7-slurm-config")
+set(u7_run "${CMAKE_BINARY_DIR}/u7-slurm-run")
+set(u7_backend_dir "${CMAKE_BINARY_DIR}/u7-fake-backend")
+set(u7_backend_log "${CMAKE_BINARY_DIR}/u7-backend.log")
+set(u7_argument_log "${CMAKE_BINARY_DIR}/u7-arguments.log")
+set(u7_repair "${u7_workspace}/selected-root-repair")
+set(u7_config "${CMAKE_BINARY_DIR}/u7-host.toml")
+set(u7_read_only_config "${CMAKE_BINARY_DIR}/u7-read-only.toml")
+file(REMOVE_RECURSE "${u7_root}" "${u7_workspace}" "${u7_slurm}" "${u7_run}" "${u7_backend_dir}")
+file(MAKE_DIRECTORY "${u7_root}/usr/bin" "${u7_root}/workspace" "${u7_root}/etc/slurm"
+                    "${u7_root}/run/slurm" "${u7_workspace}" "${u7_slurm}" "${u7_run}"
+                    "${u7_backend_dir}" "${u7_root}/proc")
+file(CREATE_LINK "/bin" "${u7_root}/bin" SYMBOLIC)
+file(CREATE_LINK "/lib" "${u7_root}/lib" SYMBOLIC)
+file(CREATE_LINK "/lib64" "${u7_root}/lib64" SYMBOLIC)
+file(CREATE_LINK "/usr/lib" "${u7_root}/usr/lib" SYMBOLIC)
+file(CREATE_LINK "/usr/lib64" "${u7_root}/usr/lib64" SYMBOLIC)
+file(WRITE "${u7_workspace}/Cargo.toml" "[package]\nname = \"u7-fixture\"\n")
+file(WRITE "${u7_slurm}/slurm.conf" "ClusterName=u7-fixture\n")
+file(WRITE "${u7_run}/slurmctld.sock" "synthetic socket endpoint\n")
+file(WRITE "${u7_root}/usr/bin/cargo" [==[#!/bin/sh
+test "$PWD" = "$CT_U7_WORKSPACE" || exit 121
+test "$(cat "$CT_U7_WORKSPACE/Cargo.toml")" = "[package]
+name = \"u7-fixture\"" || exit 122
+test -e /proc/self/fd/200 || exit 123
+printf 'repaired\n' > "$CT_U7_WORKSPACE/selected-root-repair" || exit 124
+printf 'cargo cwd=%s fd=200 repair=repaired\n' "$PWD"
+"$CT_U7_ROOT/usr/bin/rustc" "$1" || exit $?
+case "$1" in status) exit 42 ;; signal) kill -TERM $$ ;; esac
+]==])
+file(WRITE "${u7_root}/usr/bin/rustc" [==[#!/bin/sh
+test -e /proc/self/fd/200 || exit 124
+printf 'compiler fd=200\n'
+exec "$CT_U7_ROOT/usr/bin/ld" "$@"
+]==])
+file(WRITE "${u7_root}/usr/bin/ld" [==[#!/bin/sh
+test -e /proc/self/fd/200 || exit 125
+printf 'linker fd=200\n'
+]==])
+file(WRITE "${u7_root}/usr/bin/srun" [==[#!/bin/sh
+test "$PWD" = "$CT_U7_WORKSPACE" || exit 126
+test "$(cat "$CT_U7_SLURM/slurm.conf")" = "ClusterName=u7-fixture" || exit 127
+test -r "$CT_U7_RUN/slurmctld.sock" || exit 128
+printf 'srun cwd=%s config=slurm.conf socket=slurmctld.sock\n' "$PWD"
+]==])
+file(WRITE "${u7_root}/usr/bin/sbatch" [==[#!/bin/sh
+printf 'sbatch submission=%s\n' "$1"
+]==])
+file(WRITE "${u7_root}/usr/bin/squeue" [==[#!/bin/sh
+printf 'squeue query=%s\n' "$1"
+]==])
+file(WRITE "${u7_backend_dir}/bwrap" [==[#!/bin/sh
+root= workspace= root_mode= trampoline= expected_cwd=
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --bind|--ro-bind)
+      printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$CT_U7_ARGUMENT_LOG"
+      if [ "$3" = / ]; then root=$2; root_mode=$1; fi
+      if [ "$3" = /workspace ]; then workspace=$2; fi
+      shift 3 ;;
+    --chdir) expected_cwd=$2; shift 2 ;;
+    /proc/self/fd/*) trampoline=$1; shift; break ;;
+    *) shift ;;
+  esac
+done
+[ -n "$root" ] && [ -n "$workspace" ] && [ -n "$trampoline" ] || exit 125
+[ "$expected_cwd" = /workspace ] || exit 125
+[ "$1" = --internal-trampoline ] || exit 125
+internal=$1; control=$2; control_fd=$3; shift 3
+descriptor= no_descriptor=
+if [ "$1" = --descriptor-fd ]; then descriptor=$1; inherited_fd=$2; shift 2; else no_descriptor=1; fi
+if [ "$root_mode" = --ro-bind ] && [ "$CT_U7_REFUSE_READ_ONLY" = 1 ]; then
+  printf 'read-only-refused\n' >> "$CT_U7_BACKEND_LOG"
+  exit 125
+fi
+if [ "$1" = --probe ]; then
+  printf 'probe\n' >> "$CT_U7_BACKEND_LOG"
+  shift
+  planned_cwd=$1; planned_target=$2; device=$3; inode=$4; type=$5
+  [ "$planned_cwd" = /workspace ] && [ "$planned_target" = /workspace ] || exit 125
+  cd "$workspace" || exit 125
+  if [ -n "$no_descriptor" ]; then
+    exec "$trampoline" "$internal" "$control" "$control_fd" --probe "$workspace" "$workspace" "$device" "$inode" "$type"
+  fi
+  exec "$trampoline" "$internal" "$control" "$control_fd" "$descriptor" "$inherited_fd" --probe "$workspace" "$workspace" "$device" "$inode" "$type"
+fi
+printf 'launch\n' >> "$CT_U7_BACKEND_LOG"
+payload=$1; shift
+case "$payload" in /usr/bin/*) payload="$root$payload" ;; *) exit 125 ;; esac
+cd "$workspace" || exit 125
+if [ -n "$no_descriptor" ]; then exec "$trampoline" "$internal" "$control" "$control_fd" "$payload" "$@"; fi
+exec "$trampoline" "$internal" "$control" "$control_fd" "$descriptor" "$inherited_fd" "$payload" "$@"
+]==])
+file(CHMOD "${u7_root}/usr/bin/cargo" "${u7_root}/usr/bin/rustc" "${u7_root}/usr/bin/ld"
+           "${u7_root}/usr/bin/srun" "${u7_root}/usr/bin/sbatch" "${u7_root}/usr/bin/squeue"
+           "${u7_backend_dir}/bwrap"
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+file(WRITE "${u7_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
+file(WRITE "${u7_read_only_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"read-only\"\nsemantics = \"full-root\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n")
+function(run_u7_host command payload_argument expected_result expected_output)
+  file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
+  execute_process(
+    COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
+            "CT_U7_BACKEND_LOG=${u7_backend_log}" "CT_U7_ARGUMENT_LOG=${u7_argument_log}"
+            /bin/bash -c "cd \"$5\" && exec 200</dev/null; exec \"$1\" host exec --config \"$2\" --backend bubblewrap -- /usr/bin/$3 $4"
+            bash "${prefix}/bin/container-tools" "${u7_config}" "${command}" "${payload_argument}" "${u7_workspace}"
+    RESULT_VARIABLE u7_result OUTPUT_VARIABLE u7_output ERROR_VARIABLE u7_error
+  )
+  if(NOT EXISTS "${u7_backend_log}" OR NOT EXISTS "${u7_argument_log}")
+    message(FATAL_ERROR "U7 selected-root ${command} did not reach the fake backend: ${u7_result}: ${u7_error}")
+  endif()
+  file(READ "${u7_backend_log}" u7_backend_events)
+  file(READ "${u7_argument_log}" u7_arguments)
+  if(NOT u7_result EQUAL expected_result OR NOT u7_output STREQUAL expected_output OR
+     NOT u7_backend_events STREQUAL "probe\nlaunch\n" OR
+     NOT u7_arguments MATCHES "--bind:${u7_workspace}:/workspace" OR
+     NOT u7_arguments MATCHES "--ro-bind:${u7_slurm}:/etc/slurm" OR
+     NOT u7_arguments MATCHES "--bind:${u7_run}:/run/slurm")
+    message(FATAL_ERROR "U7 selected-root ${command} workload was not one traced dispatch: ${u7_error}")
+  endif()
+  if(command STREQUAL "cargo")
+    file(READ "${u7_repair}" u7_repair_contents)
+    if(NOT u7_repair_contents STREQUAL "repaired\n")
+      message(FATAL_ERROR "U7 selected-root cargo workload did not repair its writable overlay source")
+    endif()
+  endif()
+endfunction()
+run_u7_host(cargo build 0 "cargo cwd=${u7_workspace} fd=200 repair=repaired\ncompiler fd=200\nlinker fd=200\n")
+run_u7_host(cargo status 42 "cargo cwd=${u7_workspace} fd=200 repair=repaired\ncompiler fd=200\nlinker fd=200\n")
+run_u7_host(cargo signal 143 "cargo cwd=${u7_workspace} fd=200 repair=repaired\ncompiler fd=200\nlinker fd=200\n")
+run_u7_host(srun submit 0 "srun cwd=${u7_workspace} config=slurm.conf socket=slurmctld.sock\n")
+run_u7_host(sbatch fixture.sbatch 0 "sbatch submission=fixture.sbatch\n")
+run_u7_host(squeue fixture-job 0 "squeue query=fixture-job\n")
+file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${u7_backend_log}" "CT_U7_ARGUMENT_LOG=${u7_argument_log}"
+          "CT_U7_REFUSE_READ_ONLY=1" /bin/bash -c "cd \"$3\" && exec \"$1\" host exec --config \"$2\" --backend bubblewrap -- /usr/bin/cargo build"
+          bash "${prefix}/bin/container-tools" "${u7_read_only_config}" "${u7_workspace}"
+  RESULT_VARIABLE u7_read_only_result
+)
+file(READ "${u7_backend_log}" u7_read_only_events)
+file(READ "${u7_argument_log}" u7_read_only_arguments)
+if(NOT u7_read_only_result EQUAL 125 OR NOT u7_read_only_events STREQUAL "read-only-refused\n" OR
+   NOT u7_read_only_arguments MATCHES "--ro-bind:${u7_root}:/")
+  message(FATAL_ERROR "U7 alternate selected root did not preserve the read-only launch contract")
+endif()
+
+# Produce a current v1 manifest through the public outer CLI, consume it through
+# host exec, then reject a directly constructed future-major fixture before any
+# nested backend probe.
+set(u7_producer_root "${CMAKE_BINARY_DIR}/u7-producer-root")
+set(u7_producer_state "${CMAKE_BINARY_DIR}/u7-producer-state")
+set(u7_projection_cache "${CMAKE_BINARY_DIR}/u7-projection-cache")
+set(u7_mountinfo "${CMAKE_BINARY_DIR}/u7-mountinfo")
+set(u7_outer_backend "${CMAKE_BINARY_DIR}/u7-outer-backend")
+set(u7_outer_log "${CMAKE_BINARY_DIR}/u7-outer.log")
+set(u7_manifest_config "${CMAKE_BINARY_DIR}/u7-manifest-host.toml")
+set(u7_future_manifest "${CMAKE_BINARY_DIR}/u7-future.manifest")
+set(u7_future_config "${CMAKE_BINARY_DIR}/u7-future-host.toml")
+file(REMOVE_RECURSE "${u7_producer_root}" "${u7_producer_state}" "${u7_projection_cache}" "${u7_outer_backend}")
+file(REMOVE "${u7_outer_log}" "${u7_future_manifest}")
+file(MAKE_DIRECTORY "${u7_producer_root}" "${u7_outer_backend}")
+file(WRITE "${u7_mountinfo}" "1 0 0:1 / / rw - ext4 root rw\n")
+file(WRITE "${u7_outer_backend}/docker" [=[#!/bin/sh
+printf '%s\n' "$1" >> "$CT_U7_OUTER_LOG"
+if [ "$1" = container ] && [ "$2" = inspect ]; then
+  for value; do name=$value; done
+  printf '%s\n' "$name"
+fi
+]=])
+file(CHMOD "${u7_outer_backend}/docker"
+  PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_outer_backend}:$ENV{PATH}"
+          "CT_U7_OUTER_LOG=${u7_outer_log}" "CT_HOST_PROJECTION_ENDPOINT=local"
+          "CT_HOST_PROJECTION_SOURCE_ROOT=${u7_producer_root}"
+          "CT_HOST_PROJECTION_MOUNTINFO=${u7_mountinfo}"
+          "CT_HOST_PROJECTION_CACHE_ROOT=${u7_projection_cache}"
+          "XDG_STATE_HOME=${u7_producer_state}" "DOCKER_CONTEXT=default"
+          "${prefix}/bin/container-tools" exec --docker --ct-host-root required u7-producer-image /bin/true
+  RESULT_VARIABLE u7_producer_result
+)
+file(GLOB_RECURSE u7_produced_manifests "${u7_producer_state}/*.manifest")
+list(LENGTH u7_produced_manifests u7_manifest_count)
+if(NOT u7_producer_result EQUAL 0 OR NOT u7_manifest_count EQUAL 1)
+  message(FATAL_ERROR "U7 producer did not publish exactly one current manifest")
+endif()
+file(READ "${u7_outer_log}" u7_outer_events)
+if(NOT u7_outer_events STREQUAL "create\ncontainer\nstart\nrm\nrun\n")
+  message(FATAL_ERROR "U7 producer did not complete its bounded outer dispatch")
+endif()
+list(GET u7_produced_manifests 0 u7_current_manifest)
+file(READ "${u7_current_manifest}" u7_current_manifest_contents)
+if(NOT u7_current_manifest_contents MATCHES "ct-mount-plan-v1")
+  message(FATAL_ERROR "U7 producer did not publish the current manifest grammar")
+endif()
+file(WRITE "${u7_manifest_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_current_manifest}\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
+file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${u7_backend_log}" "CT_U7_ARGUMENT_LOG=${u7_argument_log}"
+          /bin/bash -c "cd \"$3\" && exec 200</dev/null; exec \"$1\" host exec --config \"$2\" --backend bubblewrap -- /usr/bin/cargo build"
+          bash "${prefix}/bin/container-tools" "${u7_manifest_config}" "${u7_workspace}"
+  RESULT_VARIABLE u7_consumer_result OUTPUT_VARIABLE u7_consumer_output
+)
+file(READ "${u7_backend_log}" u7_consumer_events)
+if(NOT u7_consumer_result EQUAL 0 OR NOT u7_consumer_output MATCHES "cargo cwd=${u7_workspace} fd=200" OR
+   NOT u7_consumer_events STREQUAL "probe\nlaunch\n")
+  message(FATAL_ERROR "U7 same-major producer and consumer did not complete one selected-root dispatch")
+endif()
+execute_process(COMMAND /usr/bin/printf "ct-mount-plan-v2\\0" OUTPUT_FILE "${u7_future_manifest}")
+file(WRITE "${u7_future_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_future_manifest}\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n")
+file(REMOVE "${u7_backend_log}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
+          "CT_U7_BACKEND_LOG=${u7_backend_log}" "${prefix}/bin/container-tools" host exec
+          --config "${u7_future_config}" --backend bubblewrap -- /usr/bin/cargo build
+  RESULT_VARIABLE u7_future_result OUTPUT_VARIABLE u7_future_output
+)
+if(NOT u7_future_result EQUAL 125 OR NOT u7_future_output STREQUAL "" OR EXISTS "${u7_backend_log}")
+  message(FATAL_ERROR "U7 future-major manifest reached a nested backend probe")
+endif()
+
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/inaccessible-config")
+set(inaccessible_config "${CMAKE_BINARY_DIR}/inaccessible-config/host-a.toml")
+set(inaccessible_config_target "${CMAKE_BINARY_DIR}/inaccessible-config/host-b.toml")
+file(CREATE_LINK "${inaccessible_config_target}" "${inaccessible_config}" SYMBOLIC)
+file(CREATE_LINK "${inaccessible_config}" "${inaccessible_config_target}" SYMBOLIC)
+function(expect_host_usage)
+  execute_process(
+    COMMAND "${prefix}/bin/container-tools" host exec --config "${inaccessible_config}" ${ARGN} -- /bin/true
+    RESULT_VARIABLE command_result
+  )
+  if(NOT command_result EQUAL 64)
+    message(FATAL_ERROR "invalid host backend accessed config or failed outside usage: ${ARGN}")
+  endif()
+endfunction()
+expect_host_usage(--backend invalid)
+expect_host_usage(--backend "")
+expect_host_usage(--backend)
+expect_host_usage(--backend bubblewrap --backend proot)
+
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/inaccessible-manifest")
+set(io_manifest_a "${CMAKE_BINARY_DIR}/inaccessible-manifest/plan-a")
+set(io_manifest_b "${CMAKE_BINARY_DIR}/inaccessible-manifest/plan-b")
+file(CREATE_LINK "${io_manifest_b}" "${io_manifest_a}" SYMBOLIC)
+file(CREATE_LINK "${io_manifest_a}" "${io_manifest_b}" SYMBOLIC)
+file(WRITE "${CMAKE_BINARY_DIR}/io-manifest.toml"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\nmount_plan = \"${io_manifest_a}\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+execute_process(
+  COMMAND "${prefix}/bin/container-tools" host doctor
+          --config "${CMAKE_BINARY_DIR}/io-manifest.toml" --json
+  RESULT_VARIABLE io_doctor_result
+  OUTPUT_VARIABLE io_doctor_output
+  ERROR_VARIABLE io_doctor_error
+)
+if(NOT io_doctor_result EQUAL 125 OR NOT io_doctor_output STREQUAL "" OR
+   NOT io_doctor_error MATCHES "unable to produce complete report")
+  message(FATAL_ERROR "mount-plan I/O failure emitted a doctor report")
+endif()
 
 file(MAKE_DIRECTORY "${moved_parent}")
 file(RENAME "${prefix}" "${moved_parent}/container tools")

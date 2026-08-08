@@ -1,24 +1,55 @@
 # Selected-Root Host Execution
 
-`container-tools host exec [--config PATH] [--profile NAME] -- COMMAND [ARG...]`
+`container-tools host exec [--config PATH] [--profile NAME]
+[--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] --
+COMMAND [ARG...]`
 reads one strict TOML profile. Without a discovered profile it plans the
 installed default: profile `host`, selected root `/host`, and exact semantic
 manifest selector `/.container-tools-mount-plan`. A profile may instead name
 another Linux root already visible inside the original container.
 
-## Current Boundary
+## Dispatch Boundary
 
-The U6 implementation validates configuration, exact manifest consumption,
-layered path order, cwd and environment planning, executable format, and the
-bounded probe-supervisor contract. A valid plan currently returns status 125
-with `nested backend unavailable`. Bubblewrap, PRoot, rewrite dispatch, and
-doctor output are U7 work. Host operations never invoke an outer container
-runtime.
+After profile, manifest, path, cwd, environment, and executable planning,
+`host exec` selects exactly one nested backend in fixed order: Bubblewrap,
+PRoot, then rewrite. `--backend bubblewrap|proot|rewrite` forces one backend
+and never falls back. A full-root profile may use rewrite only with
+`--allow-degraded=rewrite`; `semantics = "rewrite"` is already eligible. A
+failed selected launch is never retried with another backend. Host operations
+never invoke Docker, Podman, SingularityCE, or Apptainer.
+
+Unknown, empty, missing, and duplicate `--backend` values fail with usage
+status before configuration, manifest, allocation, or backend access.
+`--verbose` writes one bounded profile/backend selection diagnostic to stderr
+before dispatch.
+
+Bubblewrap receives only the selected root, ordered requested overlays, a
+read-only caller `/proc` mapping, and the selected cwd. Every target leaf must
+already exist with a compatible type beneath the lower root, so probing cannot
+materialize or mutate it. Bubblewrap uses its supported default non-CLOEXEC
+descriptor inheritance through the trampoline and otherwise adds no namespaces
+or isolation. When the caller supplies a high non-CLOEXEC descriptor, the
+semantic probe verifies it before Bubblewrap becomes ready. PRoot
+uses only `-r`, ordered `-b` entries including caller `/proc`, `-w`, the
+internal trampoline, and payload argv; it is ineligible where container-tools
+must enforce read-only root or projection access. Rewrite is deliberately weak:
+it runs a validated native ELF or bounded shebang entry only and does not
+provide descendant selected-root semantics. It emits a degradation warning
+before dispatch that names the requested semantics, Bubblewrap and PRoot
+selection outcomes, and the entry-point-only descendant limitation.
+
+The parent preserves its verified static executable descriptor and a bounded
+build-identity control record through nested launch. The child enters the
+internal trampoline through `/proc/self/fd/N`, re-admits both descriptors with
+`ct_executable_admit_trampoline`, verifies the planned cwd, one projection's
+parent-captured device/inode/type identity, and one descendant
+self-exec during a probe, then executes target argv directly. The
+selected root therefore needs no container-tools metadata or trampoline file.
 
 Before dispatch, status 125 identifies configuration, manifest, or setup
 failure; 126 identifies a target that exists but is not executable or
-compatible; 127 identifies a target command that was not found. Once U7 adds
-the dispatch boundary, command statuses pass through unchanged.
+compatible; 127 identifies a target command that was not found. After dispatch,
+command statuses pass through unchanged.
 
 ## Profiles
 
@@ -64,9 +95,12 @@ absolute target-side paths. Resolution uses the composed lower-root and overlay
 map. The planner follows ordinary symlinks, checks caller execute permission,
 validates native ELF class/data/machine and interpreter records, and resolves at
 most four absolute or supported GNU `env` shebang stages. Supported `env -S`
-options, assignments, and PATH changes are incorporated into command lookup;
-unsupported or ambiguous split forms fail closed. The original command
-descriptor remains open until planning finishes.
+options, assignments, PATH changes, and command arguments are incorporated into
+command lookup and rewrite argv construction; unsupported or ambiguous split
+forms fail closed. Every resolved stage and a dynamic ELF's PT_INTERP loader
+retain a descriptor through planning. Rewrite rejects set-id files and any
+nonempty `security.capability` xattr on those descriptors, and fails closed when
+capability inspection is ambiguous.
 
 Backend probes use a fresh process-group supervisor. The supervisor remains an
 unreaped group identity anchor after a probe leader exits, adopts and reaps
@@ -74,4 +108,98 @@ descendants including processes that create another group or session, and
 preserves inherited terminal and non-close-on-exec descriptors. Deadline or
 caller interruption performs bounded TERM-then-KILL cleanup through that owned
 supervisor boundary. SIGINT and SIGTERM are restored and re-raised after
-cleanup; unrelated processes are never signaled.
+cleanup; unrelated processes are never signaled. Backend lookup uses the
+caller's PATH before profile environment operations, resolves one absolute
+caller-namespace executable for the selected probe and launch, and never lets a
+profile PATH substitute that backend. Automatic selection falls through only
+after a fully cleaned capability failure or timeout; setup, cleanup, or signal
+restoration uncertainty exits 125.
+
+## Doctor
+
+`container-tools host doctor [--config PATH] [--profile NAME] [--verbose]
+--json` validates the same profile, selected root, and exact manifest before
+reporting backend capability. Doctor probes internal backend capability but
+never dispatches a user payload. Without `--json`, its human output is for
+people and is not a machine interface.
+
+### JSON Machine Contract
+
+With `--json`, stdout is the closed `container-tools.host-doctor/v1` contract:
+one compact UTF-8 JSON object followed by one newline, with no human prose on
+stdout. The root object has exactly these required fields:
+
+| Field | Type | Value and nullability |
+| --- | --- | --- |
+| `schema` | string | Always `container-tools.host-doctor/v1`. |
+| `schema_version` | integer | Always `1`. |
+| `profile` | string | Selected profile name; never null. |
+| `architecture` | string | Package build architecture; never null. |
+| `requested_semantics` | string | The selected profile's `full-root` or `rewrite` semantics; never null. |
+| `mount_plan` | object | Required closed mount-plan object described below. |
+| `backends` | array | Required array of exactly three closed backend objects in the fixed order below. |
+
+`mount_plan` has exactly these required fields:
+
+| Field | Type | Value and nullability |
+| --- | --- | --- |
+| `configured` | boolean | `true` when the selected profile names a mount plan; otherwise `false`. |
+| `status` | string | One of the ten closed status values below; never null. |
+| `digest` | string or null | The validated lowercase mount-plan digest when metadata was read successfully; otherwise `null`. |
+| `strategy` | string or null | Validated manifest strategy (`direct`, `fallback`, or `none`) when metadata was read successfully; otherwise `null`. |
+| `completeness` | string or null | Validated manifest completeness (`complete` or `partial`) when metadata was read successfully; otherwise `null`. |
+| `detail` | string | A non-null machine-escaped diagnostic string. Current ready, partial, and none diagnoses use the empty string. |
+
+The closed `mount_plan.status` values are:
+
+| Status | Meaning |
+| --- | --- |
+| `disabled` | The profile does not configure a mount plan. |
+| `ready` | A configured plan is complete, eligible, and usable for backend diagnosis. |
+| `absent` | The configured plan is missing. |
+| `partial` | The plan was parsed, but its completeness is `partial`. |
+| `none` | The plan was parsed, but its strategy is `none`. |
+| `malformed` | The plan cannot be read as the closed manifest grammar. |
+| `future` | The plan uses an unsupported future manifest version. |
+| `digest-mismatch` | The plan's declared digest does not match its content. |
+| `semantic-invalid` | The plan is semantically invalid or incompatible with the selected profile. |
+| `changed-during-read` | The exact configured plan changed or was replaced while being read. |
+
+Each `backends` element has exactly these required fields:
+
+| Field | Type | Value and nullability |
+| --- | --- | --- |
+| `name` | string | Fixed positional value: `bubblewrap`, then `proot`, then `rewrite`. Never null. |
+| `installed` | boolean | Whether the backend executable is available. Rewrite is built in and reports `true`. |
+| `eligible` | boolean | Whether the profile and invocation policy permit the backend. |
+| `operational` | string | Exactly `yes`, `no`, or `not-probed`; never null. |
+| `reason_code` | string | One of the nine closed reason codes below; never null. |
+| `detail` | string | A non-null machine-escaped diagnostic string. The current backend implementation emits an empty string; it does not publish probe-output detail. |
+
+The closed doctor `reason_code` values are `ready`, `not-installed`,
+`incompatible-profile`, `mount-plan-unavailable`, `policy-denied`,
+`probe-timeout`, `probe-failed`, `earlier-backend-ready`, and
+`degradation-not-authorized`. `not-attempted` and `not-requested` are internal
+execution-selection strings, not values produced by `host doctor`.
+
+```json
+{"schema":"container-tools.host-doctor/v1","schema_version":1,"profile":"host","architecture":"x86_64","requested_semantics":"full-root","mount_plan":{"configured":true,"status":"ready","digest":"0123456789012345678901234567890123456789012345678901234567890123","strategy":"direct","completeness":"complete","detail":""},"backends":[{"name":"bubblewrap","installed":true,"eligible":true,"operational":"yes","reason_code":"ready","detail":""},{"name":"proot","installed":true,"eligible":true,"operational":"not-probed","reason_code":"earlier-backend-ready","detail":""},{"name":"rewrite","installed":true,"eligible":false,"operational":"not-probed","reason_code":"degradation-not-authorized","detail":""}]}
+```
+
+Doctor does not probe backends when the mount plan is not `ready`; each backend
+instead reports `operational: "not-probed"` and
+`reason_code: "mount-plan-unavailable"`. Otherwise it probes in fixed
+Bubblewrap, PRoot, rewrite order. After the first ready full-root backend,
+later eligible backends report `earlier-backend-ready`; rewrite is a policy
+capability and is not executed by doctor.
+
+A complete diagnosis exits `0`, including when no backend is operational.
+Invalid configuration or selected root, manifest I/O failure, an unrecognized
+mount-plan read result, probe/setup/cleanup uncertainty, or inability to build
+the report exits `125` with a stderr diagnostic. Before output begins, the
+serializer constructs the full object, so allocation or serialization failure
+emits no partial JSON. A strict no-partial-output guarantee for a failing stdout
+write is not implemented: a short or failed stream write can leave partial JSON
+before doctor returns `125`. `--verbose` writes its bounded fixed-order
+selection diagnostic to stderr after profile/root validation and before
+mount-plan assessment; JSON stdout remains machine-only on a successful write.

@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
+#define _GNU_SOURCE
 #include "executable.h"
 
 #include "path_map.h"
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 
 static enum ct_executable_status ct_executable_open(
@@ -98,6 +100,8 @@ static enum ct_executable_status ct_executable_find(
 struct ct_executable_env_command {
   char command[CT_HOST_PATH_MAX];
   char path[CT_HOST_PATH_MAX];
+  char arguments[CT_EXECUTABLE_ENV_ARGUMENT_MAX][256];
+  size_t argument_count;
   int path_override;
 };
 
@@ -220,9 +224,50 @@ static int ct_executable_env_parse(const char *argument,
     }
     if (token[0] == '-' ||
         ct_host_copy_bounded(result->command, sizeof(result->command),
-                             token) != 0) return 1;
+                              token) != 0) return 1;
+    while (*cursor != '\0') {
+      if (result->argument_count == CT_EXECUTABLE_ENV_ARGUMENT_MAX ||
+          ct_executable_env_token(&cursor, token) != 0 ||
+          ct_host_copy_bounded(result->arguments[result->argument_count],
+                               sizeof(result->arguments[0]), token) != 0) {
+        return 1;
+      }
+      ++result->argument_count;
+    }
     return 0;
   }
+}
+
+static int ct_executable_duplicate(int descriptor)
+{
+  return descriptor < 0 ? -1 : fcntl(descriptor, F_DUPFD_CLOEXEC, 3);
+}
+
+static enum ct_executable_status ct_executable_loader(
+    const struct ct_path_map *map, const struct ct_executable_stage *stage,
+    struct ct_executable *executable)
+{
+  enum ct_executable_status result;
+  struct ct_elf_info loader_elf;
+  if (stage == NULL || executable == NULL ||
+      stage->elf.kind != CT_ELF_DYNAMIC ||
+      ct_host_copy_bounded(executable->loader_target_path,
+                           sizeof(executable->loader_target_path),
+                           stage->elf.interpreter) != 0) {
+    return CT_EXECUTABLE_INCOMPATIBLE;
+  }
+  result = ct_executable_open(map, executable->loader_target_path,
+                              &executable->loader_descriptor,
+                              executable->loader_visible_path);
+  if (result != CT_EXECUTABLE_OK ||
+      ct_elf_inspect(executable->loader_descriptor, &loader_elf) != 0) {
+    if (executable->loader_descriptor >= 0) {
+      (void)close(executable->loader_descriptor);
+      executable->loader_descriptor = -1;
+    }
+    return result == CT_EXECUTABLE_OK ? CT_EXECUTABLE_INCOMPATIBLE : result;
+  }
+  return CT_EXECUTABLE_OK;
 }
 
 enum ct_executable_status ct_executable_resolve(
@@ -241,6 +286,10 @@ enum ct_executable_status ct_executable_resolve(
       executable == NULL) return CT_EXECUTABLE_INCOMPATIBLE;
   memset(executable, 0, sizeof(*executable));
   executable->descriptor = -1;
+  executable->loader_descriptor = -1;
+  for (depth = 0U; depth < CT_EXECUTABLE_MAX_STAGES; ++depth) {
+    executable->stages[depth].descriptor = -1;
+  }
   result = ct_executable_find(profile, map, NULL, command, &descriptor, current,
                               visible);
   if (result != CT_EXECUTABLE_OK) return result;
@@ -253,12 +302,17 @@ enum ct_executable_status ct_executable_resolve(
     struct ct_executable_stage *stage = &executable->stages[depth];
     size_t previous;
     if (ct_host_copy_bounded(stage->target_path, sizeof(stage->target_path),
-                             current) != 0) goto invalid;
+                             current) != 0 ||
+        ct_host_copy_bounded(stage->visible_path, sizeof(stage->visible_path),
+                             visible) != 0 ||
+        (stage->descriptor = ct_executable_duplicate(descriptor)) < 0) {
+      goto invalid;
+    }
     for (previous = 0U; previous < depth; ++previous) {
       if (strcmp(executable->stages[previous].target_path, current) == 0) goto invalid;
     }
     executable->stage_count = depth + 1U;
-    if (ct_elf_inspect(descriptor, &stage->elf) == 0) {
+    if (ct_elf_inspect(stage->descriptor, &stage->elf) == 0) {
       if (pending_env_command[0] != '\0') {
         if (descriptor != executable->descriptor) (void)close(descriptor);
         descriptor = -1;
@@ -271,6 +325,9 @@ enum ct_executable_status ct_executable_resolve(
         pending_env_path_override = 0;
         if (result != CT_EXECUTABLE_OK) goto failed;
         continue;
+      }
+      if (ct_executable_loader(map, stage, executable) != CT_EXECUTABLE_OK) {
+        goto invalid;
       }
       if (descriptor != executable->descriptor) (void)close(descriptor);
       return CT_EXECUTABLE_OK;
@@ -285,10 +342,19 @@ enum ct_executable_status ct_executable_resolve(
       if (ct_executable_env_parse(stage->shebang.argument, &env) != 0 ||
           ct_host_copy_bounded(pending_env_command,
                                sizeof(pending_env_command), env.command) != 0 ||
+          env.argument_count > CT_EXECUTABLE_ENV_ARGUMENT_MAX ||
           (env.path_override != 0 &&
-           ct_host_copy_bounded(pending_env_path, sizeof(pending_env_path),
-                                env.path) != 0)) {
+            ct_host_copy_bounded(pending_env_path, sizeof(pending_env_path),
+                                 env.path) != 0)) {
         goto invalid;
+      }
+      stage->env_argument_count = env.argument_count;
+      for (previous = 0U; previous < env.argument_count; ++previous) {
+        if (ct_host_copy_bounded(stage->env_arguments[previous],
+                                 sizeof(stage->env_arguments[previous]),
+                                 env.arguments[previous]) != 0) {
+          goto invalid;
+        }
       }
       pending_env_path_override = env.path_override;
       result = ct_executable_find(profile, map, NULL,
@@ -313,7 +379,22 @@ failed:
 
 void ct_executable_close(struct ct_executable *executable)
 {
-  if (executable != NULL && executable->descriptor >= 0) { (void)close(executable->descriptor); executable->descriptor = -1; }
+  size_t index;
+  if (executable == NULL) return;
+  if (executable->descriptor >= 0) {
+    (void)close(executable->descriptor);
+    executable->descriptor = -1;
+  }
+  if (executable->loader_descriptor >= 0) {
+    (void)close(executable->loader_descriptor);
+    executable->loader_descriptor = -1;
+  }
+  for (index = 0U; index < CT_EXECUTABLE_MAX_STAGES; ++index) {
+    if (executable->stages[index].descriptor >= 0) {
+      (void)close(executable->stages[index].descriptor);
+      executable->stages[index].descriptor = -1;
+    }
+  }
 }
 
 static int ct_executable_stable(int descriptor, struct stat *before)
@@ -350,4 +431,39 @@ int ct_executable_admit_trampoline(int executable_descriptor, int control_descri
       ct_executable_stable(executable_descriptor, &executable) != 0 ||
       ct_executable_stable(control_descriptor, &control) != 0) return 1;
   return 0;
+}
+
+int ct_executable_control_open(const char *build_identity)
+{
+  const char prefix[] = "container-tools-control-v1\n";
+  char record[512];
+  size_t length;
+  size_t written = 0U;
+  int descriptor;
+  const int rendered = build_identity == NULL
+                           ? -1
+                           : snprintf(record, sizeof(record), "%s%s\n", prefix,
+                                      build_identity);
+  if (rendered < 0 || (size_t)rendered >= sizeof(record)) return -1;
+  length = (size_t)rendered;
+#ifdef SYS_memfd_create
+  descriptor = (int)syscall(SYS_memfd_create, "container-tools-control", 0U);
+#else
+  descriptor = -1;
+#endif
+  if (descriptor < 0) return -1;
+  while (written < length) {
+    const ssize_t result = write(descriptor, record + written, length - written);
+    if (result < 0 && errno == EINTR) continue;
+    if (result <= 0) {
+      (void)close(descriptor);
+      return -1;
+    }
+    written += (size_t)result;
+  }
+  if (lseek(descriptor, 0, SEEK_SET) < 0) {
+    (void)close(descriptor);
+    return -1;
+  }
+  return descriptor;
 }

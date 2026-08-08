@@ -4,14 +4,21 @@
 
 #include <stddef.h>
 
-/** One NUL-terminated environment assignment applied only in the child process. */
+#define CT_PROCESS_ENVIRONMENT_LIMIT 129U
+
+/** One child-only environment operation; a NULL value removes the variable. */
 struct ct_process_environment { const char *name; const char *value; };
+
+/** Apply bounded environment removals and overrides in a newly forked child. */
+int ct_process_apply_environment(
+    const struct ct_process_environment *environment,
+    size_t environment_count);
 
 /**
  * Run one argv-preserved child in an owned process group and wait for its outcome.
  *
  * @param arguments Null-terminated executable argv.
- * @param environment Bounded child-only environment overrides.
+ * @param environment Bounded child-only environment removals and overrides.
  * @param environment_count Number of environment entries.
  * @return Exact normal child status, 128 plus its terminating signal, or 125
  *         when process setup, waiting, or signal-state restoration fails.

@@ -8,6 +8,7 @@
 #include "shebang.h"
 
 #define CT_EXECUTABLE_MAX_STAGES 5U
+#define CT_EXECUTABLE_ENV_ARGUMENT_MAX 16U
 
 /** Typed result from target-side executable resolution. */
 enum ct_executable_status {
@@ -17,19 +18,26 @@ enum ct_executable_status {
   CT_EXECUTABLE_IO = 3
 };
 
-/** One inspected ELF or shebang stage in target-side execution order. */
+/** One stable inspected ELF or shebang stage in target-side execution order. */
 struct ct_executable_stage {
   char target_path[CT_HOST_PATH_MAX];
+  char visible_path[CT_HOST_PATH_MAX];
   struct ct_elf_info elf;
   struct ct_shebang shebang;
+  char env_arguments[CT_EXECUTABLE_ENV_ARGUMENT_MAX][256];
+  size_t env_argument_count;
+  int descriptor;
   int is_shebang;
 };
 
-/** Resolved command and bounded entry-point inspection facts. */
+/** Resolved command, stable execution stages, and optional dynamic loader facts. */
 struct ct_executable {
   char target_path[CT_HOST_PATH_MAX];
   char visible_path[CT_HOST_PATH_MAX];
   int descriptor;
+  char loader_target_path[CT_HOST_PATH_MAX];
+  char loader_visible_path[CT_HOST_PATH_MAX];
+  int loader_descriptor;
   struct ct_executable_stage stages[CT_EXECUTABLE_MAX_STAGES];
   size_t stage_count;
 };
@@ -39,8 +47,10 @@ struct ct_executable {
  *
  * Follows ordinary caller-visible symlinks and checks caller execute access.
  * Absolute shebang and GNU env entry chains are inspected through a maximum of
- * four script interpreters. The original command descriptor remains open on
- * success and all temporary interpreter descriptors are closed.
+ * four script interpreters. Every inspected stage and the dynamic ELF loader,
+ * when present, retain a stable descriptor on success. GNU `env -S` command
+ * arguments after the resolved command are normalized into the relevant stage.
+ * `ct_executable_close` closes every retained descriptor.
  *
  * @param profile Valid selected-root profile.
  * @param map Complete composed selected-root path map.
@@ -52,7 +62,7 @@ enum ct_executable_status ct_executable_resolve(
     const struct ct_host_profile *profile, const struct ct_path_map *map,
     const char *command,
     struct ct_executable *executable);
-/** Close the owned entry descriptor, if any, and mark it closed. */
+/** Close all owned entry-stage and loader descriptors, if any, and mark them closed. */
 void ct_executable_close(struct ct_executable *executable);
 /**
  * Admit the current static executable and a bounded internal control record.
@@ -70,5 +80,13 @@ void ct_executable_close(struct ct_executable *executable);
  * @return Zero only when both stable descriptors and the record match.
  */
 int ct_executable_admit_trampoline(int executable_descriptor, int control_descriptor, const char *build_identity);
+/**
+ * Create a non-close-on-exec bounded control record for trampoline admission.
+ *
+ * @param build_identity Exact package build identity written into the bounded
+ *        `container-tools-control-v1` record.
+ * @return Open descriptor positioned at offset zero, or -1 on failure.
+ */
+int ct_executable_control_open(const char *build_identity);
 
 #endif

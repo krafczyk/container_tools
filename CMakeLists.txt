@@ -74,6 +74,14 @@ function(container_tools_component_digest output)
   set(${output} "${result}" PARENT_SCOPE)
 endfunction()
 
+set(CONTAINER_TOOLS_NESTED_FILES
+  src/backend_nested.c src/backend_nested.h
+  src/backend_bubblewrap.c src/backend_bubblewrap.h
+  src/backend_proot.c src/backend_proot.h
+  src/backend_rewrite.c src/backend_rewrite.h
+  src/trampoline.c src/trampoline.h
+  src/doctor.c src/doctor.h)
+
 container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   src/main.c src/cli.c src/package.c src/config.c src/config.h src/storage.c src/storage.h
   src/storage_timeout.c src/storage_timeout.h src/mount.c src/mount.h src/buildx.c src/buildx.h
@@ -82,7 +90,7 @@ container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   src/profile.c src/profile.h src/state.c src/state.h src/instance.c src/instance.h
   src/host_config.c src/host_config.h src/path_map.c src/path_map.h src/executable.c src/executable.h
   src/elf.c src/elf.h src/shebang.c src/shebang.h src/supervisor.c src/supervisor.h
-  src/supervisor_process.c src/supervisor_process.h
+  src/supervisor_process.c src/supervisor_process.h ${CONTAINER_TOOLS_NESTED_FILES}
   vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
   vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
 container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
@@ -111,7 +119,7 @@ set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c src/buildx.c
   src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
   src/profile.c src/state.c src/instance.c src/host_config.c src/path_map.c src/executable.c src/elf.c
-  src/shebang.c src/supervisor.c src/supervisor_process.c)
+  src/shebang.c src/supervisor.c src/supervisor_process.c ${CONTAINER_TOOLS_NESTED_FILES})
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
 target_include_directories(container_tools_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(container_tools_core PRIVATE _POSIX_C_SOURCE=200809L)
@@ -132,7 +140,7 @@ if(BUILD_TESTING)
   target_include_directories(container_tools_test_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(container_tools_test_core PRIVATE
     _POSIX_C_SOURCE=200809L CT_STORAGE_TIMEOUT_TEST_SEAM=1
-    CT_SUPERVISOR_TEST_SEAM=1)
+    CT_SUPERVISOR_TEST_SEAM=1 CT_TRAMPOLINE_TEST_SEAM=1)
   target_link_libraries(container_tools_test_core PRIVATE container_tools_toml container_tools_json)
   container_tools_enable_warnings(container_tools_test_core)
 
@@ -175,13 +183,15 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_package)
   add_test(NAME container_tools_package COMMAND test_package)
 
-  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance host_config path_map executable supervisor)
+  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance host_config path_map executable supervisor trampoline backend_nested bubblewrap proot rewrite doctor host_use_cases)
     add_executable(test_${test_name} tests/test_${test_name}.c)
     target_link_libraries(test_${test_name} PRIVATE container_tools_test_core)
     target_include_directories(test_${test_name} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
     container_tools_enable_warnings(test_${test_name})
     add_test(NAME container_tools_${test_name} COMMAND test_${test_name})
   endforeach()
+  target_include_directories(test_doctor PRIVATE vendor/yyjson)
+  target_compile_definitions(test_backend_nested PRIVATE CT_TRAMPOLINE_TEST_SEAM=1)
 
   add_executable(test_mount_sort tests/test_mount_sort.c)
   target_include_directories(test_mount_sort PRIVATE src)
@@ -202,6 +212,22 @@ if(BUILD_TESTING)
     target_link_options(test_executable_static PRIVATE -static)
     container_tools_enable_warnings(test_executable_static)
     add_test(NAME container_tools_executable_static COMMAND test_executable_static)
+
+    add_executable(test_trampoline_static tests/test_trampoline.c)
+    target_link_libraries(test_trampoline_static PRIVATE container_tools_test_core)
+    target_include_directories(test_trampoline_static PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_options(test_trampoline_static PRIVATE -static)
+    container_tools_enable_warnings(test_trampoline_static)
+    add_test(NAME container_tools_trampoline_static COMMAND test_trampoline_static)
+
+    # This target links the production trampoline without its test-only
+    # admission bypass, so fake nested backends exercise static descriptor entry.
+    add_executable(test_backend_nested_static tests/test_backend_nested.c)
+    target_link_libraries(test_backend_nested_static PRIVATE container_tools_core)
+    target_include_directories(test_backend_nested_static PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    target_link_options(test_backend_nested_static PRIVATE -static)
+    container_tools_enable_warnings(test_backend_nested_static)
+    add_test(NAME container_tools_backend_nested_static COMMAND test_backend_nested_static)
 
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native-instance")
     configure_file(tests/native_instance_wrapper.sh.in

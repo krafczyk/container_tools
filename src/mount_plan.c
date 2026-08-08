@@ -147,31 +147,70 @@ static int ct_plan_decimal(const char *value, size_t *result)
   return 0;
 }
 
-static int ct_plan_decode(const unsigned char *bytes, size_t length,
-                          char **copy_result,
-                          char *fields[CT_PLAN_FIELD_MAX],
-                          size_t *fields_count,
-                          struct ct_mount_plan_entry entries[CT_MOUNT_PLAN_MAX_ENTRIES],
-                          size_t *entry_count)
+enum ct_plan_decode_status {
+  CT_PLAN_DECODE_OK = 0,
+  CT_PLAN_DECODE_MALFORMED,
+  CT_PLAN_DECODE_FUTURE,
+  CT_PLAN_DECODE_DIGEST_MISMATCH,
+  CT_PLAN_DECODE_SEMANTIC_INVALID,
+  CT_PLAN_DECODE_IO
+};
+
+static enum ct_plan_decode_status ct_plan_decode(
+    const unsigned char *bytes, size_t length, char **copy_result,
+    char *fields[CT_PLAN_FIELD_MAX], size_t *fields_count,
+    struct ct_mount_plan_entry entries[CT_MOUNT_PLAN_MAX_ENTRIES],
+    size_t *entry_count)
 {
   char *copy, digest[65];
   struct ct_mount_plan plan;
   struct ct_sha256 hash;
   unsigned char raw[32];
   size_t index;
-  if (bytes == NULL || length == 0U || length > CT_MOUNT_PLAN_MAX_BYTES || bytes[length - 1U] != '\0') return 1;
+  if (bytes == NULL || length == 0U || length > CT_MOUNT_PLAN_MAX_BYTES ||
+      bytes[length - 1U] != '\0') return CT_PLAN_DECODE_MALFORMED;
   copy = malloc(length);
-  if (copy == NULL || ct_plan_count(bytes, length, fields, copy, fields_count) != 0 || *fields_count < 7U || strcmp(fields[0], "ct-mount-plan-v1") != 0 ||
-      strlen(fields[1]) != 64U || strspn(fields[1], "0123456789abcdef") != 64U || ct_plan_decimal(fields[6], entry_count) != 0 || *entry_count > CT_MOUNT_PLAN_MAX_ENTRIES || *fields_count != 7U + *entry_count * 5U) { free(copy); return 1; }
+  if (copy == NULL) return CT_PLAN_DECODE_IO;
+  if (ct_plan_count(bytes, length, fields, copy, fields_count) != 0 ||
+      *fields_count == 0U) {
+    free(copy);
+    return CT_PLAN_DECODE_MALFORMED;
+  }
+  if (strcmp(fields[0], "ct-mount-plan-v1") != 0) {
+    const enum ct_plan_decode_status status =
+        strncmp(fields[0], "ct-mount-plan-v", strlen("ct-mount-plan-v")) == 0
+            ? CT_PLAN_DECODE_FUTURE
+            : CT_PLAN_DECODE_MALFORMED;
+    free(copy);
+    return status;
+  }
+  if (*fields_count < 7U) {
+    free(copy);
+    return CT_PLAN_DECODE_MALFORMED;
+  }
+  if (strlen(fields[1]) != 64U ||
+      strspn(fields[1], "0123456789abcdef") != 64U ||
+      ct_plan_decimal(fields[6], entry_count) != 0 ||
+      *entry_count > CT_MOUNT_PLAN_MAX_ENTRIES ||
+      *fields_count != 7U + *entry_count * 5U) {
+    free(copy);
+    return CT_PLAN_DECODE_MALFORMED;
+  }
   for (index = 0U; index < *entry_count; ++index) entries[index] = (struct ct_mount_plan_entry){fields[7U + index * 5U], fields[8U + index * 5U], fields[9U + index * 5U], fields[10U + index * 5U], fields[11U + index * 5U]};
   plan = (struct ct_mount_plan){fields[2], fields[3], fields[4], fields[5], entries, *entry_count};
-  if (ct_mount_plan_validate(&plan) != 0) { free(copy); return 1; }
+  if (ct_mount_plan_validate(&plan) != 0) {
+    free(copy);
+    return CT_PLAN_DECODE_SEMANTIC_INVALID;
+  }
   ct_sha256_init(&hash);
   for (index = 0U; index < *fields_count; ++index) if (index != 1U) ct_sha256_update(&hash, fields[index], strlen(fields[index]) + 1U);
   ct_sha256_final(&hash, raw); ct_sha256_hex(raw, digest);
-  if (strcmp(digest, fields[1]) != 0) { free(copy); return 1; }
+  if (strcmp(digest, fields[1]) != 0) {
+    free(copy);
+    return CT_PLAN_DECODE_DIGEST_MISMATCH;
+  }
   *copy_result = copy;
-  return 0;
+  return CT_PLAN_DECODE_OK;
 }
 
 int ct_mount_plan_parse(const unsigned char *bytes, size_t length)
@@ -180,7 +219,7 @@ int ct_mount_plan_parse(const unsigned char *bytes, size_t length)
   struct ct_mount_plan_entry entries[CT_MOUNT_PLAN_MAX_ENTRIES];
   size_t fields_count, entry_count;
   if (ct_plan_decode(bytes, length, &copy, fields, &fields_count, entries,
-                     &entry_count) != 0) return 1;
+                      &entry_count) != CT_PLAN_DECODE_OK) return 1;
   free(copy);
   return 0;
 }
@@ -193,54 +232,86 @@ static int ct_plan_copy(char *output, size_t output_size, const char *value)
   return 0;
 }
 
-int ct_mount_plan_visit(const unsigned char *bytes, size_t length,
-                        struct ct_mount_plan_metadata *metadata,
-                        ct_mount_plan_entry_visitor visitor, void *context)
+static enum ct_mount_plan_read_status ct_mount_plan_visit_status(
+    const unsigned char *bytes, size_t length,
+    struct ct_mount_plan_metadata *metadata,
+    ct_mount_plan_entry_visitor visitor, void *context)
 {
   char *copy, *fields[CT_PLAN_FIELD_MAX];
   struct ct_mount_plan_entry entries[CT_MOUNT_PLAN_MAX_ENTRIES];
   size_t fields_count, entry_count, index;
-  if (metadata == NULL || visitor == NULL ||
-      ct_plan_decode(bytes, length, &copy, fields, &fields_count, entries,
-                     &entry_count) != 0) return 1;
+  enum ct_plan_decode_status decoded;
+  if (metadata == NULL || visitor == NULL) return CT_MOUNT_PLAN_READ_MALFORMED;
+  decoded = ct_plan_decode(bytes, length, &copy, fields, &fields_count, entries,
+                           &entry_count);
+  if (decoded != CT_PLAN_DECODE_OK) {
+    if (decoded == CT_PLAN_DECODE_FUTURE) return CT_MOUNT_PLAN_READ_FUTURE;
+    if (decoded == CT_PLAN_DECODE_DIGEST_MISMATCH) return CT_MOUNT_PLAN_READ_DIGEST_MISMATCH;
+    if (decoded == CT_PLAN_DECODE_SEMANTIC_INVALID) return CT_MOUNT_PLAN_READ_SEMANTIC_INVALID;
+    if (decoded == CT_PLAN_DECODE_IO) return CT_MOUNT_PLAN_READ_IO;
+    return CT_MOUNT_PLAN_READ_MALFORMED;
+  }
   if (ct_plan_copy(metadata->digest, sizeof(metadata->digest), fields[1]) != 0 ||
       ct_plan_copy(metadata->backend, sizeof(metadata->backend), fields[2]) != 0 ||
       ct_plan_copy(metadata->strategy, sizeof(metadata->strategy), fields[3]) != 0 ||
       ct_plan_copy(metadata->completeness, sizeof(metadata->completeness), fields[4]) != 0 ||
       ct_plan_copy(metadata->group_mode, sizeof(metadata->group_mode), fields[5]) != 0) {
     free(copy);
-    return 1;
+    return CT_MOUNT_PLAN_READ_IO;
   }
   metadata->entry_count = entry_count;
   for (index = 0U; index < entry_count; ++index) {
     entries[index] = (struct ct_mount_plan_entry){fields[7U + index * 5U], fields[8U + index * 5U], fields[9U + index * 5U], fields[10U + index * 5U], fields[11U + index * 5U]};
-    if (visitor(&entries[index], context) != 0) { free(copy); return 1; }
+    if (visitor(&entries[index], context) != 0) {
+      free(copy);
+      return CT_MOUNT_PLAN_READ_SEMANTIC_INVALID;
+    }
   }
   free(copy);
-  return 0;
+  return CT_MOUNT_PLAN_READ_OK;
 }
 
-int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata,
-                       ct_mount_plan_entry_visitor visitor, void *context)
+int ct_mount_plan_visit(const unsigned char *bytes, size_t length,
+                        struct ct_mount_plan_metadata *metadata,
+                        ct_mount_plan_entry_visitor visitor, void *context)
+{
+  return ct_mount_plan_visit_status(bytes, length, metadata, visitor, context) ==
+                 CT_MOUNT_PLAN_READ_OK
+             ? 0
+             : 1;
+}
+
+enum ct_mount_plan_read_status ct_mount_plan_read_status(
+    const char *path, struct ct_mount_plan_metadata *metadata,
+    ct_mount_plan_entry_visitor visitor, void *context)
 {
   struct stat before, after, final;
   unsigned char *bytes;
   int descriptor = -1;
-  int result;
-  if (path == NULL || metadata == NULL || visitor == NULL ||
-      (descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK)) < 0 ||
-      fstat(descriptor, &before) != 0 || !S_ISREG(before.st_mode) ||
-      before.st_size < 1 ||
+  enum ct_mount_plan_read_status result;
+  if (path == NULL || metadata == NULL || visitor == NULL) {
+    return CT_MOUNT_PLAN_READ_MALFORMED;
+  }
+  descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  if (descriptor < 0) {
+    return errno == ENOENT || errno == ENOTDIR ? CT_MOUNT_PLAN_READ_ABSENT
+                                               : CT_MOUNT_PLAN_READ_IO;
+  }
+  if (fstat(descriptor, &before) != 0) {
+    (void)close(descriptor);
+    return CT_MOUNT_PLAN_READ_IO;
+  }
+  if (!S_ISREG(before.st_mode) || before.st_size < 1 ||
       (uintmax_t)before.st_size > CT_MOUNT_PLAN_MAX_BYTES) {
-    if (descriptor >= 0) (void)close(descriptor);
-    return 1;
+    (void)close(descriptor);
+    return CT_MOUNT_PLAN_READ_MALFORMED;
   }
   bytes = malloc((size_t)before.st_size);
   if (bytes == NULL ||
       ct_plan_read_exact(descriptor, bytes, (size_t)before.st_size) != 0) {
     (void)close(descriptor);
     free(bytes);
-    return 1;
+    return CT_MOUNT_PLAN_READ_IO;
   }
   #ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
   {
@@ -257,7 +328,7 @@ int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec) {
     (void)close(descriptor);
     free(bytes);
-    return 1;
+    return CT_MOUNT_PLAN_READ_CHANGED;
   }
   if (close(descriptor) != 0 || stat(path, &final) != 0 ||
       !S_ISREG(final.st_mode) || final.st_dev != before.st_dev ||
@@ -265,12 +336,21 @@ int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata
       final.st_mtim.tv_sec != before.st_mtim.tv_sec ||
       final.st_mtim.tv_nsec != before.st_mtim.tv_nsec) {
     free(bytes);
-    return 1;
+    return CT_MOUNT_PLAN_READ_CHANGED;
   }
-  result = ct_mount_plan_visit(bytes, (size_t)before.st_size, metadata,
-                               visitor, context);
+  result = ct_mount_plan_visit_status(bytes, (size_t)before.st_size, metadata,
+                                      visitor, context);
   free(bytes);
   return result;
+}
+
+int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata,
+                       ct_mount_plan_entry_visitor visitor, void *context)
+{
+  return ct_mount_plan_read_status(path, metadata, visitor, context) ==
+                 CT_MOUNT_PLAN_READ_OK
+             ? 0
+             : 1;
 }
 
 static int ct_plan_read_exact(int descriptor, unsigned char *bytes, size_t length)
