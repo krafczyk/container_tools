@@ -43,7 +43,7 @@ int main(void)
   const char *const duplicate_version[] = {"--version", "--version"};
   const char *const duplicate_package_json[] = {"package", "verify", "--json", "--json"};
   const char non_utf8_argument[] = {'e', 'x', 'e', 'c', '\0'};
-  const char *const empty_argument[] = {"exec", ""};
+  const char *const empty_argument[] = {"exec", "--", "image", ""};
   const char *const non_utf8_arguments[] = {non_utf8_argument, "--", "\xff"};
 
   expect_command(exec_arguments, 4, CT_COMMAND_EXEC);
@@ -62,7 +62,7 @@ int main(void)
   expect_invalid(invalid_option, 1);
   expect_invalid(duplicate_version, 2);
   expect_invalid(duplicate_package_json, 4);
-  expect_invalid(empty_argument, 2);
+  expect_command(empty_argument, 4, CT_COMMAND_EXEC);
 
   return failures == 0 ? 0 : 1;
 }

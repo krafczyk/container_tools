@@ -1,14 +1,14 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "mount.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define CT_MOUNT_TOKEN_MAX 1024U
+#define CT_MOUNT_TOKEN_MAX CT_MOUNT_MAX_PATHS
 #define CT_MOUNT_FILE_MAX 65536U
-#define CT_MOUNT_PATH_MAX 4096U
 
 static bool ct_mount_is_flag(const char *token)
 {
@@ -87,7 +87,7 @@ static enum ct_mount_status ct_mount_read_tokens(const char *path, char *content
     return CT_MOUNT_INVALID;
   }
   stream = fopen(path, "r");
-  if (stream == NULL) return CT_MOUNT_IO;
+  if (stream == NULL) return errno == ENOENT ? CT_MOUNT_NOT_FOUND : CT_MOUNT_IO;
   bytes = fread(contents, 1U, CT_MOUNT_FILE_MAX, stream);
   if (ferror(stream) != 0 || (!feof(stream) && bytes == CT_MOUNT_FILE_MAX)) {
     (void)fclose(stream);
@@ -95,6 +95,23 @@ static enum ct_mount_status ct_mount_read_tokens(const char *path, char *content
   }
   (void)fclose(stream);
   contents[bytes] = '\0';
+  *count = 0U;
+  cursor = strtok_r(contents, " \t\r\n", &state);
+  while (cursor != NULL) {
+    if (*count == CT_MOUNT_TOKEN_MAX) return CT_MOUNT_INVALID;
+    tokens[(*count)++] = cursor;
+    cursor = strtok_r(NULL, " \t\r\n", &state);
+  }
+  return CT_MOUNT_OK;
+}
+
+static enum ct_mount_status ct_mount_tokenize(char *contents, const char **tokens,
+                                               size_t *count)
+{
+  char *cursor;
+  char *state = NULL;
+
+  if (contents == NULL || tokens == NULL || count == NULL) return CT_MOUNT_INVALID;
   *count = 0U;
   cursor = strtok_r(contents, " \t\r\n", &state);
   while (cursor != NULL) {
@@ -172,23 +189,25 @@ static void ct_mount_sort_candidates(char candidates[][CT_MOUNT_PATH_MAX], size_
         ct_mount_candidate_compare);
 }
 
-int ct_mount_detect_command(int argument_count, char *const arguments[])
+static int ct_mount_collect(int argument_count, char *const arguments[],
+                            char output[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX],
+                            size_t *output_count)
 {
   const char *extra_filesystems[CT_MOUNT_TOKEN_MAX];
   const char *extra_paths[CT_MOUNT_TOKEN_MAX];
   const char *explicit_paths[CT_MOUNT_TOKEN_MAX];
-  char candidates[CT_MOUNT_TOKEN_MAX][CT_MOUNT_PATH_MAX];
   size_t extra_filesystem_count = 0U, extra_path_count = 0U, explicit_count = 0U;
   size_t candidate_count = 0U, index;
   FILE *mounts;
   char line[CT_MOUNT_PATH_MAX * 2U];
 
+  if (output == NULL || output_count == NULL) return 1;
+  *output_count = 0U;
   for (index = 0U; index < (size_t)argument_count;) {
     const char *option = arguments[index++];
     int destination = -1;
     if (strcmp(option, "--help") == 0 || strcmp(option, "-h") == 0) {
-      (void)fputs("usage: container-tools mount detect [--exclude-fs FS...] [--exclude-path PATH...] [--add-path PATH...]\n", stdout);
-      return 0;
+      return 2;
     }
     if (strcmp(option, "--exclude-fs") == 0) destination = 0;
     else if (strcmp(option, "--exclude-path") == 0) destination = 1;
@@ -216,23 +235,95 @@ int ct_mount_detect_command(int argument_count, char *const arguments[])
         strcmp(path, "/") == 0 || path[0] != '/' ||
         ct_mount_excluded_filesystem(filesystem, extra_filesystems, extra_filesystem_count) ||
         ct_mount_excluded_path(path, extra_paths, extra_path_count)) continue;
-    for (index = 0U; index < candidate_count; ++index) if (strcmp(candidates[index], path) == 0) duplicate = true;
+    for (index = 0U; index < candidate_count; ++index) if (strcmp(output[index], path) == 0) duplicate = true;
     if (!duplicate && candidate_count < CT_MOUNT_TOKEN_MAX) {
-      (void)snprintf(candidates[candidate_count++], CT_MOUNT_PATH_MAX, "%s", path);
+      (void)snprintf(output[candidate_count++], CT_MOUNT_PATH_MAX, "%s", path);
     }
   }
   (void)fclose(mounts);
-  ct_mount_sort_candidates(candidates, candidate_count);
+  ct_mount_sort_candidates(output, candidate_count);
   for (index = 0U; index < candidate_count; ++index) {
     size_t parent;
     bool nested = false;
-    for (parent = 0U; parent < index; ++parent) {
-      const size_t length = strlen(candidates[parent]);
-      if (strncmp(candidates[index], candidates[parent], length) == 0 &&
-          (candidates[index][length] == '\0' || candidates[index][length] == '/')) nested = true;
+    for (parent = 0U; parent < *output_count; ++parent) {
+      const size_t length = strlen(output[parent]);
+      if (strncmp(output[index], output[parent], length) == 0 &&
+          (output[index][length] == '\0' || output[index][length] == '/')) nested = true;
     }
-    if (!nested) (void)fprintf(stdout, "%s\n", candidates[index]);
+    if (!nested) {
+      if (*output_count == CT_MOUNT_MAX_PATHS) return 1;
+      if (*output_count != index) {
+        memmove(output[*output_count], output[index], CT_MOUNT_PATH_MAX);
+      }
+      ++*output_count;
+    }
   }
-  for (index = 0U; index < explicit_count; ++index) (void)fprintf(stdout, "%s\n", explicit_paths[index]);
+  for (index = 0U; index < explicit_count; ++index) {
+    size_t existing;
+    for (existing = 0U; existing < *output_count; ++existing) {
+      if (strcmp(output[existing], explicit_paths[index]) == 0) break;
+    }
+    if (existing != *output_count) continue;
+    if (*output_count == CT_MOUNT_MAX_PATHS ||
+        snprintf(output[(*output_count)++], CT_MOUNT_PATH_MAX, "%s",
+                 explicit_paths[index]) >= (int)CT_MOUNT_PATH_MAX) return 1;
+  }
   return 0;
+}
+
+int ct_mount_detect_command(int argument_count, char *const arguments[])
+{
+  char paths[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX];
+  size_t count = 0U;
+  size_t index;
+  const int result = ct_mount_collect(argument_count, arguments, paths, &count);
+
+  if (result == 2) {
+    (void)fputs("usage: container-tools mount detect [--exclude-fs FS...] [--exclude-path PATH...] [--add-path PATH...]\n", stdout);
+    return 0;
+  }
+  if (result != 0) return result;
+  for (index = 0U; index < count; ++index) (void)fprintf(stdout, "%s\n", paths[index]);
+  return 0;
+}
+
+int ct_mount_collect_environment(
+    char paths[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX], size_t *path_count)
+{
+  char config_path[CT_MOUNT_PATH_MAX];
+  char file_contents[CT_MOUNT_FILE_MAX + 1U] = "";
+  char extra_contents[CT_MOUNT_FILE_MAX + 1U] = "";
+  char formatted[CT_MOUNT_FILE_MAX + 1U];
+  const char *file_tokens[CT_MOUNT_TOKEN_MAX];
+  const char *extra_tokens[CT_MOUNT_TOKEN_MAX];
+  const char *formatted_tokens[CT_MOUNT_TOKEN_MAX];
+  size_t file_count = 0U, extra_count = 0U, formatted_count = 0U;
+  const char *configured = getenv("CT_MOUNT_CFG");
+  const char *extra = getenv("MOUNT_DETECTOR_ARGS");
+  const char *home = getenv("HOME");
+  enum ct_mount_status status;
+
+  if (paths == NULL || path_count == NULL) return 1;
+  if (configured == NULL || configured[0] == '\0') {
+    if (home == NULL || home[0] != '/' ||
+        snprintf(config_path, sizeof(config_path), "%s/.config/ct_mount.conf", home) >=
+            (int)sizeof(config_path)) return 1;
+    configured = config_path;
+  }
+  status = ct_mount_read_tokens(configured, file_contents, file_tokens, &file_count);
+  if (status == CT_MOUNT_NOT_FOUND) {
+    file_count = 0U;
+  } else if (status != CT_MOUNT_OK) {
+    return 1;
+  }
+  if (extra != NULL && extra[0] != '\0') {
+    if (snprintf(extra_contents, sizeof(extra_contents), "%s", extra) >=
+            (int)sizeof(extra_contents) ||
+        ct_mount_tokenize(extra_contents, extra_tokens, &extra_count) != CT_MOUNT_OK) return 1;
+  }
+  if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
+                           formatted, sizeof(formatted)) != CT_MOUNT_OK ||
+      ct_mount_tokenize(formatted, formatted_tokens, &formatted_count) != CT_MOUNT_OK) return 1;
+  return ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
+                          paths, path_count);
 }

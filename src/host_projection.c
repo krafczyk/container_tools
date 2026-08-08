@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <dirent.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,42 +95,53 @@ static int ct_client_selector(const char *file, const char *field, char selector
 static int ct_host_projection_selector(const char *backend, char output[512])
 {
   const char *endpoint;
+  const char *override = getenv("CT_HOST_PROJECTION_ENDPOINT");
   const char *home = getenv("HOME");
   const char *config_home = getenv("XDG_CONFIG_HOME");
   char config[CT_HOST_PATH_MAX], selector[128], identity[65];
 
   if (backend == NULL) return 1;
+  if (override != NULL && override[0] != '\0') {
+    return snprintf(output, 512U, "%s", override) >= 512;
+  }
   if (strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) return snprintf(output, 512U, "local") >= 512;
   if (strcmp(backend, "docker") == 0) {
     const char *context = getenv("DOCKER_CONTEXT");
     const char *machine = getenv("DOCKER_MACHINE_NAME");
+    const int context_set = context != NULL;
     endpoint = getenv("DOCKER_HOST");
-    if (context != NULL && context[0] == '\0') context = NULL;
-    if (context == NULL && snprintf(config, sizeof(config), "%s%s", getenv("DOCKER_CONFIG") == NULL ? (home == NULL ? "" : home) : getenv("DOCKER_CONFIG"), getenv("DOCKER_CONFIG") == NULL ? "/.docker/config.json" : "/config.json") >= (int)sizeof(config)) return 1;
-    if (context == NULL && ct_client_selector(config, "currentContext", selector, identity) != 0) return 1;
-    if ((context != NULL && context[0] != '\0' && strcmp(context, "default") != 0) ||
-        (context == NULL && selector[0] != '\0' && strcmp(selector, "default") != 0) ||
+    if (!context_set && snprintf(config, sizeof(config), "%s%s", getenv("DOCKER_CONFIG") == NULL ? (home == NULL ? "" : home) : getenv("DOCKER_CONFIG"), getenv("DOCKER_CONFIG") == NULL ? "/.docker/config.json" : "/config.json") >= (int)sizeof(config)) return 1;
+    if (!context_set && ct_client_selector(config, "currentContext", selector, identity) != 0) return 1;
+    if ((context_set && context[0] != '\0' && strcmp(context, "default") != 0) ||
+        (!context_set && selector[0] != '\0' && strcmp(selector, "default") != 0) ||
         (machine != NULL && machine[0] != '\0') || !ct_unix_endpoint(endpoint)) return 1;
-    return snprintf(output, 512U, "docker:context=%s:config=%s:host=%s:machine=%s",
-                    context == NULL ? (selector[0] == '\0' ? "default" : selector) : context,
-                    context == NULL ? identity : "explicit", endpoint == NULL ? "" : endpoint,
-                    machine == NULL ? "" : machine) >= 512;
+    return snprintf(output, 512U,
+                    "docker-context=%s:%s;docker-host=%s;docker-machine=%s",
+                    context_set ? "explicit" : "persisted",
+                    context_set ? (context[0] == '\0' ? "default" : context) :
+                                  (selector[0] == '\0' ? "default" : selector),
+                    endpoint == NULL || endpoint[0] == '\0' ? "default" : endpoint,
+                    machine == NULL || machine[0] == '\0' ? "default" : machine) >= 512;
   }
   if (strcmp(backend, "podman") == 0) {
     const char *connection = getenv("CONTAINER_CONNECTION");
+    const int connection_set = connection != NULL || getenv("PODMAN_CONNECTION") != NULL;
     if (connection == NULL || connection[0] == '\0') connection = getenv("PODMAN_CONNECTION");
-    if (connection != NULL && connection[0] == '\0') connection = NULL;
+    if (connection == NULL) connection = "";
     endpoint = getenv("CONTAINER_HOST");
     if (endpoint == NULL || endpoint[0] == '\0') endpoint = getenv("DOCKER_HOST");
-    if (connection == NULL && snprintf(config, sizeof(config), "%s/containers/podman-connections.json",
+    if (!connection_set && snprintf(config, sizeof(config), "%s/containers/podman-connections.json",
                                        config_home == NULL || config_home[0] == '\0' ? (home == NULL ? "" : home) : config_home) >= (int)sizeof(config)) return 1;
-    if (connection == NULL && (config_home == NULL || config_home[0] == '\0') && home != NULL &&
+    if (!connection_set && (config_home == NULL || config_home[0] == '\0') && home != NULL &&
         snprintf(config, sizeof(config), "%s/.config/containers/podman-connections.json", home) >= (int)sizeof(config)) return 1;
-    if (connection == NULL && ct_client_selector(config, "Default", selector, identity) != 0) return 1;
-    if ((connection != NULL && connection[0] != '\0') || (connection == NULL && selector[0] != '\0') || !ct_unix_endpoint(endpoint)) return 1;
-    return snprintf(output, 512U, "podman:connection=%s:config=%s:host=%s",
-                    connection == NULL ? "default" : connection, connection == NULL ? identity : "explicit",
-                    endpoint == NULL ? "" : endpoint) >= 512;
+    if (!connection_set && ct_client_selector(config, "Default", selector, identity) != 0) return 1;
+    if ((connection_set && connection[0] != '\0') || (!connection_set && selector[0] != '\0') || !ct_unix_endpoint(endpoint)) return 1;
+    return snprintf(output, 512U,
+                    "podman-connection=%s:%s;podman-host=%s",
+                    connection_set ? "explicit" : "persisted",
+                    connection_set ? (connection[0] == '\0' ? "default" : connection) :
+                                     (selector[0] == '\0' ? "default" : selector),
+                    endpoint == NULL || endpoint[0] == '\0' ? "default" : endpoint) >= 512;
   }
   return 1;
 }
@@ -205,7 +217,8 @@ static int ct_mountinfo_read(struct ct_mountinfo mounts[CT_HOST_CACHE_MAX_PAIRS]
   descriptor = ct_storage_timeout_open(file, O_RDONLY | O_CLOEXEC, 0);
   if (descriptor < 0) return 1;
   while (used < CT_HOST_CACHE_MAX_BYTES && (bytes = ct_storage_timeout_read(descriptor, buffer + used, CT_HOST_CACHE_MAX_BYTES - used)) > 0) used += (size_t)bytes;
-  if (ct_storage_timeout_close(descriptor) != 0 || bytes < 0 || used == CT_HOST_CACHE_MAX_BYTES) return 1;
+  if (ct_storage_timeout_close(descriptor) != 0 || bytes < 0 ||
+      used >= CT_HOST_CACHE_MAX_BYTES) return 1;
   buffer[used] = '\0'; *count = 0U;
   for (line = strtok_r(buffer, "\n", &save); line != NULL; line = strtok_r(NULL, "\n", &save)) {
     char *tokens[256], *token_save, *token;
@@ -238,7 +251,7 @@ static int ct_entry_add(struct ct_host_projection *selection, const char *source
   if (target == NULL || !ct_host_projection_source_is_eligible(target, NULL)) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
   for (index = 0U; index < selection->entry_count; ++index) if (strcmp(selection->entries[index].source, source) == 0) return 0;
   if (ct_copy(selection->entries[selection->entry_count].source, source) != 0 || ct_copy(selection->entries[selection->entry_count].target, target) != 0 ||
-       snprintf(selection->entries[selection->entry_count].destination, CT_HOST_PATH_MAX, "%s%s", "/host", strcmp(relative, "/") == 0 ? "" : relative) >= (int)CT_HOST_PATH_MAX) return 1;
+       snprintf(selection->entries[selection->entry_count].destination, CT_HOST_PATH_MAX, "%s%s", "/host", strcmp(source, "/") == 0 ? "" : source) >= (int)CT_HOST_PATH_MAX) return 1;
   ++selection->entry_count;
   return 0;
 }
@@ -443,7 +456,6 @@ static int ct_probe_projection(const char *backend, const char *image, const str
   if (created) {
     char *remove[] = {(char *)backend, "rm", "--force", name, NULL};
     if (ct_process_run_operation(remove, "cleanup") != 0) terminal = 1;
-    created = 0;
   }
   (void)ct_storage_timeout_unlink(nonce_path);
   return terminal ? 2 : (result == 0 ? 0 : 1);
@@ -485,16 +497,180 @@ static int ct_cache_root(char output[CT_HOST_PATH_MAX])
   return snprintf(output, CT_HOST_PATH_MAX, "/tmp/container-tools-%lu/host-projection-v1", (unsigned long)geteuid()) >= (int)CT_HOST_PATH_MAX;
 }
 
-static int ct_cache_key(const char *backend, const char *image, char output[65])
+struct ct_projection_group {
+  unsigned long number;
+  char text[32];
+};
+
+static int ct_projection_group_compare(const void *left, const void *right)
+{
+  const struct ct_projection_group *left_group = left;
+  const struct ct_projection_group *right_group = right;
+  if (left_group->number < right_group->number) return -1;
+  if (left_group->number > right_group->number) return 1;
+  return strcmp(left_group->text, right_group->text);
+}
+
+static int ct_projection_read_scalar(const char *path, char *output,
+                                     size_t output_size)
+{
+  int descriptor;
+  ssize_t bytes;
+  if (path == NULL || output == NULL || output_size < 2U) return 1;
+  descriptor = ct_storage_timeout_open(path, O_RDONLY | O_CLOEXEC, 0);
+  if (descriptor < 0) return 1;
+  bytes = ct_storage_timeout_read(descriptor, output, output_size - 1U);
+  if (ct_storage_timeout_close(descriptor) != 0 || bytes <= 0 ||
+      (size_t)bytes == output_size - 1U) return 1;
+  output[bytes] = '\0';
+  output[strcspn(output, "\r\n")] = '\0';
+  return output[0] == '\0';
+}
+
+static int ct_projection_executable(const char *backend,
+                                    char output[CT_HOST_PATH_MAX])
+{
+  const char *configured = getenv("CT_HOST_PROJECTION_EXECUTABLE");
+  const char *path = getenv("PATH");
+  char path_copy[CT_HOST_CACHE_MAX_BYTES], *directory, *state = NULL;
+  char candidate[CT_HOST_PATH_MAX], resolved[CT_HOST_PATH_MAX];
+
+  output[0] = '\0';
+  if (configured != NULL && configured[0] != '\0') {
+    if (realpath(configured, resolved) != NULL) return ct_copy(output, resolved);
+    if (configured[0] != '/' || strstr(configured, "//") != NULL ||
+        strstr(configured, "/./") != NULL || strstr(configured, "/../") != NULL ||
+        strcmp(configured, "/.") == 0 || strcmp(configured, "/..") == 0) return 1;
+    return ct_copy(output, configured);
+  }
+  if (backend == NULL || path == NULL ||
+      snprintf(path_copy, sizeof(path_copy), "%s", path) >= (int)sizeof(path_copy)) return 1;
+  directory = strtok_r(path_copy, ":", &state);
+  while (directory != NULL) {
+    if (snprintf(candidate, sizeof(candidate), "%s/%s", directory, backend) <
+            (int)sizeof(candidate) &&
+        access(candidate, X_OK) == 0 && realpath(candidate, resolved) != NULL) {
+      return ct_copy(output, resolved);
+    }
+    directory = strtok_r(NULL, ":", &state);
+  }
+  return 0;
+}
+
+static int ct_projection_groups(struct ct_projection_group groups[1024],
+                                size_t *group_count)
+{
+  const char *configured = getenv("CT_HOST_PROJECTION_GROUPS");
+  size_t count = 0U;
+
+  if (groups == NULL || group_count == NULL) return 1;
+  if (configured != NULL && configured[0] != '\0') {
+    char copy[4096], *token, *state = NULL;
+    if (snprintf(copy, sizeof(copy), "%s", configured) >= (int)sizeof(copy)) return 1;
+    token = strtok_r(copy, " \t\r\n", &state);
+    while (token != NULL) {
+      char *end;
+      unsigned long number;
+      errno = 0;
+      number = strtoul(token, &end, 10);
+      if (errno != 0 || end == token || *end != '\0' || count == 1024U ||
+          snprintf(groups[count].text, sizeof(groups[count].text), "%s", token) >=
+              (int)sizeof(groups[count].text)) return 1;
+      groups[count++].number = number;
+      token = strtok_r(NULL, " \t\r\n", &state);
+    }
+  } else {
+    gid_t raw[1023];
+    int received = getgroups((int)(sizeof(raw) / sizeof(raw[0])), raw);
+    size_t index;
+    if (received < 0) return 1;
+    groups[count].number = (unsigned long)getegid();
+    (void)snprintf(groups[count++].text, sizeof(groups[0].text), "%lu",
+                   (unsigned long)getegid());
+    for (index = 0U; index < (size_t)received; ++index) {
+      size_t existing;
+      for (existing = 0U; existing < count; ++existing) {
+        if (groups[existing].number == (unsigned long)raw[index]) break;
+      }
+      if (existing != count) continue;
+      if (count == 1024U) return 1;
+      groups[count].number = (unsigned long)raw[index];
+      (void)snprintf(groups[count++].text, sizeof(groups[0].text), "%lu",
+                     (unsigned long)raw[index]);
+    }
+  }
+  qsort(groups, count, sizeof(groups[0]), ct_projection_group_compare);
+  *group_count = count;
+  return 0;
+}
+
+int ct_host_projection_cache_key(const char *backend, const char *image,
+                                 char output[65])
 {
   struct ct_sha256 hash;
   unsigned char raw[32];
-  char selector[512];
-  const char *values[] = {"host-projection-v7", backend, image, getenv("CT_HOST_PROJECTION_SOURCE_ROOT"), selector};
-  size_t index;
-  if (ct_host_projection_selector(backend, selector) != 0) return 1;
+  struct ct_projection_group groups[1024];
+  char selector[512], hostname[256], executable[CT_HOST_PATH_MAX], boot_id[128];
+  char uid[32], gid[32];
+  const char *hostname_value = getenv("CT_HOST_PROJECTION_HOSTNAME");
+  const char *uid_value = getenv("CT_HOST_PROJECTION_UID");
+  const char *gid_value = getenv("CT_HOST_PROJECTION_GID");
+  const char *projection_options = "";
+  const char *requested_group_mode;
+  const char *values[11];
+  size_t value_count = 0U, group_count = 0U, index;
+
+  if (backend == NULL || image == NULL ||
+      ct_host_projection_selector(backend, selector) != 0 ||
+      ct_projection_executable(backend, executable) != 0 ||
+      ct_projection_groups(groups, &group_count) != 0) return 1;
+  if (hostname_value == NULL || hostname_value[0] == '\0') hostname_value = getenv("HOSTNAME");
+  if (hostname_value == NULL || hostname_value[0] == '\0') {
+    if (gethostname(hostname, sizeof(hostname)) != 0) return 1;
+    hostname[sizeof(hostname) - 1U] = '\0';
+    hostname_value = hostname;
+  }
+  if (uid_value == NULL || uid_value[0] == '\0') {
+    if (snprintf(uid, sizeof(uid), "%lu", (unsigned long)geteuid()) >= (int)sizeof(uid)) return 1;
+    uid_value = uid;
+  }
+  if (gid_value == NULL || gid_value[0] == '\0') {
+    if (snprintf(gid, sizeof(gid), "%lu", (unsigned long)getegid()) >= (int)sizeof(gid)) return 1;
+    gid_value = gid;
+  }
+  {
+    const char *configured_boot_id = getenv("CT_HOST_PROJECTION_BOOT_ID");
+    if (configured_boot_id != NULL && configured_boot_id[0] != '\0') {
+      if (snprintf(boot_id, sizeof(boot_id), "%s", configured_boot_id) >=
+          (int)sizeof(boot_id)) return 1;
+    } else if (ct_projection_read_scalar("/proc/sys/kernel/random/boot_id", boot_id,
+                                         sizeof(boot_id)) != 0) {
+      return 1;
+    }
+  }
+  if (strcmp(backend, "docker") == 0) requested_group_mode = "numeric-supplementary";
+  else if (strcmp(backend, "podman") == 0) requested_group_mode = "keep-groups";
+  else requested_group_mode = "native-inherited";
+  if ((strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) &&
+      getenv("CT_SINGULARITY_ARGS") != NULL) projection_options = getenv("CT_SINGULARITY_ARGS");
+  values[value_count++] = "host-projection-v6";
+  values[value_count++] = backend;
+  values[value_count++] = hostname_value;
+  values[value_count++] = executable;
+  values[value_count++] = selector;
+  values[value_count++] = image;
+  values[value_count++] = projection_options;
+  values[value_count++] = uid_value;
+  values[value_count++] = gid_value;
+  values[value_count++] = requested_group_mode;
+  values[value_count++] = boot_id;
   ct_sha256_init(&hash);
-  for (index = 0U; index < sizeof(values) / sizeof(values[0]); ++index) { const char *value = values[index] == NULL ? "" : values[index]; ct_sha256_update(&hash, value, strlen(value) + 1U); }
+  for (index = 0U; index < value_count; ++index) {
+    ct_sha256_update(&hash, values[index], strlen(values[index]) + 1U);
+  }
+  for (index = 0U; index < group_count; ++index) {
+    ct_sha256_update(&hash, groups[index].text, strlen(groups[index].text) + 1U);
+  }
   ct_sha256_final(&hash, raw); ct_sha256_hex(raw, output); return 0;
 }
 
@@ -603,7 +779,6 @@ static int ct_cache_write(const char *key, const struct ct_host_projection *sele
     (void)ct_storage_timeout_unlink(temporary);
     return 1;
   }
-  descriptor = -1;
   /* rename(2) publishes either the complete previous record or the complete
    * refreshed record to unlocked warm readers; it never exposes the candidate. */
   if (ct_storage_timeout_rename(temporary, path) != 0) { (void)ct_storage_timeout_unlink(temporary); return 1; }
@@ -664,7 +839,7 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
   memset(selection, 0, sizeof(*selection)); ct_group_mode(backend, selection->group_mode);
   if (strcmp(mode, "disabled") == 0) return ct_host_projection_set_none(backend, selection);
   if (!ct_host_projection_endpoint_is_local(backend)) return 1;
-  if (ct_cache_key(backend, image, key) != 0) return 1;
+  if (ct_host_projection_cache_key(backend, image, key) != 0) return 1;
   if (ct_cache_lock(key, &lock_descriptor) != 0) return 1;
   cache_status = refresh ? 1 : ct_cache_read(key, selection);
   /* Cache bytes are advisory. An unrecognized record becomes a cold miss and

@@ -79,6 +79,7 @@ container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   src/storage_timeout.c src/storage_timeout.h src/mount.c src/mount.h src/buildx.c src/buildx.h
   src/process.c src/process.h src/runtime.c src/runtime.h src/backend_outer.c src/backend_outer.h
   src/host_projection.c src/host_projection.h src/mount_plan.c src/mount_plan.h src/sha256.c src/sha256.h
+  src/profile.c src/profile.h src/state.c src/state.h src/instance.c src/instance.h
   vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
   vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
 container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
@@ -105,7 +106,8 @@ target_include_directories(container_tools_json PRIVATE vendor/yyjson)
 
 set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c src/buildx.c
-  src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c)
+  src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
+  src/profile.c src/state.c src/instance.c)
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
 target_include_directories(container_tools_core PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
 target_compile_definitions(container_tools_core PRIVATE _POSIX_C_SOURCE=200809L)
@@ -167,7 +169,7 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_package)
   add_test(NAME container_tools_package COMMAND test_package)
 
-  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process)
+  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance)
     add_executable(test_${test_name} tests/test_${test_name}.c)
     target_link_libraries(test_${test_name} PRIVATE container_tools_test_core)
     target_include_directories(test_${test_name} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -188,6 +190,19 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_buildx_child)
 
   if(CONTAINER_TOOLS_STATIC)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/native-instance")
+    configure_file(tests/native_instance_wrapper.sh.in
+      "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_instance_exec.sh" @ONLY)
+    configure_file(ct_library.sh
+      "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_library.sh" COPYONLY)
+    file(CHMOD "${CMAKE_CURRENT_BINARY_DIR}/native-instance/ct_instance_exec.sh"
+      PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE
+                  WORLD_READ WORLD_EXECUTE)
+    configure_file(tests/test_native_instance.cmake.in
+      "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake" @ONLY)
+    add_test(NAME container_tools_native_instance_integration
+      COMMAND "${CMAKE_COMMAND}" -P
+              "${CMAKE_CURRENT_BINARY_DIR}/test_native_instance.cmake")
     configure_file(tests/test_install.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake" @ONLY)
     add_test(NAME container_tools_install COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake")

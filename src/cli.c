@@ -4,8 +4,8 @@
 #include <stdbool.h>
 #include <string.h>
 
-static bool ct_arguments_are_nonempty(int argument_count,
-                                      const char *const *arguments)
+static bool ct_arguments_are_present(int argument_count,
+                                     const char *const *arguments)
 {
   int index;
 
@@ -13,7 +13,7 @@ static bool ct_arguments_are_nonempty(int argument_count,
     return false;
   }
   for (index = 0; index < argument_count; ++index) {
-    if (arguments[index] == NULL || arguments[index][0] == '\0') {
+    if (arguments[index] == NULL) {
       return false;
     }
   }
@@ -56,7 +56,8 @@ static enum ct_cli_status ct_parse_pair(const char *first, const char *second,
 enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments,
                                 struct ct_cli *parsed)
 {
-  if (parsed == NULL || !ct_arguments_are_nonempty(argument_count, arguments)) {
+  if (parsed == NULL || !ct_arguments_are_present(argument_count, arguments) ||
+      arguments[0][0] == '\0') {
     return CT_CLI_INVALID;
   }
   parsed->json = 0;

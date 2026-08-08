@@ -64,8 +64,18 @@ execute_process(
 if(NOT shell_result EQUAL 0)
   message(FATAL_ERROR "installed shell command did not support dry execution")
 endif()
-expect_not_implemented(instance exec -- image command)
-expect_not_implemented(instance identity)
+file(WRITE "${CMAKE_BINARY_DIR}/instance-image.sif" "fixture\n")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env CT_DRY_RUN=1
+          "HOME=${CMAKE_BINARY_DIR}"
+          "${prefix}/bin/container-tools" instance exec --apptainer
+          --ct-instance-root "${CMAKE_BINARY_DIR}/dry-instance-root" --
+          "${CMAKE_BINARY_DIR}/instance-image.sif" /bin/true
+  RESULT_VARIABLE instance_result
+)
+if(NOT instance_result EQUAL 0 OR EXISTS "${CMAKE_BINARY_DIR}/dry-instance-root")
+  message(FATAL_ERROR "installed persistent command did not support mutation-free dry execution")
+endif()
 expect_success(mount detect --help)
 file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add-path /two\n")
 expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)

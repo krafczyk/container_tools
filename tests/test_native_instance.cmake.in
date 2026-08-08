@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: Apache-2.0 OR MIT
+set(work "/tmp/mkchad-v1/container-tools-c11/native-instance-integration")
+file(REMOVE_RECURSE "${work}")
+file(REMOVE_RECURSE "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_CURRENT_BINARY_DIR@"
+          --prefix "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix"
+  RESULT_VARIABLE install_result
+)
+if(NOT install_result EQUAL 0)
+  message(FATAL_ERROR "native persistent-instance install failed: ${install_result}")
+endif()
+execute_process(
+  COMMAND "@CMAKE_CURRENT_SOURCE_DIR@/tests/instance_exec_test.sh"
+          "${work}"
+          "@CMAKE_CURRENT_BINARY_DIR@/native-instance/ct_instance_exec.sh"
+  RESULT_VARIABLE result
+)
+if(NOT result EQUAL 0)
+  message(FATAL_ERROR "native persistent-instance integration failed: ${result}")
+endif()
+execute_process(
+  COMMAND bash "@CMAKE_CURRENT_SOURCE_DIR@/tests/mixed_instance_reuse_test.sh"
+          "${work}"
+          "@CMAKE_CURRENT_SOURCE_DIR@/ct_instance_exec.sh"
+          "@CMAKE_CURRENT_BINARY_DIR@/native-instance-prefix/bin/container-tools"
+  RESULT_VARIABLE mixed_result
+)
+if(NOT mixed_result EQUAL 0)
+  message(FATAL_ERROR "mixed Bash/C persistent-instance reuse failed: ${mixed_result}")
+endif()

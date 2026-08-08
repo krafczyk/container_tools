@@ -16,7 +16,24 @@ int main(void)
   DIR *directory;
   struct dirent *entry;
   struct ct_host_projection selection;
+  char cache_key[65];
   size_t bytes;
+  if (setenv("CT_HOST_PROJECTION_HOSTNAME", "fixture-host", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_EXECUTABLE", "/fixture/apptainer", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_ENDPOINT", "local", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_UID", "1000", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_GID", "1000", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_BOOT_ID", "fixture-boot", 1) != 0 ||
+      setenv("CT_HOST_PROJECTION_GROUPS", "42 7", 1) != 0 ||
+      ct_host_projection_cache_key("apptainer", "/fixture/image.sif", cache_key) != 0 ||
+      strcmp(cache_key, "a7d27cfef10c2ce1bd8c6a9e75be8970ecff1f7df5e87af534380725a2d27fe0") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_HOSTNAME") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_EXECUTABLE") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_ENDPOINT") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_UID") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_GID") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_BOOT_ID") != 0 ||
+      unsetenv("CT_HOST_PROJECTION_GROUPS") != 0) return 1;
   (void)unsetenv("DOCKER_HOST");
   if (setenv("DOCKER_CONTEXT", "default", 1) != 0 || unsetenv("DOCKER_MACHINE_NAME") != 0) return 1;
   if (ct_host_projection_endpoint_is_local("docker") == 0 || ct_host_projection_source_is_eligible("/host", "ext4") != 0 ||
@@ -39,7 +56,9 @@ int main(void)
         setenv("CT_HOST_PROJECTION_CACHE_ROOT", cache, 1) != 0 || setenv("CT_NATIVE_PROJECTION_LOG", log, 1) != 0 || setenv("PATH", path, 1) != 0 ||
         setenv("CT_RUNTIME_OPERATION_TIMEOUT", "0.05", 1) != 0 ||
        ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
-       strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 1U || strcmp(selection.entries[0].destination, "/host") != 0) return 1;
+       strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 1U ||
+       snprintf(contents, sizeof(contents), "/host%s", root) >= (int)sizeof(contents) ||
+       strcmp(selection.entries[0].destination, contents) != 0) return 1;
   stream = fopen(log, "r");
   if (stream == NULL || (bytes = fread(contents, 1U, sizeof(contents) - 1U, stream)) == 0U || fclose(stream) != 0) return 1;
   contents[bytes] = '\0';
@@ -82,7 +101,7 @@ int main(void)
   if (unsetenv("CT_NATIVE_PROJECTION_WEDGE") != 0 || unsetenv("CT_RUNTIME_CREATE_TIMEOUT") != 0 ||
       unsetenv("CT_RUNTIME_OPERATION_TIMEOUT") != 0) return 1;
   stream = fopen(config, "w");
-  if (stream == NULL || fputs("{\"currentContext\":\"remote-context\"}", stream) == EOF || fclose(stream) != 0 ||
-       setenv("DOCKER_CONFIG", work, 1) != 0 || setenv("DOCKER_CONTEXT", "", 1) != 0 || ct_host_projection_endpoint_is_local("docker") != 0) return 1;
+   if (stream == NULL || fputs("{\"currentContext\":\"remote-context\"}", stream) == EOF || fclose(stream) != 0 ||
+        setenv("DOCKER_CONFIG", work, 1) != 0 || unsetenv("DOCKER_CONTEXT") != 0 || ct_host_projection_endpoint_is_local("docker") != 0) return 1;
   return 0;
 }

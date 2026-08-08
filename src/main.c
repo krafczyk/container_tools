@@ -2,6 +2,7 @@
 #include "cli.h"
 #include "buildx.h"
 #include "config.h"
+#include "instance.h"
 #include "mount.h"
 #include "package.h"
 #include "process.h"
@@ -128,6 +129,12 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_SHELL) {
     return ct_runtime_foreground_command(argument_count - 2, arguments + 2, 1);
+  }
+  if (parsed.command == CT_COMMAND_INSTANCE_EXEC) {
+    return ct_instance_command(argument_count - 3, arguments + 3, 0);
+  }
+  if (parsed.command == CT_COMMAND_INSTANCE_IDENTITY) {
+    return ct_instance_command(argument_count - 3, arguments + 3, 1);
   }
   (void)fprintf(stderr, "container-tools: not implemented: %s\n",
                 ct_command_name(parsed.command));

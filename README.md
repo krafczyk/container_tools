@@ -8,9 +8,9 @@ across Docker, Podman, SingularityCE, and Apptainer.
 The C11 package bootstrap installs one static `container-tools` executable,
 five generated compatibility-script trampolines, and immutable package metadata
 under a caller-selected prefix. It does not replace the current Bash callers in
-this unit. Native `exec` and `shell` now directly supervise one nonpersistent
-outer-runtime argv; the remaining unported behavior commands return exit status
-`70` with a `not implemented` diagnostic until their corresponding units land.
+this unit. Native `exec`, `shell`, and persistent `instance` operations now own
+their runtime behavior; selected-root `host` operations remain typed
+not-implemented commands until their corresponding units land.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
@@ -34,6 +34,25 @@ The executable and scripts resolve their sibling metadata, so a complete prefix
 can move as a unit. Selection through `PATH` or an exact executable/script path
 uses that selected prefix; mixing files from two prefixes is rejected. The
 bootstrap is not a release-complete replacement for the retained Bash surface.
+
+## Persistent Instance Identity
+
+`container-tools instance identity BACKEND --ct-instance-root ROOT [INSTANCE
+OPTIONS] -- IMAGE COMMAND...` performs the same bounded profile preparation as
+`instance exec` and writes exactly one lowercase 64-hex profile digest to
+standard output. `--json` as the final option emits the closed
+`container-tools.instance-identity/v1` object instead. Identity preparation may
+select a host projection and publish a recognized mount plan, but never creates,
+contacts, signals, or dispatches a persistent instance. A failure before
+finalization prints no digest.
+
+`instance exec` derives its name, liveness probe, pending-record comparison, and
+`SINGULARITYENV_CONTAINER_TOOLS_PROFILE` environment value from that same
+digest. Callers cannot supply that reserved environment variable (or the legacy
+`CT_INSTANCE_PROFILE` spelling), and cannot bind either internal identity or
+mount-plan selector. Pending creation journals remain the established private
+three-line `name`, `profile`, `nonce` records; malformed, legacy, or future
+content fails closed without reuse or mutation.
 
 `container-tools exec BACKEND [OPTIONS] [--] IMAGE COMMAND...` and
 `container-tools shell BACKEND [OPTIONS] [--] IMAGE` accept `--docker`,
