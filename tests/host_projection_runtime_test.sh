@@ -23,10 +23,12 @@ schema=$host_schema
 bash_baseline=0
 
 usage() {
-  printf '%s\n' 'usage: host_projection_runtime_test.sh --backend docker|podman|singularity|apptainer --image LOCAL_IMAGE --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/RUN_ID [--force-fallback] [--bash-baseline]'
+  printf '%s\n' 'usage: host_projection_runtime_test.sh --backend docker|podman|singularity|apptainer --image LOCAL_IMAGE --work /tmp/mkchad-v1/container-tools-c11/host-projection-runtime/RUN_ID [--force-fallback] [--bash-baseline] [--package-prefix PREFIX]'
   printf '%s\n' '       host_projection_runtime_test.sh --validate-report REPORT.json'
   printf '%s\n' '       host_projection_runtime_test.sh --validate-fixture-report REPORT.json'
   printf '%s\n' '       host_projection_runtime_test.sh --validate-bash-baseline-report REPORT.json'
+  printf '%s\n' '       host_projection_runtime_test.sh --validate-retained-bash-baseline-report REPORT.json'
+  printf '%s\n' '       host_projection_runtime_test.sh --source-manifest'
 }
 
 json_string() {
@@ -41,7 +43,7 @@ json_string() {
 source_manifest() {
   local file file_digest manifest_digest
   manifest_digest=$({
-    for file in ct_args.sh ct_mount_detector.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh tests/bootstrap_test.sh tests/instance_exec_test.sh tests/host_projection_runtime_test.sh tests/parity_test.sh tests/fixtures/bash-baseline/contracts.tsv tests/fixtures/bash-baseline/mount.conf tests/fixtures/bash-baseline/expected-results.tsv; do
+    for file in CMakeLists.txt ct_args.sh ct_mount_detector.sh ct_exec.sh ct_shell.sh ct_instance_exec.sh docs/release.md tests/bootstrap_test.sh tests/container_tools_runtime_test.sh tests/instance_exec_test.sh tests/host_projection_runtime_test.sh tests/parity_test.sh tests/fixtures/bash-baseline/contracts.tsv tests/fixtures/bash-baseline/mount.conf tests/fixtures/bash-baseline/expected-results.tsv; do
       file_digest=$(sha256sum "$tool_root/$file") || return 1
       printf '%s\0%s\0' "$file" "${file_digest%% *}"
     done
@@ -170,21 +172,25 @@ report_structure_valid() {
 }
 
 validate_report() {
-  local report=$1 expected_kind=$2 current_manifest overall backend
+  local report=$1 expected_kind=$2 require_current=${3:-1} current_manifest overall backend
   report_structure_valid "$report" "$expected_kind" || return 2
   overall=$(jq -r '.overall' "$report")
   [[ $overall == unavailable ]] && return 77
   [[ $overall == passed ]] || return 1
-  current_manifest=$(source_manifest)
   backend=$(jq -r '.backend' "$report")
-  jq -e --arg commit "$source_commit" --arg manifest "$current_manifest" '
+  if [[ $require_current == 1 ]]; then
+    current_manifest=$(source_manifest)
+  else
+    current_manifest=''
+  fi
+  jq -e --arg commit "$source_commit" --arg manifest "$current_manifest" --argjson require_current "$require_current" '
     def ops($inspect; $create; $start; $cleanup; $liveness; $instance_start; $instance_stop; $payload; $direct; $fallback):
       {inspect:$inspect, probe_create:$create, probe_start:$start, probe_cleanup:$cleanup,
        instance_liveness:$liveness, instance_start:$instance_start, instance_stop:$instance_stop,
        payload:$payload, probe_tags:{direct:$direct, fallback:$fallback}};
     def case_by_id($id): .cases[] | select(.id == $id);
     (case_by_id("HP-HOST-004").phase_operations) as $phases |
-    .source_commit == $commit and .source_manifest == $manifest and
+    (if $require_current == 1 then .source_commit == $commit and .source_manifest == $manifest else true end) and
     (.source_commit | test("^[0-9a-f]{40,64}$")) and (.source_manifest | test("^[0-9a-f]{64}$")) and
     (.backend_executable_digest | test("^[0-9a-f]{64}$")) and
     .cleanup == "exact" and
@@ -251,10 +257,28 @@ if [[ ${1:-} == --validate-bash-baseline-report ]]; then
   exit "$status"
 fi
 
+if [[ ${1:-} == --validate-retained-bash-baseline-report ]]; then
+  [[ $# == 2 ]] || { usage >&2; exit 2; }
+  command -v jq >/dev/null 2>&1 || { printf '%s\n' 'host report validation requires jq' >&2; exit 77; }
+  schema=$bash_baseline_schema
+  validate_report "$2" bash-baseline 0
+  status=$?
+  (( status == 2 )) && exit 2
+  exit "$status"
+fi
+
+if [[ ${1:-} == --source-manifest ]]; then
+  [[ $# == 1 ]] || { usage >&2; exit 2; }
+  source_manifest
+  printf '\n'
+  exit 0
+fi
+
 backend=
 image=
 work=
 force_fallback=0
+package_prefix=
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --help)
@@ -287,6 +311,11 @@ while [[ $# -gt 0 ]]; do
       bash_baseline=1
       shift
       ;;
+    --package-prefix)
+      [[ $# -ge 2 && -z $package_prefix ]] || { usage >&2; exit 2; }
+      package_prefix=$2
+      shift 2
+      ;;
     *) usage >&2; exit 2 ;;
   esac
 done
@@ -300,6 +329,22 @@ if [[ $force_fallback == 1 && $backend != docker && $backend != podman ]]; then
 fi
 if [[ $backend == singularity || $backend == apptainer ]]; then
   [[ $image == /* && -f $image ]] || { usage >&2; exit 2; }
+fi
+if [[ -n $package_prefix ]]; then
+  [[ $package_prefix == /* && -x $package_prefix/bin/container-tools &&
+    -x $package_prefix/bin/ct_exec.sh && -x $package_prefix/bin/ct_instance_exec.sh ]] || {
+    printf '%s\n' 'package prefix is incomplete' >&2
+    exit 2
+  }
+  "$package_prefix/bin/container-tools" package verify --json >/dev/null || {
+    printf '%s\n' 'package prefix identity verification failed' >&2
+    exit 2
+  }
+  launch_exec=$package_prefix/bin/ct_exec.sh
+  launch_instance=$package_prefix/bin/ct_instance_exec.sh
+else
+  launch_exec=$tool_root/ct_exec.sh
+  launch_instance=$tool_root/ct_instance_exec.sh
 fi
 
 manifest_current=$(source_manifest)
@@ -730,7 +775,7 @@ run_foreground() {
       CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans" \
       CT_HOST_PROJECTION_RUNTIME_LABEL="${work##*/}" \
       CT_HOST_PROJECTION_RUNTIME_EXECUTABLE_FD="$runtime_executable_fd" \
-      timeout --foreground --kill-after=2s 15s "$tool_root/ct_exec.sh" "--$backend" --ct-host-root "$mode" "${refresh_args[@]}" \
+      timeout --foreground --kill-after=2s 15s "$launch_exec" "--$backend" --ct-host-root "$mode" "${refresh_args[@]}" \
       "$immutable_image" /bin/sh -ec "$payload_script"
   ) >/dev/null 2>&1 || launch_status=$?
   foreground_elapsed[$phase]=$(elapsed_ms "$started")
@@ -906,7 +951,7 @@ case "$backend" in
             CT_HOST_PROJECTION_CACHE_ROOT="$work/cache" CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans" \
             CT_HOST_PROJECTION_RUNTIME_EXECUTABLE_FD="$runtime_executable_fd" \
             MKCHAD_TEST_RUNTIME_INSTANCES="$work/native-instances" \
-            timeout --foreground --kill-after=2s 15s "$tool_root/ct_instance_exec.sh" "--$backend" --ct-instance-root "$work/persistent-instances" \
+            timeout --foreground --kill-after=2s 15s "$launch_instance" "--$backend" --ct-instance-root "$work/persistent-instances" \
             --ct-host-root auto "$immutable_image" /bin/sh -ec "printf host-projection-ok > '/host$persistent_result'"
         ) >/dev/null 2>&1 || persistent_ok=0
       else

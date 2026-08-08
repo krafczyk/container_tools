@@ -95,7 +95,7 @@ container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
   vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
 container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
 container_tools_component_digest(CONTAINER_TOOLS_METADATA_DIGEST cmake/release.json.in)
-container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md examples/host.toml docs/host-execution.md)
+container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md examples/host.toml docs/host-execution.md docs/release.md)
 container_tools_component_digest(CONTAINER_TOOLS_LICENSES_DIGEST
   LICENSE-APACHE LICENSE-MIT vendor/tomlc17/LICENSE vendor/yyjson/LICENSE)
 container_tools_component_digest(CONTAINER_TOOLS_PROTOCOLS_DIGEST protocols/ct-mount-plan-v1.md)
@@ -167,7 +167,7 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release.json" README.md
   DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools")
 install(DIRECTORY examples/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/examples")
 install(DIRECTORY protocols/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/protocols")
-install(FILES docs/host-execution.md DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/docs")
+install(FILES docs/host-execution.md docs/release.md DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/docs")
 install(FILES LICENSE-APACHE LICENSE-MIT
   DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/licenses")
 install(FILES vendor/tomlc17/LICENSE
@@ -204,6 +204,9 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake")
   find_program(CONTAINER_TOOLS_BASH bash)
   if(CONTAINER_TOOLS_BASH)
+    add_test(NAME container_tools_runtime_report
+      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/container_tools_runtime_test.sh" --self-test)
+    set_tests_properties(container_tools_runtime_report PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME container_tools_package_archive
       COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_archive_test.sh")
     set_tests_properties(container_tools_package_archive PROPERTIES SKIP_RETURN_CODE 77)
