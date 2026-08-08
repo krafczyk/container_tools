@@ -3,21 +3,20 @@
 set -euo pipefail
 
 usage() {
-  printf '%s\n' 'usage: build-package.sh --build-root ABSOLUTE_DIR --version VERSION --source-commit 40_HEX --output-dir ABSOLUTE_DIR --libc musl|glibc' >&2
+  printf '%s\n' 'usage: build-package.sh --build-root ABSOLUTE_DIR --source-commit 40_HEX --output-dir ABSOLUTE_DIR --libc musl|glibc' >&2
   exit 64
 }
 
 build_root=''
-version=''
 source_commit=''
 output_dir=''
 libc=''
 while (($#)); do
   case $1 in
-    --build-root|--version|--source-commit|--output-dir|--libc)
+    --build-root|--source-commit|--output-dir|--libc)
       (($# >= 2)) || usage
       case $1 in
-        --build-root) build_root=$2 ;; --version) version=$2 ;;
+        --build-root) build_root=$2 ;;
         --source-commit) source_commit=$2 ;; --output-dir) output_dir=$2 ;;
         --libc) libc=$2 ;;
       esac
@@ -26,10 +25,21 @@ while (($#)); do
   esac
 done
 [[ $build_root == /* && $output_dir == /* && $build_root == /tmp/mkchad-v1/container-tools-c11/* ]] || usage
-[[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || usage
 [[ $source_commit =~ ^[0-9a-f]{40}$ && $libc =~ ^(musl|glibc)$ ]] || usage
 
 source_root=$(git -C "$(dirname "$0")/.." rev-parse --show-toplevel)
+version_file="$source_root/VERSION"
+[[ -f $version_file ]] || {
+  printf '%s\n' 'build-package: source VERSION is invalid' >&2; exit 78; }
+mapfile -t version_lines < "$version_file"
+(( ${#version_lines[@]} == 1 )) || {
+  printf '%s\n' 'build-package: source VERSION is invalid' >&2; exit 78; }
+version=${version_lines[0]}
+if ! [[ $version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] ||
+   ! printf '%s\n' "$version" | cmp -s - "$version_file"; then
+  printf '%s\n' 'build-package: source VERSION is invalid' >&2
+  exit 78
+fi
 [[ $(git -C "$source_root" rev-parse HEAD) == "$source_commit" ]] || {
   printf '%s\n' 'build-package: requested source commit is not HEAD' >&2; exit 78; }
 [[ -z $(git -C "$source_root" status --porcelain) ]] || {
@@ -64,8 +74,7 @@ else
   }
 fi
 cmake -S "$source_root" -B "$work/build" -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER="$compiler" -DCONTAINER_TOOLS_PRODUCT_VERSION="$version" \
-  -DCONTAINER_TOOLS_STATIC=ON
+  -DCMAKE_C_COMPILER="$compiler" -DCONTAINER_TOOLS_STATIC=ON
 cmake --build "$work/build"
 cmake --install "$work/build" --prefix "$work/root"
 readelf -l "$work/root/bin/container-tools" | grep -Eq 'INTERP|DYNAMIC' && {

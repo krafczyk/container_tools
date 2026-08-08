@@ -72,15 +72,18 @@ uses that selected prefix; mixing files from two prefixes is rejected.
 ## Archive And Prefix Installation
 
 `scripts/build-package.sh` creates one deterministic native archive only from a
-clean checkout at the requested 40-hex commit. It requires an absolute disposable
-build root below `/tmp/mkchad-v1/container-tools-c11`, a semantic version, output
-directory, and declared static libc family. It never overwrites an existing
-archive or checksum. Musl archives use `musl-gcc` by default (overridable with
-`CT_MUSL_CC`); glibc archives require a glibc compiler selected through `CC` or
-the host default. `scripts/verify-package.sh` checks an externally supplied
-checksum, the verifier-owned closed archive layout, archive/release identity,
-static ELF linkage, machine identity, and the installed package's two identity
-reports in a private temporary extraction.
+clean checkout at the requested 40-hex commit. The checkout's single-line,
+canonical-semver `VERSION` file is the immutable product version for CMake,
+archive naming, and release metadata; callers cannot override it. The script
+requires an absolute disposable build root below
+`/tmp/mkchad-v1/container-tools-c11`, output directory, and declared static libc
+family. It never overwrites an existing archive or checksum. Musl archives use
+`musl-gcc` by default (overridable with `CT_MUSL_CC`); glibc archives require a
+glibc compiler selected through `CC` or the host default.
+`scripts/verify-package.sh` checks an externally supplied checksum, the
+verifier-owned closed archive layout, archive/release identity, static ELF
+linkage, machine identity, and the installed package's two identity reports in
+a private temporary extraction.
 
 `scripts/install-package.sh` uses `--check`, `--apply`, or `--verify` with the
 same archive identity. `--apply` requires a private recovery directory, holds a

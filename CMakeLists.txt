@@ -1,6 +1,20 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(container_tools VERSION 1.0.0 LANGUAGES C)
+file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" CONTAINER_TOOLS_PRODUCT_VERSION_LINES)
+list(LENGTH CONTAINER_TOOLS_PRODUCT_VERSION_LINES CONTAINER_TOOLS_PRODUCT_VERSION_LINE_COUNT)
+if(NOT CONTAINER_TOOLS_PRODUCT_VERSION_LINE_COUNT EQUAL 1)
+  message(FATAL_ERROR "container-tools VERSION must contain exactly one semantic version")
+endif()
+list(GET CONTAINER_TOOLS_PRODUCT_VERSION_LINES 0 CONTAINER_TOOLS_PRODUCT_VERSION)
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" CONTAINER_TOOLS_PRODUCT_VERSION_FILE)
+if(NOT CONTAINER_TOOLS_PRODUCT_VERSION_FILE STREQUAL "${CONTAINER_TOOLS_PRODUCT_VERSION}\n" OR
+   NOT CONTAINER_TOOLS_PRODUCT_VERSION MATCHES
+   "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
+  message(FATAL_ERROR "container-tools VERSION must contain exactly one semantic version")
+endif()
+string(REGEX REPLACE "^([0-9]+\\.[0-9]+\\.[0-9]+).*$" "\\1"
+  CONTAINER_TOOLS_CMAKE_VERSION "${CONTAINER_TOOLS_PRODUCT_VERSION}")
+project(container_tools VERSION "${CONTAINER_TOOLS_CMAKE_VERSION}" LANGUAGES C)
 
 include(GNUInstallDirs)
 include(CTest)
@@ -24,17 +38,9 @@ foreach(vendor_digest IN LISTS CONTAINER_TOOLS_VENDOR_DIGESTS)
   endif()
 endforeach()
 
-set(CONTAINER_TOOLS_PRODUCT_VERSION "1.0.0-dev" CACHE STRING
-    "Immutable container-tools product version")
-set(CONTAINER_TOOLS_PACKAGE_EPOCH "1" CACHE STRING
-    "Immutable container-tools package epoch")
-if(NOT CONTAINER_TOOLS_PRODUCT_VERSION MATCHES
-   "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
-  message(FATAL_ERROR "container-tools requires a semantic product version")
-endif()
-if(NOT CONTAINER_TOOLS_PACKAGE_EPOCH MATCHES "^[0-9]+$")
-  message(FATAL_ERROR "container-tools requires a numeric package epoch")
-endif()
+# Package identity is source-owned.  Do not expose cache overrides that could
+# make an exact source checkout emit an archive with a caller-selected identity.
+set(CONTAINER_TOOLS_PACKAGE_EPOCH "1")
 option(CONTAINER_TOOLS_STATIC "Link the package executable statically" ON)
 option(CONTAINER_TOOLS_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 if(CONTAINER_TOOLS_STATIC AND CONTAINER_TOOLS_SANITIZERS)

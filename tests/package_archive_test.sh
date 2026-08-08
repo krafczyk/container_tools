@@ -8,21 +8,43 @@ rm -rf -- "$work"
 mkdir -p -- "$work/out"
 commit=$(git -C "$root" rev-parse HEAD)
 architecture=$(uname -m | tr '[:upper:]' '[:lower:]')
+version=$(<"$root/VERSION")
 
-if bash "$root/scripts/build-package.sh" --build-root "$work/build" --version 1.0.0 \
+cmake -S "$root" -B "$work/source-contract" -DCONTAINER_TOOLS_STATIC=OFF \
+  -DCONTAINER_TOOLS_PRODUCT_VERSION=9.9.9 -DCONTAINER_TOOLS_PACKAGE_EPOCH=9 >/dev/null
+grep -Fq "\"product_version\":\"$version\"" "$work/source-contract/release.json" || {
+  printf '%s\n' 'CMake did not derive the product version from VERSION' >&2
+  exit 1
+}
+grep -Fq '"package_epoch":"1"' "$work/source-contract/release.json" || {
+  printf '%s\n' 'CMake accepted a caller-selected package epoch' >&2
+  exit 1
+}
+
+set +e
+bash "$root/scripts/build-package.sh" --build-root "$work/override-build" --version 9.9.9 \
+  --source-commit "$commit" --output-dir "$work/out" --libc glibc
+version_override_status=$?
+set -e
+[[ $version_override_status == 64 ]] || {
+  printf 'package build accepted a caller-selected version (status %s)\n' "$version_override_status" >&2
+  exit 1
+}
+
+if bash "$root/scripts/build-package.sh" --build-root "$work/build" \
   --source-commit 0000000000000000000000000000000000000000 --output-dir "$work/out" --libc glibc; then
   printf '%s\n' 'package build accepted a mismatched source commit' >&2
   exit 1
 fi
 
-archive_root="container-tools-1.0.0-${architecture}-glibc-${commit}"
+archive_root="container-tools-${version}-${architecture}-glibc-${commit}"
 mkdir -p -- "$work/malicious/$archive_root"
 printf 'payload\n' > "$work/malicious/$archive_root/payload"
 expect_invalid_archive() {
   local archive=$1 digest
   digest=$(sha256sum "$archive" | awk '{print $1}')
   if bash "$root/scripts/verify-package.sh" --archive "$archive" --sha256 "$digest" \
-    --version 1.0.0 --source-commit "$commit" --architecture "$architecture" --libc glibc \
+    --version "$version" --source-commit "$commit" --architecture "$architecture" --libc glibc \
     --work-root "$work/invalid-verify"; then
     printf 'package verifier accepted malicious archive: %s\n' "$archive" >&2
     exit 1
@@ -40,16 +62,16 @@ while IFS= read -r path; do
     : > "$self_authorized/$path"
   fi
 done < "$root/scripts/package-files.txt"
-printf '{"schema":"container-tools.archive/v1","version":"1.0.0","architecture":"%s","libc":"glibc","source_commit":"%s"}\n' \
-  "$architecture" "$commit" > "$self_authorized/archive.json"
-printf '{"product_version":"1.0.0","source_commit":"%s","architecture":"%s"}\n' \
-  "$commit" "$architecture" > "$self_authorized/share/container-tools/release.json"
+printf '{"schema":"container-tools.archive/v1","version":"%s","architecture":"%s","libc":"glibc","source_commit":"%s"}\n' \
+  "$version" "$architecture" "$commit" > "$self_authorized/archive.json"
+printf '{"product_version":"%s","source_commit":"%s","architecture":"%s"}\n' \
+  "$version" "$commit" "$architecture" > "$self_authorized/share/container-tools/release.json"
 printf '%s\n' unexpected > "$self_authorized/extra-file"
 (cd "$work/self-authorized" && find "$archive_root" -print | LC_ALL=C sort > "$self_authorized/archive-files.txt")
 tar -C "$work/self-authorized" -czf "$work/self-authorized.tar.gz" "$archive_root"
 self_authorized_digest=$(sha256sum "$work/self-authorized.tar.gz" | awk '{print $1}')
 if bash "$root/scripts/verify-package.sh" --archive "$work/self-authorized.tar.gz" \
-  --sha256 "$self_authorized_digest" --version 1.0.0 --source-commit "$commit" \
+  --sha256 "$self_authorized_digest" --version "$version" --source-commit "$commit" \
   --architecture "$architecture" --libc glibc --work-root "$work/self-authorized-verify" \
   2>"$work/self-authorized.stderr"; then
   printf '%s\n' 'package verifier accepted a self-authorized extra file' >&2
@@ -93,7 +115,7 @@ tar -C "$work/malicious" --transform="s,^$archive_root,$archive_root/../escape,"
 expect_invalid_archive "$work/traversal.tar.gz"
 git clone --quiet --no-hardlinks "$root" "$work/dirty-source"
 printf '%s\n' dirty > "$work/dirty-source/untracked"
-if bash "$work/dirty-source/scripts/build-package.sh" --build-root "$work/dirty-build" --version 1.0.0 \
+if bash "$work/dirty-source/scripts/build-package.sh" --build-root "$work/dirty-build" \
   --source-commit "$commit" --output-dir "$work/out" --libc musl; then
   printf '%s\n' 'package build accepted the dirty test checkout' >&2
   exit 1
