@@ -152,7 +152,7 @@ static int ct_elf_inspect32(int descriptor, const struct stat *status,
 int ct_elf_inspect(int descriptor, struct ct_elf_info *info)
 {
   unsigned char ident[EI_NIDENT], native_class, native_data;
-  unsigned int native_machine;
+  unsigned int native_machine = EM_NONE;
   struct stat status, final_status;
   int result;
   if (descriptor < 0 || info == NULL || fstat(descriptor, &status) != 0 ||
