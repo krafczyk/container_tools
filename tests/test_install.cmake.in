@@ -11,21 +11,12 @@ if(NOT install_result EQUAL 0)
 endif()
 
 execute_process(
-  COMMAND "${prefix}/bin/container-tools" package verify --json
-  RESULT_VARIABLE verify_result
-  OUTPUT_VARIABLE verify_output
-)
-if(NOT verify_result EQUAL 0 OR NOT verify_output MATCHES "container-tools.release/v1")
-  message(FATAL_ERROR "installed package did not verify")
-endif()
-
-execute_process(
   COMMAND "@CMAKE_COMMAND@" -E env "PATH=${prefix}/bin:$ENV{PATH}" container-tools --version --json
   RESULT_VARIABLE path_result
   OUTPUT_VARIABLE path_output
 )
-if(NOT path_result EQUAL 0 OR NOT path_output STREQUAL verify_output)
-  message(FATAL_ERROR "PATH selected an incoherent package")
+if(NOT path_result EQUAL 0 OR NOT path_output MATCHES "mount_plan_grammar")
+  message(FATAL_ERROR "PATH did not select the installed executable")
 endif()
 
 function(expect_not_implemented)
@@ -79,7 +70,6 @@ endif()
 expect_success(mount detect --help)
 file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add-path /two\n")
 expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)
-expect_success(runtime exec --backend podman -- /bin/true)
 file(WRITE "${CMAKE_BINARY_DIR}/host.toml"
   "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\nenvironment_remove = [\"CT_REMOVE_ME\"]\n[profiles.root.environment]\nCT_U7_VALUE = \"planned\"\n")
 execute_process(
@@ -425,9 +415,10 @@ execute_process(
   COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
           "CT_U7_BACKEND_LOG=${u7_backend_log}" "${prefix}/bin/container-tools" host exec
           --config "${u7_future_config}" --backend bubblewrap -- /usr/bin/cargo build
-  RESULT_VARIABLE u7_future_result OUTPUT_VARIABLE u7_future_output
+  RESULT_VARIABLE u7_future_result OUTPUT_VARIABLE u7_future_output ERROR_VARIABLE u7_future_error
 )
-if(NOT u7_future_result EQUAL 125 OR NOT u7_future_output STREQUAL "" OR EXISTS "${u7_backend_log}")
+if(NOT u7_future_result EQUAL 125 OR NOT u7_future_output STREQUAL "" OR EXISTS "${u7_backend_log}" OR
+   NOT u7_future_error MATCHES "expected ct-mount-plan-v1, actual ct-mount-plan-v2")
   message(FATAL_ERROR "U7 future-major manifest reached a nested backend probe")
 endif()
 
@@ -467,39 +458,4 @@ execute_process(
 if(NOT io_doctor_result EQUAL 125 OR NOT io_doctor_output STREQUAL "" OR
    NOT io_doctor_error MATCHES "unable to produce complete report")
   message(FATAL_ERROR "mount-plan I/O failure emitted a doctor report")
-endif()
-
-file(MAKE_DIRECTORY "${moved_parent}")
-file(RENAME "${prefix}" "${moved_parent}/container tools")
-execute_process(
-  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
-  RESULT_VARIABLE moved_result
-)
-if(NOT moved_result EQUAL 0)
-  message(FATAL_ERROR "moved complete prefix did not verify")
-endif()
-
-file(APPEND "${moved_parent}/container tools/bin/ct_args.sh" "# changed\n")
-execute_process(
-  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
-  RESULT_VARIABLE changed_script_result
-)
-if(changed_script_result EQUAL 0)
-  message(FATAL_ERROR "changed compatibility script was accepted")
-endif()
-execute_process(
-  COMMAND "@CMAKE_COMMAND@" --install "@CMAKE_BINARY_DIR@" --prefix "${moved_parent}/container tools"
-  RESULT_VARIABLE reinstall_result
-)
-if(NOT reinstall_result EQUAL 0)
-  message(FATAL_ERROR "failed to restore changed compatibility script")
-endif()
-
-file(REMOVE "${moved_parent}/container tools/bin/ct_args.sh")
-execute_process(
-  COMMAND "${moved_parent}/container tools/bin/container-tools" package verify
-  RESULT_VARIABLE incomplete_result
-)
-if(incomplete_result EQUAL 0)
-  message(FATAL_ERROR "incomplete prefix was accepted")
 endif()

@@ -251,7 +251,8 @@ static enum ct_mount_plan_read_status ct_mount_plan_visit_status(
     if (decoded == CT_PLAN_DECODE_IO) return CT_MOUNT_PLAN_READ_IO;
     return CT_MOUNT_PLAN_READ_MALFORMED;
   }
-  if (ct_plan_copy(metadata->digest, sizeof(metadata->digest), fields[1]) != 0 ||
+  if (ct_plan_copy(metadata->grammar, sizeof(metadata->grammar), fields[0]) != 0 ||
+      ct_plan_copy(metadata->digest, sizeof(metadata->digest), fields[1]) != 0 ||
       ct_plan_copy(metadata->backend, sizeof(metadata->backend), fields[2]) != 0 ||
       ct_plan_copy(metadata->strategy, sizeof(metadata->strategy), fields[3]) != 0 ||
       ct_plan_copy(metadata->completeness, sizeof(metadata->completeness), fields[4]) != 0 ||
@@ -269,6 +270,21 @@ static enum ct_mount_plan_read_status ct_mount_plan_visit_status(
   }
   free(copy);
   return CT_MOUNT_PLAN_READ_OK;
+}
+
+static void ct_mount_plan_observed_grammar(const unsigned char *bytes, size_t length,
+                                           struct ct_mount_plan_metadata *metadata)
+{
+  const unsigned char *end;
+  size_t grammar_length;
+
+  if (bytes == NULL || metadata == NULL || length == 0U) return;
+  end = memchr(bytes, '\0', length);
+  if (end == NULL) return;
+  grammar_length = (size_t)(end - bytes);
+  if (grammar_length == 0U || grammar_length >= sizeof(metadata->grammar)) return;
+  memcpy(metadata->grammar, bytes, grammar_length);
+  metadata->grammar[grammar_length] = '\0';
 }
 
 int ct_mount_plan_visit(const unsigned char *bytes, size_t length,
@@ -339,7 +355,10 @@ enum ct_mount_plan_read_status ct_mount_plan_read_status(
     return CT_MOUNT_PLAN_READ_CHANGED;
   }
   result = ct_mount_plan_visit_status(bytes, (size_t)before.st_size, metadata,
-                                      visitor, context);
+                                       visitor, context);
+  if (result == CT_MOUNT_PLAN_READ_FUTURE) {
+    ct_mount_plan_observed_grammar(bytes, (size_t)before.st_size, metadata);
+  }
   free(bytes);
   return result;
 }

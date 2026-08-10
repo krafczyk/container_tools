@@ -13,8 +13,6 @@ enum ct_config_status { CT_CONFIG_OK = 0, CT_CONFIG_INVALID = 1, CT_CONFIG_IO = 
 struct ct_runtime_config {
   char singularity_cache_dir[CT_CONFIG_PATH_MAX];
   char singularity_tmp_dir[CT_CONFIG_PATH_MAX];
-  char docker_build_cache_dir[CT_CONFIG_PATH_MAX];
-  char docker_build_tmp_dir[CT_CONFIG_PATH_MAX];
 };
 
 /**

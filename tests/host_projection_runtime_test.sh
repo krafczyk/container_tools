@@ -336,10 +336,6 @@ if [[ -n $package_prefix ]]; then
     printf '%s\n' 'package prefix is incomplete' >&2
     exit 2
   }
-  "$package_prefix/bin/container-tools" package verify --json >/dev/null || {
-    printf '%s\n' 'package prefix identity verification failed' >&2
-    exit 2
-  }
   launch_exec=$package_prefix/bin/ct_exec.sh
   launch_instance=$package_prefix/bin/ct_instance_exec.sh
 else

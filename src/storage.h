@@ -4,11 +4,6 @@
 
 #include "config.h"
 
-#include <stdbool.h>
-
-/** Validate one architecture token before using it as a cache path component. */
-bool ct_storage_architecture_is_safe(const char *architecture);
-
 /**
  * Create or validate one private runtime directory without following symlinks.
  *
@@ -22,7 +17,7 @@ int ct_storage_ensure_private_directory(const char *path);
  *
  * Explicit native environment variables win over configuration defaults.
  *
- * @param backend singularity, apptainer, docker, or podman.
+ * @param backend singularity or apptainer.
  * @param config Parsed machine configuration.
  * @return Zero on success, otherwise nonzero before child dispatch.
  */

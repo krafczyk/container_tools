@@ -1,7 +1,5 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "cli.h"
-#include "buildx.h"
-#include "config.h"
 #include "instance.h"
 #include "host_config.h"
 #include "mount_plan.h"
@@ -12,8 +10,6 @@
 #include "trampoline.h"
 #include "mount.h"
 #include "package.h"
-#include "process.h"
-#include "storage.h"
 #include "runtime.h"
 
 #include "package_identity.h"
@@ -29,30 +25,7 @@
 #include <unistd.h>
 
 #define CT_EXIT_USAGE 64
-#define CT_EXIT_NOT_IMPLEMENTED 70
 #define CT_EXIT_PACKAGE 78
-
-static const char *ct_command_name(enum ct_command command)
-{
-  switch (command) {
-  case CT_COMMAND_EXEC: return "exec";
-  case CT_COMMAND_SHELL: return "shell";
-  case CT_COMMAND_INSTANCE_EXEC: return "instance exec";
-  case CT_COMMAND_INSTANCE_IDENTITY: return "instance identity";
-  case CT_COMMAND_MOUNT_DETECT: return "mount detect";
-  case CT_COMMAND_MOUNT_ARGS: return "mount args";
-  case CT_COMMAND_RUNTIME_EXEC: return "runtime exec";
-  case CT_COMMAND_BUILDX_EXEC: return "buildx exec";
-  case CT_COMMAND_HOST_EXEC: return "host exec";
-  case CT_COMMAND_HOST_DOCTOR: return "host doctor";
-  case CT_COMMAND_HELP:
-  case CT_COMMAND_VERSION:
-  case CT_COMMAND_PACKAGE_VERIFY: return "package verify";
-  }
-  return "unknown";
-}
-
-static int ct_runtime_exec(int argument_count, char **arguments);
 
 static int ct_internal_compatibility(int argument_count, char **arguments)
 {
@@ -60,9 +33,6 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
       ct_package_verify_compatibility_identity(arguments[2], arguments[3]) != 0) {
     (void)fputs("container-tools: package verification failed: compatibility identity mismatch\n",
                 stderr);
-    return CT_EXIT_PACKAGE;
-  }
-  if (ct_package_validate(stderr) != 0) {
     return CT_EXIT_PACKAGE;
   }
   if (strcmp(arguments[3], "ct_exec.sh") == 0) {
@@ -81,33 +51,6 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
     return ct_mount_args_command(argument_count - 4, arguments + 4);
   }
   return CT_EXIT_PACKAGE;
-}
-
-static int ct_runtime_exec(int argument_count, char **arguments)
-{
-  struct ct_runtime_config config;
-  const char *backend = NULL;
-  int separator = -1;
-  int index;
-
-  for (index = 0; index < argument_count; ++index) {
-    if (strcmp(arguments[index], "--backend") == 0 && backend == NULL &&
-        index + 1 < argument_count) {
-      backend = arguments[++index];
-    } else if (strcmp(arguments[index], "--") == 0) {
-      separator = index;
-      break;
-    } else {
-      return CT_EXIT_USAGE;
-    }
-  }
-  if (backend == NULL || separator < 0 || separator + 1 >= argument_count ||
-      ct_runtime_config_load_environment(&config) != CT_CONFIG_OK ||
-      ct_storage_select_runtime(backend, &config) != 0) {
-    (void)fputs("container-tools: runtime exec: invalid storage configuration\n", stderr);
-    return 1;
-  }
-  return ct_process_run(arguments + separator + 1, NULL, 0U);
 }
 
 static void ct_host_default_profile(struct ct_host_profile *profile)
@@ -174,6 +117,16 @@ static int ct_host_add_projections(const struct ct_host_profile *profile,
     }
   }
   return 0;
+}
+
+static void ct_host_mount_plan_incompatible(const char *operation,
+                                            const struct ct_mount_plan_metadata *metadata)
+{
+  const char *actual = metadata->grammar[0] == '\0' ? "unknown" : metadata->grammar;
+
+  (void)fprintf(stderr,
+                "container-tools: host %s: unsupported mount plan grammar: expected %s, actual %s\n",
+                operation, CT_MANIFEST_GRAMMAR, actual);
 }
 
 static int ct_host_inherited_descriptor(void)
@@ -275,15 +228,25 @@ static int ct_host_exec(int argument_count, char **arguments)
     return 125;
   }
   ct_path_map_manifest_init(&manifest, &map, &workspace->profile);
-  if (workspace->profile.mount_plan_configured != 0 &&
-      (ct_mount_plan_read(workspace->profile.mount_plan, &workspace->metadata,
-                          ct_path_map_manifest_entry, &manifest) != 0 ||
-       ct_path_map_manifest_eligible(&workspace->profile, &workspace->metadata,
-                                     &manifest) != 0)) {
-    (void)fputs("container-tools: host exec: invalid exact mount plan\n", stderr);
-    ct_path_map_destroy(&map);
-    free(workspace);
-    return 125;
+  if (workspace->profile.mount_plan_configured != 0) {
+    const enum ct_mount_plan_read_status mount_status = ct_mount_plan_read_status(
+        workspace->profile.mount_plan, &workspace->metadata,
+        ct_path_map_manifest_entry, &manifest);
+
+    if (mount_status == CT_MOUNT_PLAN_READ_FUTURE) {
+      ct_host_mount_plan_incompatible("exec", &workspace->metadata);
+      ct_path_map_destroy(&map);
+      free(workspace);
+      return 125;
+    }
+    if (mount_status != CT_MOUNT_PLAN_READ_OK ||
+        ct_path_map_manifest_eligible(&workspace->profile, &workspace->metadata,
+                                      &manifest) != 0) {
+      (void)fputs("container-tools: host exec: invalid exact mount plan\n", stderr);
+      ct_path_map_destroy(&map);
+      free(workspace);
+      return 125;
+    }
   }
   if (ct_host_add_projections(&workspace->profile, &map) != 0 ||
       ct_path_map_sort(&map) != 0 ||
@@ -431,6 +394,10 @@ static int ct_host_doctor(int argument_count, char **arguments)
         workspace->profile.mount_plan, &workspace->metadata,
         ct_path_map_manifest_entry, &manifest);
     if (manifest_status != CT_MOUNT_PLAN_READ_OK) {
+      if (manifest_status == CT_MOUNT_PLAN_READ_FUTURE) {
+        ct_host_mount_plan_incompatible("doctor", &workspace->metadata);
+        goto invalid;
+      }
       mount_status = ct_host_mount_status(manifest_status);
       if (mount_status == NULL) goto invalid;
       mount_plan.status = mount_status;
@@ -506,30 +473,19 @@ int main(int argument_count, char **arguments)
     ct_cli_write_usage(stderr);
     return CT_EXIT_USAGE;
   }
-  if (parsed.command == CT_COMMAND_PACKAGE_VERIFY) {
-    return ct_package_verify(stdout, parsed.json != 0);
-  }
-  if (ct_package_validate(stderr) != 0) {
-    return CT_EXIT_PACKAGE;
-  }
   if (parsed.command == CT_COMMAND_HELP) {
     ct_cli_write_usage(stdout);
     return 0;
   }
   if (parsed.command == CT_COMMAND_VERSION) {
     if (parsed.json != 0) {
-      (void)fprintf(stdout, "%s\n", ct_package_release_json());
+      (void)fprintf(stdout, "%s\n", ct_package_version_json());
     } else {
-      (void)fprintf(stdout, "container-tools %s (%s)\n", CT_PRODUCT_VERSION,
-                    CT_BUILD_IDENTITY);
+      (void)fprintf(stdout, "container-tools %s commit=%s architecture=%s mount-plan=%s\n",
+                    CT_PRODUCT_VERSION, CT_SOURCE_COMMIT, CT_ARCHITECTURE,
+                    CT_MANIFEST_GRAMMAR);
     }
     return 0;
-  }
-  if (parsed.command == CT_COMMAND_RUNTIME_EXEC) {
-    return ct_runtime_exec(argument_count - 3, arguments + 3);
-  }
-  if (parsed.command == CT_COMMAND_BUILDX_EXEC) {
-    return ct_buildx_exec_command(argument_count - 3, arguments + 3);
   }
   if (parsed.command == CT_COMMAND_MOUNT_ARGS) {
     return ct_mount_args_command(argument_count - 3, arguments + 3);
@@ -555,7 +511,5 @@ int main(int argument_count, char **arguments)
   if (parsed.command == CT_COMMAND_HOST_DOCTOR) {
     return ct_host_doctor(argument_count - 3, arguments + 3);
   }
-  (void)fprintf(stderr, "container-tools: not implemented: %s\n",
-                ct_command_name(parsed.command));
-  return CT_EXIT_NOT_IMPLEMENTED;
+  return CT_EXIT_USAGE;
 }

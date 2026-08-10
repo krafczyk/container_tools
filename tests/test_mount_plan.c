@@ -74,6 +74,7 @@ int main(void)
         snprintf(mismatch, sizeof(mismatch), "%s/mismatch.manifest", work) >= (int)sizeof(mismatch) ||
        symlink(first, link) != 0 ||
        ct_mount_plan_read(link, &metadata, visit_entry, &visited) != 0 ||
+       strcmp(metadata.grammar, "ct-mount-plan-v1") != 0 ||
        strcmp(metadata.digest, digest) != 0 || strcmp(metadata.backend, "docker") != 0 ||
          strcmp(metadata.strategy, "none") != 0 || metadata.entry_count != 2U ||
          visited.count != 2U || visited.saw_explicit == 0 || unlink(link) != 0 ||
@@ -86,6 +87,7 @@ int main(void)
     int descriptor = open(future, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (descriptor < 0 || write(descriptor, future_bytes, sizeof(future_bytes)) != (ssize_t)sizeof(future_bytes) ||
         close(descriptor) != 0 || ct_mount_plan_read_status(future, &metadata, visit_entry, &visited) != CT_MOUNT_PLAN_READ_FUTURE ||
+        strcmp(metadata.grammar, "ct-mount-plan-v2") != 0 ||
         unlink(future) != 0 || ct_mount_plan_serialize(&plan, &bytes, &length, digest) != 0) return 1;
     bytes[strlen("ct-mount-plan-v1") + 1U] = bytes[strlen("ct-mount-plan-v1") + 1U] == '0' ? '1' : '0';
     descriptor = open(mismatch, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);

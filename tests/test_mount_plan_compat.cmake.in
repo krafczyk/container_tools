@@ -1,0 +1,26 @@
+set(work "@CMAKE_BINARY_DIR@/mount-plan-compatibility")
+set(manifest "${work}/future.manifest")
+set(config "${work}/host.toml")
+file(REMOVE_RECURSE "${work}")
+file(MAKE_DIRECTORY "${work}")
+execute_process(COMMAND /usr/bin/printf "ct-mount-plan-v2\\0" OUTPUT_FILE "${manifest}")
+file(WRITE "${config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\nmount_plan = \"${manifest}\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+
+foreach(operation IN ITEMS exec doctor)
+  if(operation STREQUAL "exec")
+    set(arguments host exec --config "${config}" --backend bubblewrap -- /bin/true)
+  else()
+    set(arguments host doctor --config "${config}" --json)
+  endif()
+  execute_process(
+    COMMAND "@CMAKE_BINARY_DIR@/container-tools" ${arguments}
+    RESULT_VARIABLE result
+    OUTPUT_VARIABLE output
+    ERROR_VARIABLE error
+  )
+  if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+     NOT error MATCHES "expected ct-mount-plan-v1, actual ct-mount-plan-v2")
+    message(FATAL_ERROR "future mount plan did not fail closed for host ${operation}: ${error}")
+  endif()
+endforeach()

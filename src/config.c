@@ -13,23 +13,16 @@
 
 #define CT_CONFIG_FILE_MAX 65536U
 
-static bool ct_config_path_is_valid(const char *value, bool forbid_comma)
+static bool ct_config_path_is_valid(const char *value)
 {
   return value != NULL && value[0] == '/' && strchr(value, '\n') == NULL &&
-         (!forbid_comma || strchr(value, ',') == NULL) && strlen(value) < CT_CONFIG_PATH_MAX;
+         strlen(value) < CT_CONFIG_PATH_MAX;
 }
 
-static char *ct_config_slot(struct ct_runtime_config *config, const char *key,
-                            bool *forbid_comma)
+static char *ct_config_slot(struct ct_runtime_config *config, const char *key)
 {
-  *forbid_comma = false;
   if (strcmp(key, "CT_SINGULARITY_CACHE_DIR") == 0) return config->singularity_cache_dir;
   if (strcmp(key, "CT_SINGULARITY_TMP_DIR") == 0) return config->singularity_tmp_dir;
-  if (strcmp(key, "CT_DOCKER_BUILD_CACHE_DIR") == 0) {
-    *forbid_comma = true;
-    return config->docker_build_cache_dir;
-  }
-  if (strcmp(key, "CT_DOCKER_BUILD_TMP_DIR") == 0) return config->docker_build_tmp_dir;
   return NULL;
 }
 
@@ -50,7 +43,6 @@ enum ct_config_status ct_runtime_config_parse(const char *contents,
   while (cursor != NULL) {
     char *equals;
     char *slot;
-    bool forbid_comma;
 
     line = cursor;
     cursor = strchr(cursor, '\n');
@@ -64,8 +56,8 @@ enum ct_config_status ct_runtime_config_parse(const char *contents,
     equals = strchr(line, '=');
     if (equals == NULL) return CT_CONFIG_INVALID;
     *equals = '\0';
-    slot = ct_config_slot(config, line, &forbid_comma);
-    if (slot == NULL || slot[0] != '\0' || !ct_config_path_is_valid(equals + 1, forbid_comma)) {
+    slot = ct_config_slot(config, line);
+    if (slot == NULL || slot[0] != '\0' || !ct_config_path_is_valid(equals + 1)) {
       return CT_CONFIG_INVALID;
     }
     (void)snprintf(slot, CT_CONFIG_PATH_MAX, "%s", equals + 1);

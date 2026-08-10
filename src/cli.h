@@ -14,11 +14,8 @@ enum ct_command {
   CT_COMMAND_INSTANCE_IDENTITY,
   CT_COMMAND_MOUNT_DETECT,
   CT_COMMAND_MOUNT_ARGS,
-  CT_COMMAND_RUNTIME_EXEC,
-  CT_COMMAND_BUILDX_EXEC,
   CT_COMMAND_HOST_EXEC,
   CT_COMMAND_HOST_DOCTOR,
-  CT_COMMAND_PACKAGE_VERIFY,
 };
 
 /** Parse status values returned before any package or backend access. */

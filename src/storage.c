@@ -2,8 +2,8 @@
 #include "storage.h"
 #include "storage_timeout.h"
 
-#include <ctype.h>
 #include <errno.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,18 +42,6 @@ static int ct_storage_check_ancestors(const char *path)
     slash = strrchr(ancestor, '/');
     if (slash == ancestor) ancestor[1] = '\0'; else *slash = '\0';
   }
-}
-
-bool ct_storage_architecture_is_safe(const char *architecture)
-{
-  size_t index;
-  if (architecture == NULL || architecture[0] == '\0' || strcmp(architecture, ".") == 0 ||
-      strcmp(architecture, "..") == 0 || strlen(architecture) >= 128U) return false;
-  for (index = 0U; architecture[index] != '\0'; ++index) {
-    const unsigned char byte = (unsigned char)architecture[index];
-    if (!(isalnum(byte) != 0 || byte == '_' || byte == '.' || byte == '-')) return false;
-  }
-  return true;
 }
 
 int ct_storage_ensure_private_directory(const char *path)
@@ -110,9 +98,5 @@ int ct_storage_select_runtime(const char *backend, const struct ct_runtime_confi
            ct_storage_select_directory("APPTAINER_TMPDIR",
                                        ct_storage_configured_default("CT_SINGULARITY_TMP_DIR", config->singularity_tmp_dir));
   }
-  if (strcmp(backend, "docker") == 0) {
-    return ct_storage_select_directory("TMPDIR",
-                                       ct_storage_configured_default("CT_DOCKER_BUILD_TMP_DIR", config->docker_build_tmp_dir));
-  }
-  return strcmp(backend, "podman") == 0 ? 0 : 1;
+  return 1;
 }

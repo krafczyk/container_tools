@@ -38,9 +38,6 @@ foreach(vendor_digest IN LISTS CONTAINER_TOOLS_VENDOR_DIGESTS)
   endif()
 endforeach()
 
-# Package identity is source-owned.  Do not expose cache overrides that could
-# make an exact source checkout emit an archive with a caller-selected identity.
-set(CONTAINER_TOOLS_PACKAGE_EPOCH "1")
 option(CONTAINER_TOOLS_STATIC "Link the package executable statically" ON)
 option(CONTAINER_TOOLS_SANITIZERS "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 if(CONTAINER_TOOLS_STATIC AND CONTAINER_TOOLS_SANITIZERS)
@@ -70,16 +67,6 @@ if(NOT CONTAINER_TOOLS_ARCHITECTURE MATCHES "^[a-z0-9_.-]+$")
   message(FATAL_ERROR "container-tools requires a non-empty portable target architecture")
 endif()
 
-function(container_tools_component_digest output)
-  set(contents "")
-  foreach(source IN LISTS ARGN)
-    file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${source}" source_digest)
-    string(APPEND contents "${source}:${source_digest}\n")
-  endforeach()
-  string(SHA256 result "${contents}")
-  set(${output} "${result}" PARENT_SCOPE)
-endfunction()
-
 set(CONTAINER_TOOLS_NESTED_FILES
   src/backend_nested.c src/backend_nested.h
   src/backend_bubblewrap.c src/backend_bubblewrap.h
@@ -88,28 +75,9 @@ set(CONTAINER_TOOLS_NESTED_FILES
   src/trampoline.c src/trampoline.h
   src/doctor.c src/doctor.h)
 
-container_tools_component_digest(CONTAINER_TOOLS_EXECUTABLE_DIGEST
-  src/main.c src/cli.c src/package.c src/config.c src/config.h src/storage.c src/storage.h
-  src/storage_timeout.c src/storage_timeout.h src/mount.c src/mount.h src/buildx.c src/buildx.h
-  src/process.c src/process.h src/runtime.c src/runtime.h src/backend_outer.c src/backend_outer.h
-  src/host_projection.c src/host_projection.h src/mount_plan.c src/mount_plan.h src/sha256.c src/sha256.h
-  src/profile.c src/profile.h src/state.c src/state.h src/instance.c src/instance.h
-  src/host_config.c src/host_config.h src/path_map.c src/path_map.h src/executable.c src/executable.h
-  src/elf.c src/elf.h src/shebang.c src/shebang.h src/supervisor.c src/supervisor.h
-  src/supervisor_process.c src/supervisor_process.h ${CONTAINER_TOOLS_NESTED_FILES}
-  vendor/tomlc17/tomlc17.c vendor/tomlc17/tomlc17.h
-  vendor/yyjson/yyjson.c vendor/yyjson/yyjson.h)
-container_tools_component_digest(CONTAINER_TOOLS_SCRIPTS_DIGEST cmake/compat.sh.in)
-container_tools_component_digest(CONTAINER_TOOLS_METADATA_DIGEST cmake/release.json.in)
-container_tools_component_digest(CONTAINER_TOOLS_DOCUMENTATION_DIGEST README.md examples/README.md examples/host.toml docs/host-execution.md docs/release.md)
-container_tools_component_digest(CONTAINER_TOOLS_LICENSES_DIGEST
-  LICENSE-APACHE LICENSE-MIT vendor/tomlc17/LICENSE vendor/yyjson/LICENSE)
-container_tools_component_digest(CONTAINER_TOOLS_PROTOCOLS_DIGEST protocols/ct-mount-plan-v1.md)
-string(SHA256 CONTAINER_TOOLS_BUILD_IDENTITY
-  "${CONTAINER_TOOLS_PRODUCT_VERSION}:${PROJECT_VERSION_MAJOR}:${CONTAINER_TOOLS_PACKAGE_EPOCH}:${CONTAINER_TOOLS_ARCHITECTURE}:${CONTAINER_TOOLS_SOURCE_COMMIT}:${CONTAINER_TOOLS_EXECUTABLE_DIGEST}:${CONTAINER_TOOLS_SCRIPTS_DIGEST}")
+set(CONTAINER_TOOLS_BUILD_IDENTITY "${CONTAINER_TOOLS_SOURCE_COMMIT}")
 
 configure_file(src/package_identity.h.in "${CMAKE_CURRENT_BINARY_DIR}/generated/package_identity.h" @ONLY)
-configure_file(cmake/release.json.in "${CMAKE_CURRENT_BINARY_DIR}/release.json" @ONLY)
 foreach(script ct_exec.sh ct_shell.sh ct_instance_exec.sh ct_mount_detector.sh ct_args.sh)
   set(CONTAINER_TOOLS_COMPAT_SCRIPT "${script}")
   configure_file(cmake/compat.sh.in "${CMAKE_CURRENT_BINARY_DIR}/${script}" @ONLY)
@@ -122,7 +90,7 @@ add_library(container_tools_json STATIC vendor/yyjson/yyjson.c)
 target_include_directories(container_tools_json PRIVATE vendor/yyjson)
 
 set(CONTAINER_TOOLS_CORE_SOURCES
-  src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c src/buildx.c
+  src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c
   src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
   src/profile.c src/state.c src/instance.c src/host_config.c src/path_map.c src/executable.c src/elf.c
   src/shebang.c src/supervisor.c src/supervisor_process.c ${CONTAINER_TOOLS_NESTED_FILES})
@@ -155,10 +123,6 @@ if(BUILD_TESTING)
   target_link_libraries(container_tools_test_core PRIVATE container_tools_toml container_tools_json)
   container_tools_enable_warnings(container_tools_test_core)
 
-  add_executable(test_storage_timeout_child tests/test_storage_timeout_child.c)
-  target_link_libraries(test_storage_timeout_child PRIVATE container_tools_test_core)
-  target_include_directories(test_storage_timeout_child PRIVATE src)
-  container_tools_enable_warnings(test_storage_timeout_child)
 endif()
 
 install(TARGETS container-tools RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
@@ -169,7 +133,7 @@ install(PROGRAMS
   "${CMAKE_CURRENT_BINARY_DIR}/ct_mount_detector.sh"
   "${CMAKE_CURRENT_BINARY_DIR}/ct_args.sh"
   DESTINATION "${CMAKE_INSTALL_BINDIR}")
-install(FILES "${CMAKE_CURRENT_BINARY_DIR}/release.json" README.md
+install(FILES README.md
   DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools")
 install(DIRECTORY examples/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/examples")
 install(DIRECTORY protocols/ DESTINATION "${CMAKE_INSTALL_DATADIR}/container-tools/protocols")
@@ -194,7 +158,7 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_package)
   add_test(NAME container_tools_package COMMAND test_package)
 
-  foreach(test_name config storage storage_timeout mount buildx runtime host_projection mount_plan process profile instance host_config path_map executable supervisor trampoline backend_nested bubblewrap proot rewrite doctor host_use_cases)
+  foreach(test_name config storage storage_timeout mount runtime host_projection mount_plan process profile instance host_config path_map executable supervisor trampoline backend_nested bubblewrap proot rewrite doctor host_use_cases)
     add_executable(test_${test_name} tests/test_${test_name}.c)
     target_link_libraries(test_${test_name} PRIVATE container_tools_test_core)
     target_include_directories(test_${test_name} PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -213,15 +177,15 @@ if(BUILD_TESTING)
     add_test(NAME container_tools_runtime_report
       COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/container_tools_runtime_test.sh" --self-test)
     set_tests_properties(container_tools_runtime_report PROPERTIES SKIP_RETURN_CODE 77)
-    add_test(NAME container_tools_package_archive
-      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_archive_test.sh")
-    set_tests_properties(container_tools_package_archive PROPERTIES SKIP_RETURN_CODE 77)
-    add_test(NAME container_tools_package_install
-      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_install_test.sh")
-    set_tests_properties(container_tools_package_install PROPERTIES SKIP_RETURN_CODE 77)
-    add_test(NAME container_tools_installer_lock
-      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/installer_lock_test.sh")
+    configure_file(tests/test_runtime_config.cmake.in
+      "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake" @ONLY)
+    add_test(NAME container_tools_runtime_config_integration COMMAND "${CMAKE_COMMAND}" -P
+      "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake")
   endif()
+  configure_file(tests/test_mount_plan_compat.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/test_mount_plan_compat.cmake" @ONLY)
+  add_test(NAME container_tools_mount_plan_compatibility COMMAND "${CMAKE_COMMAND}" -P
+    "${CMAKE_CURRENT_BINARY_DIR}/test_mount_plan_compat.cmake")
 
   add_executable(test_mount_sort tests/test_mount_sort.c)
   target_include_directories(test_mount_sort PRIVATE src)
@@ -231,9 +195,6 @@ if(BUILD_TESTING)
   add_executable(test_runtime_child tests/test_runtime_child.c)
   target_compile_definitions(test_runtime_child PRIVATE _POSIX_C_SOURCE=200809L)
   container_tools_enable_warnings(test_runtime_child)
-  add_executable(test_buildx_child tests/test_buildx_child.c)
-  target_compile_definitions(test_buildx_child PRIVATE _POSIX_C_SOURCE=200809L)
-  container_tools_enable_warnings(test_buildx_child)
 
   if(CONTAINER_TOOLS_STATIC)
     add_executable(test_executable_static tests/test_executable.c)
@@ -262,10 +223,6 @@ if(BUILD_TESTING)
     configure_file(tests/test_install.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake" @ONLY)
     add_test(NAME container_tools_install COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_install.cmake")
-    configure_file(tests/test_runtime_config.cmake.in
-      "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake" @ONLY)
-    add_test(NAME container_tools_runtime_config_integration COMMAND "${CMAKE_COMMAND}" -P
-      "${CMAKE_CURRENT_BINARY_DIR}/test_runtime_config.cmake")
     configure_file(tests/test_foreground.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/test_foreground.cmake" @ONLY)
     add_test(NAME container_tools_foreground_integration COMMAND "${CMAKE_COMMAND}" -P
       "${CMAKE_CURRENT_BINARY_DIR}/test_foreground.cmake")

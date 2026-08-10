@@ -20,25 +20,6 @@ static bool ct_arguments_are_present(int argument_count,
   return true;
 }
 
-static enum ct_cli_status ct_parse_package(int argument_count,
-                                           const char *const *arguments,
-                                           struct ct_cli *parsed)
-{
-  int index;
-
-  if (argument_count < 2 || strcmp(arguments[1], "verify") != 0) {
-    return CT_CLI_INVALID;
-  }
-  parsed->command = CT_COMMAND_PACKAGE_VERIFY;
-  for (index = 2; index < argument_count; ++index) {
-    if (strcmp(arguments[index], "--json") != 0 || parsed->json != 0) {
-      return CT_CLI_INVALID;
-    }
-    parsed->json = 1;
-  }
-  return CT_CLI_OK;
-}
-
 static enum ct_cli_status ct_parse_pair(const char *first, const char *second,
                                         enum ct_command command,
                                         int argument_count,
@@ -104,14 +85,6 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
     }
     return CT_CLI_INVALID;
   }
-  if (strcmp(arguments[0], "runtime") == 0) {
-    return ct_parse_pair("runtime", "exec", CT_COMMAND_RUNTIME_EXEC, argument_count,
-                         arguments, parsed);
-  }
-  if (strcmp(arguments[0], "buildx") == 0) {
-    return ct_parse_pair("buildx", "exec", CT_COMMAND_BUILDX_EXEC, argument_count,
-                         arguments, parsed);
-  }
   if (strcmp(arguments[0], "host") == 0) {
     if (ct_parse_pair("host", "exec", CT_COMMAND_HOST_EXEC, argument_count,
                       arguments, parsed) == CT_CLI_OK ||
@@ -121,16 +94,13 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
     }
     return CT_CLI_INVALID;
   }
-  if (strcmp(arguments[0], "package") == 0) {
-    return ct_parse_package(argument_count, arguments, parsed);
-  }
   return CT_CLI_INVALID;
 }
 
 void ct_cli_write_usage(FILE *stream)
 {
   (void)fputs("usage: container-tools [--help] [--version [--json]] COMMAND ...\n"
-              "commands: exec, shell, instance exec|identity, mount detect|args,\n"
-              "          runtime exec, buildx exec, host exec|doctor, package verify\n",
-              stream);
+               "commands: exec, shell, instance exec|identity, mount detect|args,\n"
+               "          host exec|doctor\n",
+               stream);
 }

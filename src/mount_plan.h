@@ -15,6 +15,7 @@ struct ct_mount_plan { const char *backend; const char *strategy; const char *co
 typedef int (*ct_mount_plan_entry_visitor)(const struct ct_mount_plan_entry *entry, void *context);
 /** Stable copied metadata from one validated mount-plan record. */
 struct ct_mount_plan_metadata {
+  char grammar[32];
   char digest[65];
   char backend[16];
   char strategy[16];

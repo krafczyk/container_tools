@@ -3,11 +3,10 @@
 `ct_exec.sh` and `ct_shell.sh` preserve the foreground command names used by
 existing callers across Docker, Podman, SingularityCE, and Apptainer.
 
-## C11 Package Bootstrap
+## C11 Runtime Bootstrap
 
-The C11 package installs one static `container-tools` executable, five generated
-compatibility-script trampolines, and immutable package metadata under a
-caller-selected prefix. The installed compatibility commands delegate directly
+The C11 runtime installs one static `container-tools` executable and five generated
+compatibility-script trampolines under a caller-selected prefix. The installed compatibility commands delegate directly
 to the native `exec`, `shell`, `instance exec`, `mount detect`, and `mount args`
 operations; they have no Bash fallback. Each script invokes only its sibling
 `container-tools`, so copying or symlinking it outside the package `bin/`
@@ -18,13 +17,12 @@ then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
 rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
-`instance identity`, `mount detect`, `mount args`, `runtime exec`, `buildx
-exec`, `host exec`, `host doctor`, and `package verify`. `--help`, `--version`,
-and `--version --json` are global. `package verify [--json]` validates the
-static executable, generated release metadata, and all sibling trampolines
-before reporting the immutable identity. Any missing or mixed package component
-fails with exit status `78` before command behavior, state access, or backend
-probing.
+`instance identity`, `mount detect`, `mount args`, `host exec`, and `host
+doctor`. `--help`, `--version`, and `--version --json` are global. Version
+output is compiled into the executable and reports the product version, source
+commit, architecture, and supported mount-plan grammar. Compatibility scripts
+authenticate their compiled sibling executable before dispatch; direct commands
+do not inspect the prefix or unrelated aliases.
 
 `container-tools host exec [--config PATH] [--profile NAME]
 [--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] -- COMMAND`
@@ -62,41 +60,12 @@ Install with CMake's normal prefix selection, for example:
 cmake -S . -B /tmp/mkchad-v1/container-tools-c11/release -DCMAKE_BUILD_TYPE=Release
 cmake --build /tmp/mkchad-v1/container-tools-c11/release
 cmake --install /tmp/mkchad-v1/container-tools-c11/release --prefix /opt/container-tools
-/opt/container-tools/bin/container-tools package verify --json
+/opt/container-tools/bin/container-tools --version --json
 ```
 
-The executable and scripts resolve their sibling metadata, so a complete prefix
-can move as a unit. Selection through `PATH` or an exact executable/script path
-uses that selected prefix; mixing files from two prefixes is rejected.
-
-## Archive And Prefix Installation
-
-`scripts/build-package.sh` creates one deterministic native archive only from a
-clean checkout at the requested 40-hex commit. The checkout's single-line,
-canonical-semver `VERSION` file is the immutable product version for CMake,
-archive naming, and release metadata; callers cannot override it. The script
-requires an absolute disposable build root below
-`/tmp/mkchad-v1/container-tools-c11`, output directory, and declared static libc
-family. It never overwrites an existing archive or checksum. Musl archives use
-`musl-gcc` by default (overridable with `CT_MUSL_CC`); glibc archives require a
-glibc compiler selected through `CC` or the host default. Package bytes are
-reproducible for one source commit: layout is sorted; ownership, modes, and
-modification time are normalized; volatile PAX access/change times are omitted;
-and gzip headers carry no build-time name or timestamp.
-`scripts/verify-package.sh` checks an externally supplied checksum, the
-verifier-owned closed archive layout, archive/release identity, static ELF
-linkage, machine identity, and the installed package's two identity reports in
-a private temporary extraction.
-
-`scripts/install-package.sh` uses `--check`, `--apply`, or `--verify` with the
-same archive identity. `--apply` requires a private recovery directory, holds a
-prefix transaction lock, stages and verifies the archive, and atomically changes
-one package-current pointer. Individual managed entries beneath `bin/` and
-`share/` resolve through that pointer, so unrelated prefix content can coexist
-while every container-tools entry observes one complete identity. The installer
-refuses collisions at its managed entries; it does not claim that multiple
-directory renames are atomic and does not adopt raw source or partial package
-trees.
+The executable and scripts use their exact selected sibling path. CMake source
+installation is the supported host installation interface; this runtime product
+does not build, verify, or install archives.
 
 ## Persistent Instance Identity
 
@@ -405,17 +374,6 @@ bootstrap execution does not use `eval` or reconstruct a command string.
 
 ## Runtime storage configuration
 
-`container-tools runtime exec --backend NAME -- COMMAND...` loads optional
-machine-local storage defaults and directly supervises one argv-preserved
-child. It returns the child's normal exit status, or `128 + signal` when that
-child terminates by signal. `container-tools buildx exec --architecture ARCH --
-docker buildx build ...` similarly supervises exactly one Docker Buildx child;
-it rejects caller `--cache-from` and `--cache-to` flags, inserts its generated
-cache arguments before caller build arguments, and only promotes the cache
-generation after a zero child status. A nonzero status, signal, malformed
-configuration, unsafe storage path, lock timeout, or missing cache index leaves
-the current generation intact and discards the staging generation.
-
 `container-tools mount args FILE [ARGUMENT...]` preserves the legacy
 whitespace-tokenized grouping of mount arguments, and `container-tools mount
 detect` emits the current filtered mount list with optional `--exclude-fs`,
@@ -426,15 +384,12 @@ Container tools reads optional machine-local storage defaults from
 is data, not shell: use one `KEY=ABSOLUTE_PATH` assignment per line, with blank
 lines and `#` comments allowed. It must be owned by the current user and not be
 group- or world-writable. Unknown or duplicate keys fail closed.
-`CT_DOCKER_BUILD_CACHE_DIR` cannot contain a comma because Buildx local-cache
-descriptors use commas as field separators. A dotfile symlink is supported when
-the file opened through it satisfies the same ownership, type, and mode checks.
+A dotfile symlink is supported when the file opened through it satisfies the
+same ownership, type, and mode checks.
 
 ```text
 CT_SINGULARITY_CACHE_DIR=/data/container-cache/singularity
 CT_SINGULARITY_TMP_DIR=/data/container-tmp/singularity
-CT_DOCKER_BUILD_CACHE_DIR=/data/container-cache/docker-buildx
-CT_DOCKER_BUILD_TMP_DIR=/data/container-tmp/docker-buildx
 ```
 
 Configured directories are created on first use. Existing plain directories
@@ -443,34 +398,8 @@ directories are tightened to mode `0700`, while symlinks and previously writable
 directories fail closed. Ancestors must also be plain directories and cannot be
 group- or world-writable unless they are sticky shared roots such as `/tmp`.
 An explicit `SINGULARITY_CACHEDIR`,
-`SINGULARITY_TMPDIR`, `APPTAINER_CACHEDIR`, `APPTAINER_TMPDIR`, or `TMPDIR`
+`SINGULARITY_TMPDIR`, `APPTAINER_CACHEDIR`, or `APPTAINER_TMPDIR`
 environment value takes precedence and is not created or permission-modified.
 SingularityCE and Apptainer launchers receive their native cache and
-temporary-directory variables. Ordinary Docker and Podman launchers do not
-apply build-storage defaults.
-
-Neovim Docker build scripts use an architecture-specific Buildx local cache
-below `CT_DOCKER_BUILD_CACHE_DIR` and use `CT_DOCKER_BUILD_TMP_DIR` as the
-Docker client's build-time `TMPDIR`. Builds of one architecture serialize on a
-bounded lock. Each build imports the current cache, exports to a fresh staging
-generation, promotes that generation only after success, and removes the
-superseded generation so `mode=max` cache blobs do not grow without bound.
-`CT_DOCKER_BUILD_LOCK_TIMEOUT` changes the default 30-second lock wait;
-`CT_RUNTIME_STORAGE_TIMEOUT` changes the default 10-second deadline for
-individual storage metadata and mutation commands. The native C11 executable
-validates it before configuration, storage, or Buildx preparation and accepts
-only positive decimal seconds up to 3600; it does not apply that deadline to
-the supervised runtime or Buildx child. Both overrides are positive numbers of
-seconds.
-
-Build integrations call `configure_docker_build_storage ARCHITECTURE`, pass the
-resulting `DOCKER_BUILD_CACHE_ARGS` array to `docker buildx build`, arrange
-`discard_docker_build_storage` on every exit path, and call
-`commit_docker_build_storage` after a successful export. These functions return
-nonzero for malformed configuration, unsafe paths, lock timeout, interrupted
-cache state that cannot be recovered, or a missing Buildx cache index.
-
-These Docker settings do not relocate persistent images and layers held by the
-Docker daemon. Configure the daemon's `data-root` and daemon-start
-`DOCKER_TMPDIR` separately when that storage must move; a client launcher cannot
-safely change an already-running daemon's storage root.
+temporary-directory variables. Image builders own their native cache and scratch
+configuration directly; container-tools does not configure or clean build storage.

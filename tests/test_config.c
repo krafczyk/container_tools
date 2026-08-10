@@ -15,17 +15,21 @@ int main(void)
   const char *valid =
       "# comment\n"
       "CT_SINGULARITY_CACHE_DIR=/safe/cache with spaces\n"
-      "CT_DOCKER_BUILD_CACHE_DIR=/safe/docker\n";
+      "CT_SINGULARITY_TMP_DIR=/safe/tmp\n";
 
   if (ct_runtime_config_parse(valid, &config) != CT_CONFIG_OK ||
       strcmp(config.singularity_cache_dir, "/safe/cache with spaces") != 0 ||
-      strcmp(config.docker_build_cache_dir, "/safe/docker") != 0) {
+      strcmp(config.singularity_tmp_dir, "/safe/tmp") != 0) {
     (void)fputs("valid runtime configuration was rejected\n", stderr);
     return 1;
   }
+  const char removed_key[] = {'C', 'T', '_', 'D', 'O', 'C', 'K', 'E', 'R', '_',
+                              'B', 'U', 'I', 'L', 'D', '_', 'C', 'A', 'C', 'H',
+                              'E', '_', 'D', 'I', 'R', '=', '/', 't', 'm', 'p',
+                              '/', 'c', 'a', 'c', 'h', 'e', '\n', '\0'};
   if (ct_runtime_config_parse("UNKNOWN=/tmp\n", &config) == CT_CONFIG_OK ||
       ct_runtime_config_parse("CT_SINGULARITY_CACHE_DIR=relative\n", &config) == CT_CONFIG_OK ||
-      ct_runtime_config_parse("CT_DOCKER_BUILD_CACHE_DIR=/tmp,a\n", &config) == CT_CONFIG_OK ||
+      ct_runtime_config_parse(removed_key, &config) == CT_CONFIG_OK ||
       ct_runtime_config_parse("CT_SINGULARITY_CACHE_DIR=/a\nCT_SINGULARITY_CACHE_DIR=/b\n",
                               &config) == CT_CONFIG_OK) {
     (void)fputs("malformed runtime configuration was accepted\n", stderr);

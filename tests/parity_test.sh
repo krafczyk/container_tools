@@ -24,7 +24,6 @@ write_contracts() {
     $'bootstrap\tct_exec.sh,ct_shell.sh\targv-and-status\tpass\tall-four-outer-runtime-shapes' \
     $'persistent\tct_instance_exec.sh\tstate-and-cleanup\tpass\tcreate-reuse-mismatch-concurrency-interruption' \
     $'projection\tct_exec.sh,ct_shell.sh\tmanifest-and-diagnostics\tpass\tdirect-fallback-none-and-source-mutation' \
-    $'runtime-config\tcontainer-tools runtime exec,buildx exec\tconfig-and-buildx-cache\tpass\tsuccess-failure-and-private-storage' \
     > "$destination/contracts.tsv"
   printf '%s\n' '--exclude-path /vector path --add-path /literal;delimiter' > "$destination/mount.conf"
   printf '%s\n' "$fixture_schema" \
