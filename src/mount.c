@@ -298,6 +298,7 @@ int ct_mount_collect_environment(
   const char *extra_tokens[CT_MOUNT_TOKEN_MAX];
   const char *formatted_tokens[CT_MOUNT_TOKEN_MAX];
   size_t file_count = 0U, extra_count = 0U, formatted_count = 0U;
+  size_t index;
   const char *configured = getenv("CT_MOUNT_CFG");
   const char *extra = getenv("MOUNT_DETECTOR_ARGS");
   const char *home = getenv("HOME");
@@ -324,6 +325,15 @@ int ct_mount_collect_environment(
   if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
                            formatted, sizeof(formatted)) != CT_MOUNT_OK ||
       ct_mount_tokenize(formatted, formatted_tokens, &formatted_count) != CT_MOUNT_OK) return 1;
-  return ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
-                          paths, path_count);
+  if (ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
+                       paths, path_count) != 0) return 1;
+  for (index = 0U; index < *path_count; ++index) {
+    if (paths[index][0] != '/' || strchr(paths[index], ':') != NULL ||
+        strchr(paths[index], ',') != NULL || strchr(paths[index], '\n') != NULL) {
+      (void)fputs("container-tools: persistent --add-path values must be absolute same-path mounts without colon, comma, or newline; use --ct-bind for remapping\n", stderr);
+      *path_count = 0U;
+      return 1;
+    }
+  }
+  return 0;
 }

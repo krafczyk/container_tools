@@ -44,8 +44,14 @@ int ct_mount_detect_command(int argument_count, char *const arguments[]);
  * Reads `CT_MOUNT_CFG` or `$HOME/.config/ct_mount.conf`, merges the optional
  * whitespace-tokenized `MOUNT_DETECTOR_ARGS`, and applies the same detector
  * ordering and filtering as `mount detect`. A missing configuration file is
- * equivalent to an empty one. Returns nonzero without partial results on
- * malformed options, unavailable configuration, or detector overflow.
+ * equivalent to an empty one. Persistent paths must be absolute same-path
+ * mounts without backend descriptor delimiters. Returns nonzero without
+ * partial results on malformed options, unavailable configuration, invalid
+ * persistent paths, or detector overflow.
+ *
+ * @param paths Caller-owned output array receiving selected mount paths.
+ * @param path_count Receives the number of complete entries in `paths`.
+ * @return Zero on success, or nonzero after clearing `path_count` on failure.
  */
 int ct_mount_collect_environment(
     char paths[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX], size_t *path_count);

@@ -95,6 +95,8 @@ normal status or `128 + signal`. `CT_DRY_RUN` prints the rendered argv and
 writes no selection or manifest state. Explicit remote Docker/Podman endpoints
 launch without a local manifest. Eligible local non-dry launches publish and
 read-only bind a validated `ct-mount-plan-v1` record.
+Foreground `--ct-bind` values use `HOST:CONTAINER` for writable binds and
+`HOST:CONTAINER:ro` for read-only binds.
 
 ## Semantic Mount Plans
 
@@ -143,8 +145,9 @@ recursion (`non-recursive` or `runtime-default`). Roles are
 `generated-host-root`, `detected-automatic`, `explicit`,
 `bootstrap-internal`, and `persistent-automatic-cwd`. Generated entries use the
 surviving post-conflict projection plan, `inherit`, and backend-specific
-recursion. Detected, explicit, and persistent-CWD entries use the same canonical
-caller and target path with `inherit` and `runtime-default`. The bootstrap entry
+recursion. Detected and persistent-CWD entries use the same canonical caller and
+target path with `inherit` and `runtime-default`. Explicit entries use the same
+paths with the requested `inherit` or `read-only` access. The bootstrap entry
 uses `/.container-tools-bootstrap` for both paths, `read-only`, and
 `runtime-default`. Entries retain launcher assembly order.
 
@@ -378,6 +381,9 @@ bootstrap execution does not use `eval` or reconstruct a command string.
 whitespace-tokenized grouping of mount arguments, and `container-tools mount
 detect` emits the current filtered mount list with optional `--exclude-fs`,
 `--exclude-path`, and `--add-path` values.
+Persistent `--add-path` values are absolute same-path mounts. Legacy
+`HOST:CONTAINER` remaps are rejected during profile preparation; callers that
+need an explicit remap must pass `--ct-bind HOST:CONTAINER` instead.
 
 Container tools reads optional machine-local storage defaults from
 `~/.config/ct_runtime.conf`. Override that path with `CT_RUNTIME_CFG`. The file

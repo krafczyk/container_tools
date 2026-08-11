@@ -57,6 +57,8 @@ static int ct_plan_entry_valid(const struct ct_mount_plan_entry *entry, const ch
      ((strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) && strcmp(entry->recursion, "runtime-default") == 0)) ? 0 : 1;
   if (strcmp(entry->role, "bootstrap-internal") == 0) return strcmp(entry->caller_path, "/.container-tools-bootstrap") == 0 &&
     strcmp(entry->target_path, "/.container-tools-bootstrap") == 0 && strcmp(entry->access, "read-only") == 0 && strcmp(entry->recursion, "runtime-default") == 0 ? 0 : 1;
+  if (strcmp(entry->role, "explicit") == 0) return strcmp(entry->caller_path, entry->target_path) == 0 &&
+    strcmp(entry->recursion, "runtime-default") == 0 ? 0 : 1;
   return strcmp(entry->caller_path, entry->target_path) == 0 && strcmp(entry->access, "inherit") == 0 && strcmp(entry->recursion, "runtime-default") == 0 ? 0 : 1;
 }
 

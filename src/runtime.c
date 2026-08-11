@@ -21,7 +21,7 @@ extern char *realpath(const char *restrict path, char *restrict resolved_path);
 #define CT_RUNTIME_STRING_SLOTS (CT_RUNTIME_MAX_ENTRIES + CT_RUNTIME_MAX_MOUNTS)
 #define CT_RUNTIME_PATH_MAX 4096U
 
-struct ct_runtime_bind { const char *source; const char *target; };
+struct ct_runtime_bind { const char *source; const char *target; int read_only; };
 
 static int ct_runtime_backend(const char *value)
 {
@@ -176,6 +176,7 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   const char *environment[CT_RUNTIME_MAX_ENTRIES];
   struct ct_mount_plan_entry entries[CT_RUNTIME_MAX_ENTRIES * 2U + 1U];
   char resolved_bind_sources[CT_RUNTIME_MAX_ENTRIES][CT_RUNTIME_PATH_MAX];
+  char bind_targets[CT_RUNTIME_MAX_ENTRIES][CT_RUNTIME_PATH_MAX];
   char mount_strings[CT_RUNTIME_STRING_SLOTS][CT_RUNTIME_PATH_MAX];
   char manifest_path[CT_RUNTIME_PATH_MAX], state_root[CT_RUNTIME_PATH_MAX], cache_root[CT_RUNTIME_PATH_MAX], uid_gid[64], cwd[CT_RUNTIME_PATH_MAX];
   char *command[CT_RUNTIME_MAX_ARGUMENTS] = {NULL};
@@ -189,19 +190,27 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
     const char *option = arguments[index];
     if (strcmp(option, "--") == 0) { delimited = 1; payload_index = index + 1U; break; }
     if (strcmp(option, "--ct-bind") == 0) {
-      const char *separator;
+      const char *separator, *mode;
+      size_t target_length;
       if (index + 1U >= (size_t)argument_count || bind_count == CT_RUNTIME_MAX_ENTRIES) return 64;
       separator = strchr(arguments[index + 1U], ':');
-      if (separator == NULL || separator == arguments[index + 1U] || !ct_runtime_path_valid(separator + 1U) || strchr(separator + 1U, ':') != NULL) return 64;
+      if (separator == NULL || separator == arguments[index + 1U]) return 64;
+      mode = strchr(separator + 1U, ':');
+      if (mode != NULL && strcmp(mode, ":ro") != 0) return 64;
+      target_length = mode == NULL ? strlen(separator + 1U) : (size_t)(mode - separator - 1U);
+      if (target_length == 0U || target_length >= sizeof(bind_targets[bind_count])) return 64;
+      memcpy(bind_targets[bind_count], separator + 1U, target_length);
+      bind_targets[bind_count][target_length] = '\0';
+      if (!ct_runtime_path_valid(bind_targets[bind_count])) return 64;
       mount_strings[bind_count][0] = '\0';
       if ((size_t)(separator - arguments[index + 1U]) >= sizeof(mount_strings[bind_count])) return 64;
       memcpy(mount_strings[bind_count], arguments[index + 1U], (size_t)(separator - arguments[index + 1U]));
       mount_strings[bind_count][separator - arguments[index + 1U]] = '\0';
       if (!ct_runtime_path_valid(mount_strings[bind_count]) ||
-          strcmp(separator + 1U, "/.container-tools-mount-plan") == 0 ||
-          strncmp(separator + 1U, "/.container-tools-mount-plan/", 30U) == 0 ||
+          strcmp(bind_targets[bind_count], "/.container-tools-mount-plan") == 0 ||
+          strncmp(bind_targets[bind_count], "/.container-tools-mount-plan/", 30U) == 0 ||
           access(mount_strings[bind_count], F_OK) != 0) return 1;
-      binds[bind_count].source = mount_strings[bind_count]; binds[bind_count].target = separator + 1U; ++bind_count; index += 2U; continue;
+      binds[bind_count].source = mount_strings[bind_count]; binds[bind_count].target = bind_targets[bind_count]; binds[bind_count].read_only = mode != NULL; ++bind_count; index += 2U; continue;
     }
     if (strcmp(option, "--ct-env") == 0) { if (index + 1U >= (size_t)argument_count || environment_count == CT_RUNTIME_MAX_ENTRIES || !ct_runtime_env_valid(arguments[index + 1U])) return 64; environment[environment_count++] = arguments[index + 1U]; index += 2U; continue; }
     if (strcmp(option, "--ct-bootstrap") == 0) { if (bootstrap != NULL || index + 1U >= (size_t)argument_count || !ct_runtime_path_valid(arguments[index + 1U]) || access(arguments[index + 1U], R_OK | X_OK) != 0) return 64; bootstrap = arguments[index + 1U]; index += 2U; continue; }
@@ -251,7 +260,7 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
     if (strcmp(host_root, "required") == 0 && strcmp(projection.completeness, "complete") != 0) { (void)fputs("container-tools: complete host projection is unavailable\n", stderr); return 1; }
     entry_count = 0U;
     for (index = 0U; index < projection.entry_count; ++index) entries[entry_count++] = (struct ct_mount_plan_entry){"generated-host-root", projection.entries[index].destination, projection.entries[index].target, "inherit", (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) ? "non-recursive" : "runtime-default"};
-    for (index = 0U; index < bind_count; ++index) entries[entry_count++] = (struct ct_mount_plan_entry){"explicit", binds[index].target, binds[index].target, "inherit", "runtime-default"};
+    for (index = 0U; index < bind_count; ++index) entries[entry_count++] = (struct ct_mount_plan_entry){"explicit", binds[index].target, binds[index].target, binds[index].read_only ? "read-only" : "inherit", "runtime-default"};
     if (bootstrap != NULL) entries[entry_count++] = (struct ct_mount_plan_entry){"bootstrap-internal", "/.container-tools-bootstrap", "/.container-tools-bootstrap", "read-only", "runtime-default"};
     plan.backend = backend; plan.strategy = projection.strategy; plan.completeness = projection.completeness; plan.group_mode = projection.group_mode; plan.entries = entries; plan.entry_count = entry_count;
     if (ct_mount_plan_publish(&plan, state_root, manifest_path) != 0) { (void)fputs("container-tools: cannot publish mount plan\n", stderr); return 1; }
@@ -279,10 +288,10 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   else if (ct_runtime_append(command, &command_count, "--pwd") != 0 || ct_runtime_append(command, &command_count, cwd) != 0) return 125;
   for (index = 0U; index < environment_count; ++index) if (ct_runtime_append(command, &command_count, "--env") != 0 || ct_runtime_append(command, &command_count, (char *)environment[index]) != 0) goto cleanup;
   for (index = 0U; index < projection.entry_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_backend_outer_projection_mount(backend, projection.entries[index].source, projection.entries[index].destination, mount_strings[mount_string_count], sizeof(mount_strings[mount_string_count]), &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
-  for (index = 0U; index < bind_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &binds[index], 0, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
-  if (bootstrap != NULL) { const char *flag; struct ct_runtime_bind bind = {bootstrap, "/.container-tools-bootstrap"}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &bind, 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
+  for (index = 0U; index < bind_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &binds[index], binds[index].read_only, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
+  if (bootstrap != NULL) { const char *flag; struct ct_runtime_bind bind = {bootstrap, "/.container-tools-bootstrap", 1}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &bind, 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
   for (index = 0U; index < mask_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &masks[index], 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
-  if (!dry && !remote) { const char *flag; struct ct_runtime_bind bind = {manifest_path, "/.container-tools-mount-plan"}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &bind, 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
+  if (!dry && !remote) { const char *flag; struct ct_runtime_bind bind = {manifest_path, "/.container-tools-mount-plan", 1}; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &bind, 1, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) goto cleanup; }
   if (bootstrap != NULL) {
     if (ct_runtime_append(command, &command_count, arguments[payload_index]) != 0 || ct_runtime_append(command, &command_count, "/.container-tools-bootstrap") != 0) goto cleanup;
     if (shell_mode != 0) { if (ct_runtime_append(command, &command_count, (char *)container_shell) != 0 || ct_runtime_append(command, &command_count, "-i") != 0) goto cleanup; }

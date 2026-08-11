@@ -15,6 +15,8 @@ int main(void)
   char root[] = "/tmp/mkchad-v1/container-tools-c11/native-instance.XXXXXX";
   char pending[4096];
   char image[4096];
+  char mount_config[4096];
+  char mount_plan_root[4096];
   char untouched[4096];
   char wrong_mode[4096];
   struct ct_state_pending record;
@@ -33,6 +35,8 @@ int main(void)
       strcmp(record.nonce, nonce) != 0 || ct_state_pending_clear(pending) != 0 ||
       access(pending, F_OK) == 0 ||
        snprintf(image, sizeof(image), "%s/image.sif", root) >= (int)sizeof(image) ||
+       snprintf(mount_config, sizeof(mount_config), "%s/missing-mount.conf", root) >= (int)sizeof(mount_config) ||
+       snprintf(mount_plan_root, sizeof(mount_plan_root), "%s/mount-plans", root) >= (int)sizeof(mount_plan_root) ||
        snprintf(untouched, sizeof(untouched), "%s/identity-root", root) >= (int)sizeof(untouched) ||
        snprintf(wrong_mode, sizeof(wrong_mode), "%s/wrong-mode", root) >=
            (int)sizeof(wrong_mode) ||
@@ -67,7 +71,9 @@ int main(void)
     char *reserved[] = {"--apptainer", "--ct-instance-root", untouched, "--ct-env",
                         "SINGULARITYENV_CONTAINER_TOOLS_PROFILE=caller", "--", image, "/bin/true"};
     if (stream == NULL || fputs("image\n", stream) == EOF || fclose(stream) != 0 ||
-        setenv("HOME", root, 1) != 0 || setenv("CT_DRY_RUN", "1", 1) != 0 ||
+        setenv("HOME", root, 1) != 0 || setenv("CT_MOUNT_CFG", mount_config, 1) != 0 ||
+        setenv("CT_MOUNT_PLAN_STATE_ROOT", mount_plan_root, 1) != 0 ||
+        setenv("CT_DRY_RUN", "1", 1) != 0 ||
         ct_instance_command(6, identity, 1) != 0 || access(untouched, F_OK) == 0 ||
         ct_instance_command(8, reserved, 1) == 0 || unsetenv("CT_DRY_RUN") != 0) return 1;
   }
