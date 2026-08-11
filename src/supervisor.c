@@ -201,6 +201,19 @@ static void ct_supervisor_child(char *const arguments[], int start_gate,
         sigaction(SIGCHLD, parent_sigchld, NULL) != 0 || close(ready) != 0 ||
         close(report) != 0 ||
         sigprocmask(SIG_SETMASK, parent_mask, NULL) != 0) _exit(125);
+    {
+      const int null_output = open("/dev/null", O_WRONLY | O_CLOEXEC);
+      if (null_output < 0 || dup2(null_output, STDOUT_FILENO) < 0 ||
+          dup2(null_output, STDERR_FILENO) < 0 ||
+          (null_output != STDOUT_FILENO && null_output != STDERR_FILENO &&
+           close(null_output) != 0)) {
+        if (null_output >= 0 && null_output != STDOUT_FILENO &&
+            null_output != STDERR_FILENO) {
+          (void)close(null_output);
+        }
+        _exit(125);
+      }
+    }
     if (ct_process_apply_environment(environment, environment_count) != 0) _exit(125);
     execvp(arguments[0], arguments);
     _exit(errno == ENOENT ? 127 : 126);

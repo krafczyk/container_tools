@@ -31,6 +31,7 @@ enum ct_config_status ct_runtime_config_parse(const char *contents,
  * @param path Optional absolute configuration path; an absent file yields defaults.
  * @param config Destination parsed only after complete validation.
  * @return CT_CONFIG_OK, CT_CONFIG_INVALID, or CT_CONFIG_IO.
+ * @sideeffect Writes one redacted actionable diagnostic to stderr on failure.
  */
 enum ct_config_status ct_runtime_config_load(const char *path,
                                              struct ct_runtime_config *config);
@@ -40,6 +41,7 @@ enum ct_config_status ct_runtime_config_load(const char *path,
  *
  * @param config Destination parsed only after complete validation.
  * @return CT_CONFIG_OK, CT_CONFIG_INVALID, or CT_CONFIG_IO.
+ * @sideeffect Writes one redacted actionable diagnostic to stderr on failure.
  */
 enum ct_config_status ct_runtime_config_load_environment(struct ct_runtime_config *config);
 

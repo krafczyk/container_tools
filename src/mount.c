@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "mount.h"
+#include "cli.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -130,12 +131,21 @@ int ct_mount_args_command(int argument_count, char *const arguments[])
   size_t count;
   enum ct_mount_status status;
 
-  if (argument_count < 1 || arguments == NULL) return 64;
+  if (argument_count < 1 || arguments == NULL) {
+    ct_cli_diagnostic("mount args", "usage",
+                      "use 'container-tools mount args CONFIG [OPTIONS...]' for valid syntax");
+    return 64;
+  }
   status = ct_mount_read_tokens(arguments[0], contents, file_tokens, &count);
-  if (status != CT_MOUNT_OK ||
-      ct_mount_format_args(file_tokens, count, (const char *const *)(arguments + 1),
+  if (status != CT_MOUNT_OK) {
+    ct_cli_diagnostic("mount args", "configuration",
+                      "create a readable whitespace-tokenized configuration file or pass a valid path, then retry");
+    return 1;
+  }
+  if (ct_mount_format_args(file_tokens, count, (const char *const *)(arguments + 1),
                            (size_t)(argument_count - 1), output, sizeof(output)) != CT_MOUNT_OK) {
-    (void)fprintf(stderr, "container-tools: mount args: invalid configuration\n");
+    ct_cli_diagnostic("mount args", "configuration",
+                      "simplify the mount options and keep the configuration within supported limits, then retry");
     return 1;
   }
   (void)fprintf(stdout, "%s\n", output);
@@ -282,7 +292,16 @@ int ct_mount_detect_command(int argument_count, char *const arguments[])
     (void)fputs("usage: container-tools mount detect [--exclude-fs FS...] [--exclude-path PATH...] [--add-path PATH...]\n", stdout);
     return 0;
   }
-  if (result != 0) return result;
+  if (result == 64) {
+    ct_cli_diagnostic("mount detect", "usage",
+                      "use 'container-tools mount detect --help' for valid syntax");
+    return 64;
+  }
+  if (result != 0) {
+    ct_cli_diagnostic("mount detect", "discovery",
+                      "fix the mount options or /proc/mounts access, then retry");
+    return result;
+  }
   for (index = 0U; index < count; ++index) (void)fprintf(stdout, "%s\n", paths[index]);
   return 0;
 }
@@ -314,23 +333,20 @@ int ct_mount_collect_environment(
   status = ct_mount_read_tokens(configured, file_contents, file_tokens, &file_count);
   if (status == CT_MOUNT_NOT_FOUND) {
     file_count = 0U;
-  } else if (status != CT_MOUNT_OK) {
-    return 1;
-  }
+  } else if (status != CT_MOUNT_OK) return 1;
   if (extra != NULL && extra[0] != '\0') {
     if (snprintf(extra_contents, sizeof(extra_contents), "%s", extra) >=
             (int)sizeof(extra_contents) ||
         ct_mount_tokenize(extra_contents, extra_tokens, &extra_count) != CT_MOUNT_OK) return 1;
   }
   if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
-                           formatted, sizeof(formatted)) != CT_MOUNT_OK ||
+                            formatted, sizeof(formatted)) != CT_MOUNT_OK ||
       ct_mount_tokenize(formatted, formatted_tokens, &formatted_count) != CT_MOUNT_OK) return 1;
   if (ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
-                       paths, path_count) != 0) return 1;
+                        paths, path_count) != 0) return 1;
   for (index = 0U; index < *path_count; ++index) {
     if (paths[index][0] != '/' || strchr(paths[index], ':') != NULL ||
         strchr(paths[index], ',') != NULL || strchr(paths[index], '\n') != NULL) {
-      (void)fputs("container-tools: persistent --add-path values must be absolute same-path mounts without colon, comma, or newline; use --ct-bind for remapping\n", stderr);
       *path_count = 0U;
       return 1;
     }

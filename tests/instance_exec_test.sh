@@ -215,11 +215,28 @@ for unsafe_root in "$work/unsafe:root" "$work/unsafe,root"; do
   unsafe_root_status=$?
   set -e
   [[ $unsafe_root_status -eq 1 && ! -e $unsafe_root && ! -e $work/call-count \
-    && $(<"$work/unsafe-root.err") == *'without colon, comma, or newline'* ]] || {
+    && $(<"$work/unsafe-root.err") == *'persistent instance request: usage:'* \
+    && $(<"$work/unsafe-root.err") != *"$unsafe_root"* ]] || {
     printf '%s\n' 'delimiter-bearing instance root reached runtime or filesystem mutation' >&2
     exit 1
   }
 done
+
+state_setup_root="$work/invalid instance state"
+mkdir "$state_setup_root"
+chmod 750 "$state_setup_root"
+set +e
+"$helper" --apptainer --ct-instance-root "$state_setup_root" \
+  -- "$image_path" /bin/fake-command invalid-state \
+  >"$work/invalid-state.out" 2>"$work/invalid-state.err"
+state_setup_status=$?
+set -e
+[[ $state_setup_status -eq 1 && ! -e $work/call-count \
+  && $(<"$work/invalid-state.err") == *'persistent instance state: setup:'* \
+  && $(<"$work/invalid-state.err") != *"$state_setup_root"* ]] || {
+  printf '%s\n' 'invalid persistent state was not distinguished from lock contention' >&2
+  exit 1
+}
 
 set +e
 invoke
@@ -292,7 +309,8 @@ set +e
 reserved_identity_status=$?
 set -e
 [[ $reserved_identity_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
-  && $(<"$work/reserved-identity.err") == *'destination is reserved for persistent instance identity'* ]] || {
+  && $(<"$work/reserved-identity.err") == *'persistent instance request: reserved-bind:'* \
+  && $(<"$work/reserved-identity.err") != *"$reserved_source"* ]] || {
   printf '%s\n' 'caller bind reached or replaced the reserved instance identity path' >&2
   exit 1
 }
@@ -306,7 +324,8 @@ set +e
 reserved_mount_plan_status=$?
 set -e
 [[ $reserved_mount_plan_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
-  && $(<"$work/reserved-mount-plan.err") == *'destination is reserved for mount plans'* ]] || {
+  && $(<"$work/reserved-mount-plan.err") == *'persistent instance request: reserved-bind:'* \
+  && $(<"$work/reserved-mount-plan.err") != *"$reserved_source"* ]] || {
   printf '%s\n' 'persistent caller bind reached the reserved mount-plan path' >&2
   exit 1
 }
@@ -322,7 +341,7 @@ set -e
 transient_first_pending=("$instance_root"/*.pending)
 [[ $transient_first_status -eq 1 && $(<"$work/call-count") -eq $((calls_before + 2)) \
   && ! -e ${transient_first_pending[0]} \
-  && $(<"$work/transient-first-probe.err") == *'unable to reconcile persistent instance liveness failure'* ]] || {
+  && $(<"$work/transient-first-probe.err") == *'persistent instance liveness: recovery:'* ]] || {
   printf '%s\n' 'transient first liveness failure created or started conflicting state' >&2
   exit 1
 }
@@ -447,7 +466,7 @@ kill "$lock_holder"
 wait "$lock_holder" 2>/dev/null
 set -e
 [[ $lock_timeout_status -eq 1 && $SECONDS -lt 3 \
-  && $(<"$work/lock-timeout.err") == *'timed out waiting for persistent instance creation'* ]] || {
+  && $(<"$work/lock-timeout.err") == *'persistent instance lock: contention:'* ]] || {
   printf '%s\n' 'profile lock acquisition was not bounded' >&2; exit 1;
 }
 
@@ -508,6 +527,9 @@ set -e
 [[ $probe_timeout_status -eq 1 && $SECONDS -lt 3 ]] || {
   printf '%s\n' 'hanging instance probe was not bounded' >&2; exit 1;
 }
+[[ $(<"$work/probe-timeout.err") == *'persistent instance liveness: timeout:'* ]] || {
+  printf '%s\n' 'probe timeout did not provide a redacted recovery diagnostic' >&2; exit 1;
+}
 
 timeout_root="$work/timeout instance root"
 timeout_bind="$work/timeout bind"
@@ -524,6 +546,9 @@ set -e
 [[ $start_timeout_status -eq 1 && $SECONDS -lt 3 ]] || {
   printf '%s\n' 'hanging instance start was not bounded' >&2; exit 1;
 }
+[[ $(<"$work/start-timeout.err") == *'persistent instance backend-start: timeout:'* ]] || {
+  printf '%s\n' 'start timeout did not provide a redacted recovery diagnostic' >&2; exit 1;
+}
 
 mutation_marker="$work/mutated-during-probe"
 set +e
@@ -532,7 +557,8 @@ MKCHAD_TEST_MUTATE_ON_PROBE="$image_path" MKCHAD_TEST_MUTATE_MARKER="$mutation_m
 asset_race_status=$?
 set -e
 [[ $asset_race_status -eq 1 && -e $mutation_marker \
-  && $(<"$work/asset-race.err") == *'container image or bootstrap changed while preparing its instance'* ]] || {
+  && $(<"$work/asset-race.err") == *'persistent instance assets: changed:'* \
+  && $(<"$work/asset-race.err") != *"$image_path"* ]] || {
   printf '%s\n' 'asset mutation during probe did not fail closed' >&2; exit 1;
 }
 
@@ -624,7 +650,7 @@ MKCHAD_TEST_FORCE_PROFILE_MISMATCH=1 invoke >"$work/profile-mismatch.out" 2>"$wo
 mismatch_status=$?
 set -e
 [[ $mismatch_status -eq 1 && $(<"$work/call-count") -eq $((calls_before + 1)) \
-  && $(<"$work/profile-mismatch.err") == *'persistent instance profile mismatch'* ]] || {
+  && $(<"$work/profile-mismatch.err") == *'persistent instance recovery: profile-mismatch:'* ]] || {
   printf '%s\n' 'profile mismatch was not terminal before payload dispatch' >&2; exit 1;
 }
 
@@ -709,7 +735,8 @@ mismatch_recovery_status=$?
 set -e
 [[ $mismatch_recovery_status -eq 1 && -e $mismatch_pending \
   && $(<"$work/call-count") -eq $((calls_before + 2)) \
-  && $(<"$work/mismatch-recovery.err") == *'pending nonce mismatch'* ]] || {
+  && $(<"$work/mismatch-recovery.err") == *'persistent instance recovery: pending-nonce-mismatch:'* \
+  && $(<"$work/mismatch-recovery.err") != *"${mismatch_pending_fields[2]}"* ]] || {
   printf '%s\n' 'pending recovery accepted or cleaned a mismatched nonce' >&2; exit 1;
 }
 
@@ -790,7 +817,7 @@ set -e
 [[ $transient_recovery_status -eq 1 && -e $transient_pending \
   && $(<"$transient_pending") == "$transient_pending_contents" \
   && $(<"$work/call-count") -eq $((calls_before + 2)) \
-  && $(<"$work/transient-recovery.err") == *'unable to reconcile pending persistent instance creation'* ]] || {
+  && $(<"$work/transient-recovery.err") == *'persistent instance recovery: pending-journal-recovery:'* ]] || {
   printf '%s\n' 'transient pending recovery discarded nonce authority or continued' >&2; exit 1;
 }
 
@@ -895,7 +922,7 @@ malformed_invoke >/dev/null 2> "$work/malformed-pending.err"
 malformed_status=$?
 set -e
 [[ $malformed_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
-  && $(<"$work/malformed-pending.err") == *'pending record does not match'* ]] || {
+  && $(<"$work/malformed-pending.err") == *'persistent instance recovery: pending-journal:'* ]] || {
   printf '%s\n' 'malformed pending journal reached the runtime' >&2
   exit 1
 }

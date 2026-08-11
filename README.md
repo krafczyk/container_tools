@@ -24,12 +24,18 @@ commit, architecture, and supported mount-plan grammar. Compatibility scripts
 authenticate their compiled sibling executable before dispatch; direct commands
 do not inspect the prefix or unrelated aliases.
 
+User-correctable failures use `container-tools: OPERATION: CATEGORY: ACTION` on
+stderr. Diagnostics contain no caller-supplied paths, endpoints, credentials,
+or private state. Machine stdout is unchanged: syntax failures exit 64,
+pre-dispatch launcher failures exit 125, and an attempted backend or payload
+keeps its status.
+
 `container-tools host exec [--config PATH] [--profile NAME]
 [--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] -- COMMAND`
 uses Bubblewrap, then PRoot, then rewrite. Forced backends never fall back.
 Unknown, empty, missing, or duplicate backend selectors fail with usage status
 before configuration, manifest, allocation, or backend access. `--verbose`
-writes a bounded profile/backend selection diagnostic to stderr before dispatch.
+writes a bounded backend-selection diagnostic to stderr before dispatch.
 Rewrite is automatic only for `semantics = "rewrite"`; a full-root profile must
 opt in with `--allow-degraded=rewrite`. It warns and intentionally does not
 promise selected-root semantics for descendants. Its warning names the requested

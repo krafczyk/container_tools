@@ -244,6 +244,20 @@ static const char *ct_nested_tool(const struct ct_nested_request *request,
   return NULL;
 }
 
+static int ct_nested_trampoline_admissible(const struct ct_nested_request *request)
+{
+  struct stat descriptor;
+  struct stat executable;
+  return request == NULL || request->trampoline_descriptor < 0 ||
+                 fstat(request->trampoline_descriptor, &descriptor) != 0 ||
+                 stat("/proc/self/exe", &executable) != 0 ||
+                 !S_ISREG(descriptor.st_mode) ||
+                 descriptor.st_dev != executable.st_dev ||
+                 descriptor.st_ino != executable.st_ino
+             ? 1
+             : 0;
+}
+
 static int ct_nested_absolute_tool(const char *candidate,
                                    char resolved[CT_HOST_PATH_MAX])
 {
@@ -472,14 +486,20 @@ int ct_backend_nested_blocked(
   return 0;
 }
 
-int ct_backend_nested_execute(const struct ct_nested_request *request,
-                               const char *forced, int allow_rewrite)
+int ct_backend_nested_execute_detailed(
+    const struct ct_nested_request *request, const char *forced,
+    int allow_rewrite, enum ct_nested_pre_dispatch_failure *failure)
 {
   enum ct_nested_backend backend;
+  enum ct_nested_pre_dispatch_failure last_failure =
+      CT_NESTED_PRE_DISPATCH_NONE;
   struct ct_nested_backend_report outcomes[CT_NESTED_BACKEND_COUNT] = {{0}};
+  if (failure != NULL) *failure = CT_NESTED_PRE_DISPATCH_NONE;
   if (request == NULL || request->profile == NULL || request->map == NULL ||
       request->payload == NULL || request->payload[0] == NULL ||
-      request->trampoline_descriptor < 0 || request->control_descriptor < 0) {
+      request->control_descriptor < 0 ||
+      ct_nested_trampoline_admissible(request) != 0) {
+    if (failure != NULL) *failure = CT_NESTED_PRE_DISPATCH_TRAMPOLINE;
     return 125;
   }
   for (backend = CT_NESTED_BACKEND_BUBBLEWRAP;
@@ -502,7 +522,11 @@ int ct_backend_nested_execute(const struct ct_nested_request *request,
           strcmp(request->profile->semantics, "rewrite") == 0
               ? "not-requested"
               : "incompatible-profile";
-      if (forced != NULL) return 125;
+      last_failure = CT_NESTED_PRE_DISPATCH_POLICY_DENIED;
+      if (forced != NULL) {
+        if (failure != NULL) *failure = last_failure;
+        return 125;
+      }
       continue;
     }
     frozen = *request;
@@ -512,7 +536,11 @@ int ct_backend_nested_execute(const struct ct_nested_request *request,
         outcomes[(size_t)backend].eligible = 1;
         outcomes[(size_t)backend].operational = CT_NESTED_OPERATIONAL_NO;
         outcomes[(size_t)backend].reason_code = "not-installed";
-        if (forced != NULL) return 125;
+        last_failure = CT_NESTED_PRE_DISPATCH_TOOL_MISSING;
+        if (forced != NULL) {
+          if (failure != NULL) *failure = last_failure;
+          return 125;
+        }
         continue;
       }
       outcomes[(size_t)backend].installed = 1;
@@ -527,19 +555,29 @@ int ct_backend_nested_execute(const struct ct_nested_request *request,
       if (probe != 0) {
         outcomes[(size_t)backend].operational = CT_NESTED_OPERATIONAL_NO;
         outcomes[(size_t)backend].reason_code = ct_nested_probe_reason(probe);
-        if (forced != NULL || trustworthy == 0) return 125;
+        last_failure = trustworthy == 0
+                           ? CT_NESTED_PRE_DISPATCH_CLEANUP_UNCERTAIN
+                           : probe == 126 ? CT_NESTED_PRE_DISPATCH_POLICY_DENIED
+                                          : probe == 124 ? CT_NESTED_PRE_DISPATCH_PROBE_TIMEOUT
+                                          : CT_NESTED_PRE_DISPATCH_PROBE_FAILED;
+        if (forced != NULL || trustworthy == 0) {
+          if (failure != NULL) *failure = last_failure;
+          return 125;
+        }
         if (fallback_allowed == 0) return probe;
         continue;
       }
     }
     if (ct_nested_build(backend, &frozen, 0, &command) != 0) {
       ct_nested_command_destroy(&command);
+      if (failure != NULL) *failure = CT_NESTED_PRE_DISPATCH_COMMAND_BUILD;
       return 125;
     }
     if (backend == CT_NESTED_BACKEND_REWRITE &&
         ct_backend_rewrite_warning(stderr, request->profile->semantics,
                                    outcomes) != 0) {
       ct_nested_command_destroy(&command);
+      if (failure != NULL) *failure = CT_NESTED_PRE_DISPATCH_DIAGNOSTIC_OUTPUT;
       return 125;
     }
     result = ct_process_run(command.arguments, request->environment,
@@ -547,5 +585,17 @@ int ct_backend_nested_execute(const struct ct_nested_request *request,
     ct_nested_command_destroy(&command);
     return result;
   }
+  if (failure != NULL) {
+    *failure = last_failure == CT_NESTED_PRE_DISPATCH_NONE
+                   ? CT_NESTED_PRE_DISPATCH_POLICY_DENIED
+                   : last_failure;
+  }
   return 125;
+}
+
+int ct_backend_nested_execute(const struct ct_nested_request *request,
+                               const char *forced, int allow_rewrite)
+{
+  return ct_backend_nested_execute_detailed(request, forced, allow_rewrite,
+                                            NULL);
 }

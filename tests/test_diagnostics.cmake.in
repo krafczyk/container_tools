@@ -1,0 +1,104 @@
+set(tool "@CMAKE_BINARY_DIR@/container-tools")
+
+function(expect_failure expected_status expected_diagnostic)
+  execute_process(
+    COMMAND "${tool}" ${ARGN}
+    RESULT_VARIABLE result
+    OUTPUT_VARIABLE stdout
+    ERROR_VARIABLE stderr
+  )
+  if(NOT result EQUAL expected_status)
+    message(FATAL_ERROR "unexpected status ${result}; expected ${expected_status}: ${stderr}")
+  endif()
+  if(NOT stdout STREQUAL "")
+    message(FATAL_ERROR "failure wrote to stdout: ${stdout}")
+  endif()
+  string(FIND "${stderr}" "${expected_diagnostic}" diagnostic_offset)
+  if(diagnostic_offset EQUAL -1)
+    message(FATAL_ERROR "missing diagnostic '${expected_diagnostic}': ${stderr}")
+  endif()
+endfunction()
+
+set(host_work "@CMAKE_BINARY_DIR@/host-diagnostics")
+set(host_config "${host_work}/host.toml")
+set(host_missing_root_config "${host_work}/missing-root.toml")
+set(host_nonexec "${host_work}/not-executable")
+set(host_bad_shebang "${host_work}/bad-shebang")
+set(host_backend_dir "${host_work}/backends")
+file(REMOVE_RECURSE "${host_work}")
+file(MAKE_DIRECTORY "${host_work}" "${host_backend_dir}")
+file(WRITE "${host_config}"
+  "version = 1\ndefault_profile = \"host\"\n[profiles.host]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${host_missing_root_config}"
+  "version = 1\ndefault_profile = \"host\"\n[profiles.host]\nroot = \"/not-a-container-tools-selected-root\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${host_nonexec}" "#!/bin/sh\n")
+file(WRITE "${host_bad_shebang}" "#!relative-interpreter\n")
+file(CHMOD "${host_nonexec}" PERMISSIONS OWNER_READ OWNER_WRITE)
+file(CHMOD "${host_bad_shebang}" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+
+function(expect_host_failure expected_status expected_diagnostic)
+  expect_failure(${expected_status} "${expected_diagnostic}" ${ARGN})
+endfunction()
+
+expect_failure(64
+  "container-tools: command line: usage: use 'container-tools --help' for valid syntax"
+  unsupported-command)
+expect_failure(64
+  "container-tools: mount detect: usage: use 'container-tools mount detect --help' for valid syntax"
+  mount detect --unknown)
+expect_failure(1
+  "container-tools: mount args: configuration: create a readable whitespace-tokenized configuration file or pass a valid path, then retry"
+  mount args /definitely-not-a-container-tools-mount-config)
+expect_failure(1
+  "container-tools: exec: bind: make the host source exist and use absolute paths without ':', ',' or newlines, then retry"
+  exec --docker --ct-bind /definitely-not-a-container-tools-bind:/workspace image command)
+expect_failure(1
+  "container-tools: persistent instance request: usage: use an absolute instance root without ':', ',' or newlines, then retry"
+  instance exec --apptainer --ct-instance-root relative-root -- /missing-image.sif /bin/true)
+
+expect_host_failure(64
+  "container-tools: host exec: usage: use 'container-tools host exec [--config PATH] [--profile NAME] [--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] -- COMMAND [ARG...]'"
+  host exec --backend)
+expect_host_failure(64
+  "container-tools: host doctor: usage: use 'container-tools host doctor [--config PATH] [--profile NAME] [--verbose] [--json]'"
+  host doctor --unknown)
+expect_host_failure(125
+  "container-tools: host exec: configuration: make the selected host profile readable and stable, then retry"
+  host exec --config /definitely-not-a-container-tools-host-config -- /bin/true)
+expect_host_failure(125
+  "container-tools: host exec: selected-root: configure an existing selected-root directory, then retry"
+  host exec --config "${host_missing_root_config}" -- /bin/true)
+expect_host_failure(127
+  "container-tools: host exec: executable-not-found: install the command in the selected root or add its directory to profile path, then retry"
+  host exec --config "${host_config}" --backend rewrite -- no-such-container-tools-command)
+expect_host_failure(126
+  "container-tools: host exec: executable-inaccessible: grant execute access to the selected-root command, then retry"
+  host exec --config "${host_config}" --backend rewrite -- "${host_nonexec}")
+expect_host_failure(126
+  "container-tools: host exec: shebang: use a supported absolute interpreter or GNU env shebang, then retry"
+  host exec --config "${host_config}" --backend rewrite -- "${host_bad_shebang}")
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${host_backend_dir}" "${tool}" host exec --config "${host_config}" --backend bubblewrap -- /bin/true
+  RESULT_VARIABLE backend_result
+  OUTPUT_VARIABLE backend_stdout
+  ERROR_VARIABLE backend_stderr
+)
+if(NOT backend_result EQUAL 125 OR NOT backend_stdout STREQUAL "" OR
+   NOT backend_stderr MATCHES "container-tools: host exec: backend-tool-missing: install Bubblewrap or PRoot, or select an eligible backend, then retry")
+  message(FATAL_ERROR "missing backend did not produce an actionable pre-dispatch diagnostic: ${backend_stdout} ${backend_stderr}")
+endif()
+
+file(WRITE "${host_backend_dir}/bwrap" "#!/bin/sh\nprintf 'unexpected probe output'\nexit 1\n")
+file(CHMOD "${host_backend_dir}/bwrap" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${host_backend_dir}" "${tool}" host doctor --config "${host_config}" --json
+  RESULT_VARIABLE doctor_result
+  OUTPUT_VARIABLE doctor_stdout
+  ERROR_VARIABLE doctor_stderr
+)
+if(NOT doctor_result EQUAL 0 OR doctor_stdout MATCHES "unexpected probe output" OR
+   NOT doctor_stdout MATCHES "^\\{\"schema\"" OR NOT doctor_stdout MATCHES "container-tools.host-doctor/v1" OR
+   NOT doctor_stdout MATCHES "probe-failed" OR NOT doctor_stderr STREQUAL "")
+  message(FATAL_ERROR "doctor probe output corrupted its closed JSON report: ${doctor_stdout} ${doctor_stderr}")
+endif()

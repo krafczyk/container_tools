@@ -15,7 +15,10 @@ enum ct_executable_status {
   CT_EXECUTABLE_OK = 0,
   CT_EXECUTABLE_NOT_FOUND = 1,
   CT_EXECUTABLE_INCOMPATIBLE = 2,
-  CT_EXECUTABLE_IO = 3
+  CT_EXECUTABLE_IO = 3,
+  CT_EXECUTABLE_INACCESSIBLE = 4,
+  CT_EXECUTABLE_LOADER = 5,
+  CT_EXECUTABLE_SHEBANG = 6
 };
 
 /** One stable inspected ELF or shebang stage in target-side execution order. */

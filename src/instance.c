@@ -2,6 +2,7 @@
 #include "instance.h"
 
 #include "backend_outer.h"
+#include "cli.h"
 #include "config.h"
 #include "host_projection.h"
 #include "mount.h"
@@ -90,6 +91,31 @@ struct ct_instance_prepared {
   char cwd_real[CT_INSTANCE_PATH_MAX];
   char user[256];
 };
+
+enum ct_instance_prepare_status {
+  CT_INSTANCE_PREPARE_OK = 0,
+  CT_INSTANCE_PREPARE_IMAGE = 1,
+  CT_INSTANCE_PREPARE_BOOTSTRAP = 2,
+  CT_INSTANCE_PREPARE_HOME = 3,
+  CT_INSTANCE_PREPARE_CWD = 4,
+  CT_INSTANCE_PREPARE_PROJECTION = 5,
+  CT_INSTANCE_PREPARE_MOUNT_CONFIG = 6,
+  CT_INSTANCE_PREPARE_BIND = 7,
+  CT_INSTANCE_PREPARE_MOUNT_PLAN = 8,
+  CT_INSTANCE_PREPARE_ASSETS = 9,
+  CT_INSTANCE_PREPARE_INTERNAL = 10,
+};
+
+static void ct_instance_diagnostic(const char *category, const char *action)
+{
+  ct_cli_diagnostic("persistent instance", category, action);
+}
+
+static void ct_instance_recovery_diagnostic(const char *category,
+                                            const char *action)
+{
+  ct_cli_diagnostic("persistent instance recovery", category, action);
+}
 
 static int ct_instance_backend(const char *value)
 {
@@ -258,8 +284,7 @@ static int ct_instance_parse(int argument_count, char *const arguments[],
     }
     if (strcmp(arguments[index], "--ct-bootstrap") == 0) {
       if (++index >= argument_count || request->bootstrap != NULL ||
-          !ct_instance_path_scalar(arguments[index]) ||
-          access(arguments[index], R_OK | X_OK) != 0) return 1;
+          !ct_instance_path_scalar(arguments[index])) return 1;
       request->bootstrap = arguments[index];
       continue;
     }
@@ -467,25 +492,34 @@ static int ct_instance_add_state_mask(struct ct_instance_prepared *prepared,
                                "read-only", "runtime-default", 0, 0, 0);
 }
 
-static int ct_instance_add_detected_mounts(struct ct_instance_prepared *prepared)
+static enum ct_instance_prepare_status ct_instance_add_detected_mounts(
+    struct ct_instance_prepared *prepared)
 {
   char (*paths)[CT_MOUNT_PATH_MAX] = calloc(CT_MOUNT_MAX_PATHS, sizeof(*paths));
   size_t count = 0U, index;
-  int result = 1;
-  if (paths == NULL || ct_mount_collect_environment(paths, &count) != 0) goto done;
+  enum ct_instance_prepare_status result = CT_INSTANCE_PREPARE_INTERNAL;
+  if (paths == NULL) goto done;
+  if (ct_mount_collect_environment(paths, &count) != 0) {
+    result = CT_INSTANCE_PREPARE_MOUNT_CONFIG;
+    goto done;
+  }
   for (index = 0U; index < count; ++index) {
     char target[CT_INSTANCE_PATH_MAX];
-    if (ct_instance_normalize_path(paths[index], target) != 0) goto done;
+    if (ct_instance_normalize_path(paths[index], target) != 0) {
+      result = CT_INSTANCE_PREPARE_MOUNT_CONFIG;
+      goto done;
+    }
     if (strcmp(target, "/.container-tools-instance-identity") == 0 ||
         strcmp(target, "/.container-tools-bootstrap") == 0 ||
         strcmp(target, "/.container-tools-mount-plan") == 0 ||
         strncmp(target, "/.container-tools-mount-plan/", 30U) == 0) continue;
     if (ct_instance_mount_add(prepared, paths[index], target, "detected-automatic",
                               "inherit", "runtime-default", 0, 1, 1) != 0) {
-      (void)fprintf(stderr, "WARNING: dropping container bind mount: %s\n", paths[index]);
+      result = CT_INSTANCE_PREPARE_BIND;
+      goto done;
     }
   }
-  result = 0;
+  result = CT_INSTANCE_PREPARE_OK;
 done:
   free(paths);
   return result;
@@ -601,8 +635,8 @@ static int ct_instance_assets_current(const struct ct_instance_request *request,
   return 1;
 }
 
-static int ct_instance_prepare(const struct ct_instance_request *request,
-                               struct ct_instance_prepared *prepared)
+static enum ct_instance_prepare_status ct_instance_prepare(
+    const struct ct_instance_request *request, struct ct_instance_prepared *prepared)
 {
   struct ct_host_projection projection;
   struct ct_mount_plan_entry *entries = NULL;
@@ -615,7 +649,7 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
   char home_real[CT_INSTANCE_PATH_MAX], state_root[CT_INSTANCE_PATH_MAX];
   const char *home = getenv("HOME");
   size_t field_count = 0U, projection_count = 0U, entry_count = 0U, index;
-  int result = 1;
+  enum ct_instance_prepare_status result = CT_INSTANCE_PREPARE_INTERNAL;
 
   memset(prepared, 0, sizeof(*prepared));
   prepared->mounts = calloc(CT_INSTANCE_MOUNT_MAX, sizeof(*prepared->mounts));
@@ -625,47 +659,76 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
                              sizeof(*projection_fields));
   group_values = calloc(CT_INSTANCE_GROUP_MAX, sizeof(*group_values));
   if (prepared->mounts == NULL || entries == NULL || fields == NULL ||
-      projection_fields == NULL || group_values == NULL || home == NULL ||
-      ct_instance_normalize_path(home, home_real) != 0 ||
-      getcwd(prepared->cwd, sizeof(prepared->cwd)) == NULL ||
-      realpath(prepared->cwd, prepared->cwd_real) == NULL ||
-      realpath(request->image, prepared->image_real) == NULL ||
+      projection_fields == NULL || group_values == NULL) goto done;
+  if (home == NULL || ct_instance_normalize_path(home, home_real) != 0) {
+    result = CT_INSTANCE_PREPARE_HOME;
+    goto done;
+  }
+  if (getcwd(prepared->cwd, sizeof(prepared->cwd)) == NULL ||
+      realpath(prepared->cwd, prepared->cwd_real) == NULL) {
+    result = CT_INSTANCE_PREPARE_CWD;
+    goto done;
+  }
+  if (realpath(request->image, prepared->image_real) == NULL ||
       !ct_instance_regular_file(prepared->image_real) ||
+      access(prepared->image_real, R_OK) != 0 ||
       ct_instance_stat_identity(prepared->image_real, 1,
-                                prepared->image_identity) != 0 ||
-      gethostname(host, sizeof(host)) != 0 || ct_instance_user(prepared->user) != 0 ||
+                                prepared->image_identity) != 0) {
+    result = CT_INSTANCE_PREPARE_IMAGE;
+    goto done;
+  }
+  if (gethostname(host, sizeof(host)) != 0 || ct_instance_user(prepared->user) != 0 ||
       snprintf(uid, sizeof(uid), "%lu", (unsigned long)geteuid()) >= (int)sizeof(uid) ||
       snprintf(gid, sizeof(gid), "%lu", (unsigned long)getegid()) >= (int)sizeof(gid)) goto done;
   host[sizeof(host) - 1U] = '\0';
   if (request->bootstrap != NULL) {
     if (realpath(request->bootstrap, bootstrap_real) == NULL ||
         !ct_instance_regular_file(bootstrap_real) ||
+        access(bootstrap_real, R_OK | X_OK) != 0 ||
         ct_instance_stat_identity(bootstrap_real, 1, bootstrap_stat) != 0 ||
         snprintf(bootstrap_identity, sizeof(bootstrap_identity), "%s:%s",
-                 bootstrap_real, bootstrap_stat) >= (int)sizeof(bootstrap_identity)) goto done;
+                 bootstrap_real, bootstrap_stat) >= (int)sizeof(bootstrap_identity)) {
+      result = CT_INSTANCE_PREPARE_BOOTSTRAP;
+      goto done;
+    }
   }
   if (ct_host_projection_prepare(request->backend, request->image,
                                  request->host_root, request->refresh,
                                  &projection) != 0 ||
       (strcmp(request->host_root, "required") == 0 &&
        (strcmp(projection.strategy, "none") == 0 ||
-        strcmp(projection.completeness, "complete") != 0))) goto done;
+        strcmp(projection.completeness, "complete") != 0))) {
+    result = CT_INSTANCE_PREPARE_PROJECTION;
+    goto done;
+  }
   for (index = 0U; index < projection.entry_count; ++index) {
     if (ct_instance_mount_add(prepared, projection.entries[index].source,
                               projection.entries[index].destination,
                               "generated-host-root", "inherit", "runtime-default",
-                              1, 1, 0) != 0) goto done;
+                              1, 1, 0) != 0) {
+      result = CT_INSTANCE_PREPARE_PROJECTION;
+      goto done;
+    }
   }
-  if (ct_instance_add_detected_mounts(prepared) != 0) goto done;
+  result = ct_instance_add_detected_mounts(prepared);
+  if (result != CT_INSTANCE_PREPARE_OK) {
+    goto done;
+  }
   for (index = 0U; index < request->bind_count; ++index) {
     if (ct_instance_mount_add(prepared, request->binds[index].source,
                               request->binds[index].target, "explicit", "inherit",
-                              "runtime-default", 0, 1, 1) != 0) goto done;
+                              "runtime-default", 0, 1, 1) != 0) {
+      result = CT_INSTANCE_PREPARE_BIND;
+      goto done;
+    }
   }
   if (request->bootstrap != NULL &&
       ct_instance_mount_add(prepared, bootstrap_real,
                             "/.container-tools-bootstrap", "bootstrap-internal",
-                            "read-only", "runtime-default", 0, 1, 1) != 0) goto done;
+                            "read-only", "runtime-default", 0, 1, 1) != 0) {
+    result = CT_INSTANCE_PREPARE_BOOTSTRAP;
+    goto done;
+  }
   {
     int covered = ct_instance_path_inside(prepared->cwd_real, home_real);
     for (index = 0U; !covered && index < prepared->mount_count; ++index) {
@@ -676,14 +739,20 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
         char mapped[CT_INSTANCE_PATH_MAX];
         if (snprintf(mapped, sizeof(mapped), "%s%s", mount->target,
                      prepared->cwd_real + strlen(mount->source_real)) >=
-            (int)sizeof(mapped)) goto done;
+            (int)sizeof(mapped)) {
+          result = CT_INSTANCE_PREPARE_CWD;
+          goto done;
+        }
         if (strcmp(mapped, prepared->cwd_real) == 0) covered = 1;
       }
     }
     if (!covered && ct_instance_mount_add(prepared, prepared->cwd_real,
                                           prepared->cwd_real,
                                           "persistent-automatic-cwd", "inherit",
-                                          "runtime-default", 0, 1, 1) != 0) goto done;
+                                          "runtime-default", 0, 1, 1) != 0) {
+      result = CT_INSTANCE_PREPARE_CWD;
+      goto done;
+    }
   }
   for (index = 0U; index < prepared->mount_count; ++index) {
     if (!prepared->mounts[index].semantic) continue;
@@ -699,21 +768,30 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
                                 request->backend, projection.strategy,
                                 projection.completeness, projection.group_mode,
                                 entries, entry_count},
-                            state_root, prepared->manifest) != 0) goto done;
+                            state_root, prepared->manifest) != 0) {
+    result = CT_INSTANCE_PREPARE_MOUNT_PLAN;
+    goto done;
+  }
   {
     const size_t semantic_count = prepared->mount_count;
     for (index = 0U; index < semantic_count; ++index) {
       if (ct_instance_add_state_mask(prepared,
                                      prepared->mounts[index].source_real,
                                      prepared->mounts[index].target,
-                                     state_root) != 0) goto done;
+                                     state_root) != 0) {
+        result = CT_INSTANCE_PREPARE_MOUNT_PLAN;
+        goto done;
+      }
     }
     if (ct_instance_add_state_mask(prepared, home_real, home, state_root) != 0 ||
         ct_instance_add_state_mask(prepared, prepared->cwd_real, prepared->cwd,
                                    state_root) != 0 ||
         ct_instance_mount_add(prepared, prepared->manifest,
                               "/.container-tools-mount-plan", "manifest-internal",
-                              "read-only", "runtime-default", 0, 0, 0) != 0) goto done;
+                              "read-only", "runtime-default", 0, 0, 0) != 0) {
+      result = CT_INSTANCE_PREPARE_MOUNT_PLAN;
+      goto done;
+    }
   }
   if (ct_instance_field_append(fields, &field_count, request->backend) != 0 ||
       (request->runtime_argument != NULL &&
@@ -730,7 +808,9 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
       ct_instance_field_append(fields, &field_count,
                                "ct-instance-profile-v3") != 0 ||
       ct_instance_field_append(fields, &field_count,
-                               "ct-host-projection-profile-v1") != 0) goto done;
+                               "ct-host-projection-profile-v1") != 0) {
+    goto done;
+  }
   projection_fields[projection_count++] = "ct-host-projection-profile-v1";
   projection_fields[projection_count++] = "host-projection-v6";
   projection_fields[projection_count++] = projection.strategy;
@@ -744,39 +824,86 @@ static int ct_instance_prepare(const struct ct_instance_request *request,
     projection_fields[projection_count++] = "runtime-default";
   }
   if (ct_profile_digest_fields(projection_fields, projection_count,
-                               projection_digest) != 0) goto done;
+                               projection_digest) != 0) {
+    goto done;
+  }
   if (ct_instance_field_append(fields, &field_count, projection_digest) != 0 ||
       ct_instance_field_append(fields, &field_count, uid) != 0 ||
       ct_instance_field_append(fields, &field_count, gid) != 0 ||
       ct_instance_field_append(fields, &field_count, projection.group_mode) != 0 ||
       ct_instance_groups(fields, &field_count, group_values,
-                          CT_INSTANCE_GROUP_MAX) != 0) goto done;
+                          CT_INSTANCE_GROUP_MAX) != 0) {
+    goto done;
+  }
   for (index = 0U; index < prepared->mount_count; ++index) {
     if (ct_instance_field_append(
             fields, &field_count,
             prepared->mounts[index].generated ? "--mount" : "--bind") != 0 ||
         ct_instance_field_append(fields, &field_count,
-                                 prepared->mounts[index].descriptor) != 0) goto done;
+                                 prepared->mounts[index].descriptor) != 0) {
+      goto done;
+    }
   }
   for (index = 0U; index < prepared->mount_count; ++index) {
     if (prepared->mounts[index].profile_identity != NULL) {
       if (ct_instance_field_append(fields, &field_count,
-                                   prepared->mounts[index].profile_identity) != 0) goto done;
+                                   prepared->mounts[index].profile_identity) != 0) {
+        goto done;
+      }
     }
   }
   if (ct_profile_digest_fields(fields, field_count, prepared->digest) != 0 ||
       snprintf(prepared->name, sizeof(prepared->name), "mkchad-%.32s",
-               prepared->digest) >= (int)sizeof(prepared->name) ||
-      !ct_instance_assets_current(request, prepared, bootstrap_real,
-                                  bootstrap_stat)) goto done;
-  result = 0;
+               prepared->digest) >= (int)sizeof(prepared->name)) goto done;
+  if (!ct_instance_assets_current(request, prepared, bootstrap_real,
+                                  bootstrap_stat)) {
+    result = CT_INSTANCE_PREPARE_ASSETS;
+    goto done;
+  }
+  result = CT_INSTANCE_PREPARE_OK;
 done:
   free(entries);
   free(fields);
   free(projection_fields);
   free(group_values);
-  if (result != 0) ct_instance_prepared_free(prepared);
+  if (result != CT_INSTANCE_PREPARE_OK) ct_instance_prepared_free(prepared);
   return result;
+}
+
+static void ct_instance_prepare_diagnostic(enum ct_instance_prepare_status status)
+{
+  switch (status) {
+    case CT_INSTANCE_PREPARE_IMAGE:
+      ct_instance_diagnostic("image", "make the container image exist as a readable regular file, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_BOOTSTRAP:
+      ct_instance_diagnostic("bootstrap", "make the bootstrap file exist as a readable regular file, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_HOME:
+      ct_instance_diagnostic("home", "set HOME to an accessible absolute directory, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_CWD:
+      ct_instance_diagnostic("working-directory", "run from an accessible working directory, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_PROJECTION:
+      ct_instance_diagnostic("host-projection", "repair local runtime projection support or use --ct-host-root auto, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_MOUNT_CONFIG:
+      ct_instance_diagnostic("mount-configuration", "correct CT_MOUNT_CFG and MOUNT_DETECTOR_ARGS persistent mount options, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_BIND:
+      ct_instance_diagnostic("bind-source", "make every requested or detected bind source accessible, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_MOUNT_PLAN:
+      ct_instance_diagnostic("mount-plan", "make persistent mount-plan state privately writable, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_ASSETS:
+      ct_instance_diagnostic("assets", "restore stable image and bootstrap assets, then retry");
+      return;
+    case CT_INSTANCE_PREPARE_INTERNAL:
+    default:
+      ct_instance_diagnostic("profile-finalization", "retry; if this persists, reinstall container-tools and report the failure");
+  }
 }
 
 static size_t ct_instance_runtime_prefix(const struct ct_instance_request *request,
@@ -978,15 +1105,14 @@ static int ct_instance_payload(const struct ct_instance_request *request,
   return result;
 }
 
-static int ct_instance_prepare_dry(const struct ct_instance_request *request,
-                                   struct ct_instance_prepared *prepared)
+static enum ct_instance_prepare_status ct_instance_prepare_dry(
+    const struct ct_instance_request *request, struct ct_instance_prepared *prepared)
 {
-  struct stat image_status;
   memset(prepared, 0, sizeof(*prepared));
-  if (getcwd(prepared->cwd, sizeof(prepared->cwd)) == NULL ||
-      ct_instance_user(prepared->user) != 0 ||
-      stat(request->image, &image_status) != 0 || !S_ISREG(image_status.st_mode)) return 1;
-  return 0;
+  if (getcwd(prepared->cwd, sizeof(prepared->cwd)) == NULL) return CT_INSTANCE_PREPARE_CWD;
+  if (ct_instance_user(prepared->user) != 0) return CT_INSTANCE_PREPARE_INTERNAL;
+  if (!ct_instance_regular_file(request->image)) return CT_INSTANCE_PREPARE_IMAGE;
+  return CT_INSTANCE_PREPARE_OK;
 }
 
 int ct_instance_command(int argument_count, char *const arguments[], int identity_only)
@@ -1001,6 +1127,8 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
   int argument_index;
   const char *dry_run;
   struct stat pending_status;
+  enum ct_instance_prepare_status prepare_status;
+  enum ct_state_lock_status lock_status;
 
   memset(&request, 0, sizeof(request));
   if (identity_only != 0 && argument_count > 0 &&
@@ -1010,8 +1138,8 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
   }
   if (argument_count >= 3 && strcmp(arguments[1], "--ct-instance-root") == 0 &&
       !ct_instance_path_scalar(arguments[2])) {
-    (void)fputs("Error: --ct-instance-root requires an absolute path without colon, comma, or newline\n",
-                stderr);
+    ct_cli_diagnostic("persistent instance request", "usage",
+                      "use an absolute instance root without ':', ',' or newlines, then retry");
     return 1;
   }
   for (argument_index = 3; argument_index + 1 < argument_count; ++argument_index) {
@@ -1021,36 +1149,47 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
       char target[CT_INSTANCE_PATH_MAX];
       if (separator != NULL && ct_instance_normalize_path(separator + 1, target) == 0) {
         if (strcmp(target, "/.container-tools-instance-identity") == 0) {
-          (void)fputs("Error: container bind destination is reserved for persistent instance identity: /.container-tools-instance-identity\n",
-                      stderr);
+          ct_cli_diagnostic("persistent instance request", "reserved-bind",
+                            "choose a destination other than protected persistent-instance paths, then retry");
           return 1;
         }
         if (strcmp(target, "/.container-tools-mount-plan") == 0 ||
             strncmp(target, "/.container-tools-mount-plan/", 30U) == 0) {
-          (void)fputs("Error: container bind destination is reserved for mount plans: /.container-tools-mount-plan\n",
-                      stderr);
+          ct_cli_diagnostic("persistent instance request", "reserved-bind",
+                            "choose a destination other than protected persistent-instance paths, then retry");
           return 1;
         }
       }
       ++argument_index;
     }
   }
-  if (ct_instance_parse(argument_count, arguments, &request) != 0 ||
-      ct_runtime_config_load_environment(&config) != CT_CONFIG_OK ||
-      ct_storage_select_runtime(request.backend, &config) != 0 ||
+  if (ct_instance_parse(argument_count, arguments, &request) != 0) {
+    ct_cli_diagnostic("persistent instance request", "usage",
+                      "use 'container-tools instance exec --help' for valid syntax");
+    return 1;
+  }
+  if (ct_runtime_config_load_environment(&config) != CT_CONFIG_OK ||
+      ct_storage_select_runtime(request.backend, &config) != 0) return 1;
+  if (
       unsetenv("SINGULARITY_BIND") != 0 || unsetenv("SINGULARITY_BINDPATH") != 0 ||
       unsetenv("SINGULARITY_MOUNT") != 0 || unsetenv("APPTAINER_BIND") != 0 ||
       unsetenv("APPTAINER_BINDPATH") != 0 || unsetenv("APPTAINER_MOUNT") != 0) {
-    (void)fputs("container-tools: instance: invalid persistent instance request\n", stderr);
+    ct_instance_diagnostic("runtime-environment",
+                           "repair the inherited runtime environment and retry");
     return 1;
   }
   dry_run = getenv("CT_DRY_RUN");
   if (identity_only == 0 && dry_run != NULL && dry_run[0] != '\0') {
-    if (ct_instance_prepare_dry(&request, &prepared) != 0) return 1;
+    prepare_status = ct_instance_prepare_dry(&request, &prepared);
+    if (prepare_status != CT_INSTANCE_PREPARE_OK) {
+      ct_instance_prepare_diagnostic(prepare_status);
+      return 1;
+    }
     return ct_instance_payload(&request, &prepared, "instance://dry-run", 1);
   }
-  if (ct_instance_prepare(&request, &prepared) != 0) {
-    (void)fputs("container-tools: instance: unable to finalize persistent profile\n", stderr);
+  prepare_status = ct_instance_prepare(&request, &prepared);
+  if (prepare_status != CT_INSTANCE_PREPARE_OK) {
+    ct_instance_prepare_diagnostic(prepare_status);
     return 1;
   }
   if (identity_only != 0) {
@@ -1066,17 +1205,33 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
   }
   if (request.bootstrap != NULL &&
       (realpath(request.bootstrap, bootstrap_real) == NULL ||
-       ct_instance_stat_identity(bootstrap_real, 1, bootstrap_identity) != 0)) goto done;
-  if (ct_state_lock(request.root, prepared.name, &lock) != 0 ||
-      ct_state_pending_path(request.root, prepared.name, pending_path) != 0) {
-    (void)fputs("container-tools: instance: timed out waiting for persistent instance creation\n", stderr);
+       ct_instance_stat_identity(bootstrap_real, 1, bootstrap_identity) != 0)) {
+    ct_cli_diagnostic("persistent instance assets", "changed",
+                      "restore stable image and bootstrap assets, then retry");
+    goto done;
+  }
+  lock_status = ct_state_lock(request.root, prepared.name, &lock);
+  if (lock_status != CT_STATE_LOCK_OK) {
+    if (lock_status == CT_STATE_LOCK_TIMEOUT) {
+      ct_cli_diagnostic("persistent instance lock", "contention",
+                        "wait for the concurrent instance creation to finish, then retry");
+    } else {
+      ct_cli_diagnostic("persistent instance state", "setup",
+                        "make the persistent instance state directory privately writable, then retry");
+    }
+    goto done;
+  }
+  if (ct_state_pending_path(request.root, prepared.name, pending_path) != 0) {
+    ct_cli_diagnostic("persistent instance state", "setup",
+                      "make the persistent instance state directory usable, then retry");
     goto done;
   }
   errno = 0;
   if (ct_storage_timeout_lstat(pending_path, &pending_status) == 0) {
     if (ct_state_pending_read(pending_path, prepared.name, prepared.digest,
                               &pending) != 0) {
-      (void)fputs("container-tools: instance: pending record does not match requested profile\n", stderr);
+      ct_instance_recovery_diagnostic("pending-journal",
+                                      "repair or remove the malformed private pending journal, then retry");
       goto done;
     }
     memcpy(nonce, pending.nonce, sizeof(nonce));
@@ -1086,7 +1241,11 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
       goto done;
     }
     if (probe == 0) {
-      if (ct_state_pending_clear(pending_path) != 0) goto done;
+      if (ct_state_pending_clear(pending_path) != 0) {
+        ct_instance_recovery_diagnostic("pending-journal-update",
+                                        "repair private instance state storage and retry");
+        goto done;
+      }
       ready = 1;
     } else if (probe == 42) {
       const int profile_probe = ct_instance_probe(
@@ -1096,18 +1255,23 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
         goto done;
       }
       if (profile_probe == 0) {
-        (void)fputs("container-tools: instance: persistent instance pending nonce mismatch\n", stderr);
+        ct_instance_recovery_diagnostic("pending-nonce-mismatch",
+                                        "wait for the original creator to finish or use a fresh instance root, then retry");
       } else {
-        (void)fputs("container-tools: instance: persistent instance profile mismatch\n", stderr);
+        ct_instance_recovery_diagnostic("profile-mismatch",
+                                        "use consistent image, bootstrap, bind, and environment inputs, then retry");
       }
       goto done;
     } else if (!ct_instance_absent(&request, prepared.name)) {
-      (void)fputs("container-tools: instance: unable to reconcile pending persistent instance creation\n", stderr);
+      ct_instance_recovery_diagnostic("pending-journal-recovery",
+                                      "verify the backend can list instances, then retry without removing the pending journal");
       goto done;
     } else {
       pending_restart = 1;
     }
   } else if (errno != ENOENT) {
+    ct_instance_recovery_diagnostic("pending-journal-recovery",
+                                    "repair access to the private pending journal and retry");
     goto done;
   }
   if (!ready && !pending_restart) {
@@ -1119,13 +1283,16 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     if (probe == 0) {
       ready = 1;
     } else if (probe == 42) {
-      (void)fputs("container-tools: instance: persistent instance profile mismatch\n", stderr);
+      ct_instance_recovery_diagnostic("profile-mismatch",
+                                      "use consistent image, bootstrap, bind, and environment inputs, then retry");
       goto done;
     } else if (probe == 124 || probe == 137) {
-      (void)fputs("container-tools: instance: persistent container instance liveness check timed out\n", stderr);
+      ct_cli_diagnostic("persistent instance liveness", "timeout",
+                        "wait for the backend to become responsive, then retry");
       goto done;
     } else if (!ct_instance_absent(&request, prepared.name)) {
-      (void)fputs("container-tools: instance: unable to reconcile persistent instance liveness failure\n", stderr);
+      ct_cli_diagnostic("persistent instance liveness", "recovery",
+                        "verify the backend can probe and list instances, then retry");
       goto done;
     }
   }
@@ -1134,7 +1301,11 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     if (!pending_restart) {
       if (ct_instance_nonce(nonce) != 0 ||
           ct_state_pending_write(pending_path, prepared.name, prepared.digest,
-                                 nonce) != 0) goto done;
+                                 nonce) != 0) {
+        ct_instance_recovery_diagnostic("pending-journal-update",
+                                        "repair private instance state storage and retry");
+        goto done;
+      }
     }
     start_result = ct_instance_start(&request, &prepared, pending_path);
     if (ct_instance_interrupted(start_result)) {
@@ -1148,27 +1319,37 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     }
     if (probe != 0) {
       if (probe == 42) {
-        (void)fputs("container-tools: instance: persistent instance profile mismatch\n", stderr);
+        ct_instance_recovery_diagnostic("profile-mismatch",
+                                        "use consistent image, bootstrap, bind, and environment inputs, then retry");
+      } else if (start_result == 124) {
+        ct_cli_diagnostic("persistent instance backend-start", "timeout",
+                          "wait for the backend start to finish, then retry");
       } else if (start_result != 0) {
-        (void)fputs("container-tools: instance: persistent container instance failed to start\n", stderr);
+        ct_cli_diagnostic("persistent instance backend-start", "failed",
+                          "verify the backend installation and image availability, then retry");
+      } else if (probe == 124 || probe == 137) {
+        ct_cli_diagnostic("persistent instance backend-start", "timeout",
+                          "wait for the started instance to become responsive, then retry");
       } else {
-        (void)fputs("container-tools: instance: persistent container instance did not become executable\n", stderr);
+        ct_cli_diagnostic("persistent instance backend-start", "failed",
+                          "verify the backend can start and probe instances, then retry");
       }
       goto done;
     }
-    if (ct_state_pending_clear(pending_path) != 0) goto done;
+    if (ct_state_pending_clear(pending_path) != 0) {
+      ct_instance_recovery_diagnostic("pending-journal-update",
+                                      "repair private instance state storage and retry");
+      goto done;
+    }
   }
   if (!ct_instance_assets_current(&request, &prepared, bootstrap_real,
                                   bootstrap_identity)) {
-    (void)fputs("container-tools: instance: container image or bootstrap changed while preparing its instance\n", stderr);
+    ct_cli_diagnostic("persistent instance assets", "changed",
+                      "restore stable image and bootstrap assets, then retry");
     goto done;
   }
-  if (ct_state_identity_write(request.root, prepared.name, prepared.image_real,
-                              prepared.image_identity, prepared.digest) != 0) {
-    (void)fprintf(stderr,
-                  "WARNING: unable to update persistent instance metadata: %s/%s.identity\n",
-                  request.root, prepared.name);
-  }
+  (void)ct_state_identity_write(request.root, prepared.name, prepared.image_real,
+                                prepared.image_identity, prepared.digest);
   ct_state_unlock(lock);
   lock = -1;
   if (snprintf(uri, sizeof(uri), "instance://%s", prepared.name) >=

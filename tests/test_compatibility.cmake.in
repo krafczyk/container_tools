@@ -68,8 +68,12 @@ expect_result(0 "compatibility script selected hostile-PATH-safe sibling"
   "${prefix_a}/bin/ct_mount_detector.sh" --help)
 
 file(COPY "${prefix_a}/bin/ct_args.sh" DESTINATION "${work}/copied")
-expect_result(127 "copied compatibility script without a package"
-  "${work}/copied/ct_args.sh" "${work}/mount.conf")
+execute_process(COMMAND "${work}/copied/ct_args.sh" "${work}/mount.conf"
+  RESULT_VARIABLE copied_result ERROR_VARIABLE copied_error)
+if(NOT copied_result EQUAL 127 OR
+   NOT copied_error MATCHES "reinstall container-tools so the matching executable is present and executable")
+  message(FATAL_ERROR "copied compatibility script lacked actionable recovery: ${copied_error}")
+endif()
 file(CREATE_LINK "${prefix_a}/bin/ct_args.sh" "${work}/symlink/ct_args.sh" SYMBOLIC)
 expect_result(127 "symlinked compatibility script outside its package"
   "${work}/symlink/ct_args.sh" "${work}/mount.conf")

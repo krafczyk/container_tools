@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "config.h"
+#include "cli.h"
 #include "storage_timeout.h"
 
 #include <errno.h>
@@ -12,6 +13,11 @@
 #include <unistd.h>
 
 #define CT_CONFIG_FILE_MAX 65536U
+
+static void ct_config_diagnostic(const char *category, const char *action)
+{
+  ct_cli_diagnostic("runtime configuration", category, action);
+}
 
 static bool ct_config_path_is_valid(const char *value)
 {
@@ -73,18 +79,25 @@ enum ct_config_status ct_runtime_config_load(const char *path,
   int descriptor;
   size_t used = 0U;
 
-  if (path == NULL || config == NULL || path[0] != '/') return CT_CONFIG_INVALID;
+  if (path == NULL || config == NULL || path[0] != '/') {
+    ct_config_diagnostic("configuration",
+                         "set CT_RUNTIME_CFG to an owned regular file containing only supported absolute-path variables, then retry");
+    return CT_CONFIG_INVALID;
+  }
   descriptor = ct_storage_timeout_open(path, O_RDONLY | O_CLOEXEC, 0);
   if (descriptor < 0) {
     if (errno == ENOENT) {
       memset(config, 0, sizeof(*config));
       return CT_CONFIG_OK;
     }
+    ct_config_diagnostic("storage", "fix the configuration file access and retry");
     return CT_CONFIG_IO;
   }
   if (ct_storage_timeout_fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
       status.st_uid != geteuid() || (status.st_mode & 0022) != 0) {
     (void)ct_storage_timeout_close(descriptor);
+    ct_config_diagnostic("ownership-or-mode",
+                         "make the configuration file owned by the current user and not group- or other-writable, then retry");
     return CT_CONFIG_INVALID;
   }
   while (used + 1U < sizeof(contents)) {
@@ -93,16 +106,30 @@ enum ct_config_status ct_runtime_config_load(const char *path,
     if (read_count < 0) {
       if (errno == EINTR) continue;
       (void)ct_storage_timeout_close(descriptor);
+      ct_config_diagnostic("storage", "fix the configuration file access and retry");
       return CT_CONFIG_IO;
     }
     if (read_count == 0) break;
     used += (size_t)read_count;
   }
-  if (ct_storage_timeout_close(descriptor) != 0) return CT_CONFIG_IO;
-  if (used + 1U >= sizeof(contents)) return CT_CONFIG_INVALID;
-  if (memchr(contents, '\0', used) != NULL) return CT_CONFIG_INVALID;
+  if (ct_storage_timeout_close(descriptor) != 0) {
+    ct_config_diagnostic("storage", "fix the configuration file access and retry");
+    return CT_CONFIG_IO;
+  }
+  if (used + 1U >= sizeof(contents) || memchr(contents, '\0', used) != NULL) {
+    ct_config_diagnostic("configuration",
+                         "keep the configuration text-only and within the supported size, then retry");
+    return CT_CONFIG_INVALID;
+  }
   contents[used] = '\0';
-  return ct_runtime_config_parse(contents, config);
+  {
+    const enum ct_config_status result = ct_runtime_config_parse(contents, config);
+    if (result != CT_CONFIG_OK) {
+      ct_config_diagnostic("configuration",
+                           "set CT_RUNTIME_CFG to an owned regular file containing only supported absolute-path variables, then retry");
+    }
+    return result;
+  }
 }
 
 enum ct_config_status ct_runtime_config_load_environment(struct ct_runtime_config *config)
@@ -112,8 +139,14 @@ enum ct_config_status ct_runtime_config_load_environment(struct ct_runtime_confi
   const char *home = getenv("HOME");
 
   if (configured != NULL && configured[0] != '\0') return ct_runtime_config_load(configured, config);
-  if (home == NULL || home[0] != '/') return CT_CONFIG_INVALID;
+  if (home == NULL || home[0] != '/') {
+    ct_config_diagnostic("configuration",
+                         "set HOME or CT_RUNTIME_CFG to an absolute configuration location, then retry");
+    return CT_CONFIG_INVALID;
+  }
   if (snprintf(path, sizeof(path), "%s/.config/ct_runtime.conf", home) >= (int)sizeof(path)) {
+    ct_config_diagnostic("configuration",
+                         "set HOME or CT_RUNTIME_CFG to an absolute configuration location, then retry");
     return CT_CONFIG_INVALID;
   }
   return ct_runtime_config_load(path, config);

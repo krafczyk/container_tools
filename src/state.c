@@ -213,28 +213,34 @@ int ct_state_identity_write(const char *root, const char *name, const char *imag
   return 0;
 }
 
-int ct_state_lock(const char *root, const char *name, int *descriptor)
+enum ct_state_lock_status ct_state_lock(const char *root, const char *name,
+                                        int *descriptor)
 {
   char path[CT_STATE_PATH_MAX];
   struct timespec deadline;
-  int result;
+  int lock_error = 0;
   if (descriptor == NULL || ct_state_prepare_root(root) != 0 || !ct_state_name(name) ||
-      snprintf(path, sizeof(path), "%s/%s.lock", root, name) >= (int)sizeof(path) ||
-      ct_state_deadline(&deadline) != 0) return 1;
+       snprintf(path, sizeof(path), "%s/%s.lock", root, name) >= (int)sizeof(path) ||
+       ct_state_deadline(&deadline) != 0) return CT_STATE_LOCK_SETUP;
   *descriptor = ct_storage_timeout_open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
-  if (*descriptor < 0) return 1;
+  if (*descriptor < 0) return CT_STATE_LOCK_SETUP;
   for (;;) {
     struct timespec now = {0, 0}, pause = {0, 10000000L};
-    result = flock(*descriptor, LOCK_EX | LOCK_NB);
-    if (result == 0) return 0;
-    if ((errno != EWOULDBLOCK && errno != EAGAIN) || clock_gettime(CLOCK_MONOTONIC, &now) != 0 ||
-        now.tv_sec > deadline.tv_sec ||
+    if (flock(*descriptor, LOCK_EX | LOCK_NB) == 0) return CT_STATE_LOCK_OK;
+    lock_error = errno;
+    if (lock_error != EWOULDBLOCK && lock_error != EAGAIN) break;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+      lock_error = 0;
+      break;
+    }
+    if (now.tv_sec > deadline.tv_sec ||
         (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)) break;
     while (nanosleep(&pause, &pause) != 0 && errno == EINTR) { }
   }
   (void)ct_storage_timeout_close(*descriptor);
   *descriptor = -1;
-  return 1;
+  return lock_error == EWOULDBLOCK || lock_error == EAGAIN ?
+             CT_STATE_LOCK_TIMEOUT : CT_STATE_LOCK_SETUP;
 }
 
 void ct_state_unlock(int descriptor)

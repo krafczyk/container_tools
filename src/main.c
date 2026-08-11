@@ -31,8 +31,8 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
 {
   if (argument_count < 4 ||
       ct_package_verify_compatibility_identity(arguments[2], arguments[3]) != 0) {
-    (void)fputs("container-tools: package verification failed: compatibility identity mismatch\n",
-                stderr);
+    ct_cli_diagnostic("compatibility launcher", "package-identity",
+                      "reinstall the compatibility scripts and container-tools executable from the same package, then retry");
     return CT_EXIT_PACKAGE;
   }
   if (strcmp(arguments[3], "ct_exec.sh") == 0) {
@@ -50,6 +50,8 @@ static int ct_internal_compatibility(int argument_count, char **arguments)
   if (strcmp(arguments[3], "ct_args.sh") == 0) {
     return ct_mount_args_command(argument_count - 4, arguments + 4);
   }
+  ct_cli_diagnostic("compatibility launcher", "unsupported-script",
+                    "reinstall the supported compatibility scripts from the container-tools package, then retry");
   return CT_EXIT_PACKAGE;
 }
 
@@ -119,14 +121,135 @@ static int ct_host_add_projections(const struct ct_host_profile *profile,
   return 0;
 }
 
-static void ct_host_mount_plan_incompatible(const char *operation,
-                                            const struct ct_mount_plan_metadata *metadata)
+static void ct_host_usage(const char *operation)
 {
-  const char *actual = metadata->grammar[0] == '\0' ? "unknown" : metadata->grammar;
+  ct_cli_diagnostic(
+      operation, "usage",
+      strcmp(operation, "host exec") == 0
+          ? "use 'container-tools host exec [--config PATH] [--profile NAME] [--backend bubblewrap|proot|rewrite] [--allow-degraded=rewrite] [--verbose] -- COMMAND [ARG...]'"
+          : "use 'container-tools host doctor [--config PATH] [--profile NAME] [--verbose] [--json]'");
+}
 
-  (void)fprintf(stderr,
-                "container-tools: host %s: unsupported mount plan grammar: expected %s, actual %s\n",
-                operation, CT_MANIFEST_GRAMMAR, actual);
+static void ct_host_config_diagnostic(const char *operation,
+                                      enum ct_host_config_status status)
+{
+  if (status == CT_HOST_CONFIG_ABSENT) {
+    ct_cli_diagnostic(operation, "configuration",
+                      "create or select a valid host profile, then retry");
+  } else if (status == CT_HOST_CONFIG_INVALID) {
+    ct_cli_diagnostic(operation, "configuration",
+                      "correct the strict host profile and selected profile name, then retry");
+  } else {
+    ct_cli_diagnostic(operation, "configuration",
+                      "make the selected host profile readable and stable, then retry");
+  }
+}
+
+static void ct_host_mount_plan_diagnostic(
+    const char *operation, enum ct_mount_plan_read_status status)
+{
+  const char *action = "read the exact mount plan again after fixing its storage, then retry";
+  switch (status) {
+  case CT_MOUNT_PLAN_READ_ABSENT:
+    action = "publish or bind the selected profile mount plan, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_MALFORMED:
+    action = "regenerate the selected profile mount plan using the supported grammar, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_FUTURE:
+    action = "use a compatible container-tools version or regenerate the mount plan, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_DIGEST_MISMATCH:
+    action = "republish the mount plan from its source launcher, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_SEMANTIC_INVALID:
+    action = "regenerate a mount plan compatible with the selected profile, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_CHANGED:
+    action = "wait for mount-plan publication to finish, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_IO:
+    action = "make the selected profile mount plan readable and stable, then retry";
+    break;
+  case CT_MOUNT_PLAN_READ_OK:
+    return;
+  }
+  ct_cli_diagnostic(operation, "mount-plan", action);
+}
+
+static void ct_host_executable_diagnostic(enum ct_executable_status status)
+{
+  const char *category = "executable";
+  const char *action = "use a compatible executable in the selected root, then retry";
+  switch (status) {
+  case CT_EXECUTABLE_NOT_FOUND:
+    category = "executable-not-found";
+    action = "install the command in the selected root or add its directory to profile path, then retry";
+    break;
+  case CT_EXECUTABLE_INACCESSIBLE:
+    category = "executable-inaccessible";
+    action = "grant execute access to the selected-root command, then retry";
+    break;
+  case CT_EXECUTABLE_LOADER:
+    category = "loader";
+    action = "install a compatible dynamic loader in the selected root, then retry";
+    break;
+  case CT_EXECUTABLE_SHEBANG:
+    category = "shebang";
+    action = "use a supported absolute interpreter or GNU env shebang, then retry";
+    break;
+  case CT_EXECUTABLE_IO:
+    action = "make the selected-root executable readable and stable, then retry";
+    break;
+  case CT_EXECUTABLE_INCOMPATIBLE:
+  case CT_EXECUTABLE_OK:
+    break;
+  }
+  ct_cli_diagnostic("host exec", category, action);
+}
+
+static void ct_host_backend_diagnostic(
+    enum ct_nested_pre_dispatch_failure failure)
+{
+  const char *category = "backend";
+  const char *action = "repair backend setup and retry";
+  switch (failure) {
+  case CT_NESTED_PRE_DISPATCH_TOOL_MISSING:
+    category = "backend-tool-missing";
+    action = "install Bubblewrap or PRoot, or select an eligible backend, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_POLICY_DENIED:
+    category = "backend-policy";
+    action = "select a backend permitted by the profile access and degradation policy, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_PROBE_TIMEOUT:
+    category = "backend-probe-timeout";
+    action = "fix backend startup latency or select another eligible backend, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_PROBE_FAILED:
+    category = "backend-probe-failed";
+    action = "repair the selected backend installation or policy, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_CLEANUP_UNCERTAIN:
+    category = "backend-cleanup";
+    action = "wait for backend cleanup, repair supervisor support, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_TRAMPOLINE:
+    category = "trampoline";
+    action = "restart with a working container-tools executable, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_COMMAND_BUILD:
+    category = "backend-command";
+    action = "free resources, verify selected-root mappings, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_DIAGNOSTIC_OUTPUT:
+    category = "diagnostic-output";
+    action = "restore a writable stderr destination, then retry";
+    break;
+  case CT_NESTED_PRE_DISPATCH_NONE:
+    return;
+  }
+  ct_cli_diagnostic("host exec", category, action);
 }
 
 static int ct_host_inherited_descriptor(void)
@@ -160,13 +283,11 @@ static int ct_host_backend_is_valid(const char *backend)
           strcmp(backend, "rewrite") == 0);
 }
 
-static int ct_host_verbose_selection(const char *operation,
-                                     const struct ct_host_profile *profile,
-                                     const char *backend)
+static int ct_host_verbose_selection(const char *operation, const char *backend)
 {
-  if (operation == NULL || profile == NULL || backend == NULL) return 1;
-  return fprintf(stderr, "container-tools: host %s: selection profile=%.64s backend=%s\n",
-                 operation, profile->name, backend) < 0
+  if (operation == NULL || backend == NULL) return 1;
+  return fprintf(stderr, "container-tools: host %s: selection backend=%s\n",
+                 operation, backend) < 0
              ? 1
              : 0;
 }
@@ -194,6 +315,7 @@ static int ct_host_exec(int argument_count, char **arguments)
     else if (strcmp(arguments[index], "--backend") == 0) {
       if (backend != NULL || index + 1 >= argument_count ||
           arguments[index + 1][0] == '\0' || strcmp(arguments[index + 1], "--") == 0) {
+        ct_host_usage("host exec");
         ct_path_map_destroy(&map);
         return CT_EXIT_USAGE;
       }
@@ -202,27 +324,44 @@ static int ct_host_exec(int argument_count, char **arguments)
     else if (strcmp(arguments[index], "--allow-degraded=rewrite") == 0 && allow_rewrite == 0) allow_rewrite = 1;
     else if (strcmp(arguments[index], "--verbose") == 0 && verbose == 0) verbose = 1;
     else if (strcmp(arguments[index], "--") == 0) { separator = index; break; }
-    else { ct_path_map_destroy(&map); return CT_EXIT_USAGE; }
+    else {
+      ct_host_usage("host exec");
+      ct_path_map_destroy(&map);
+      return CT_EXIT_USAGE;
+    }
   }
   if (separator < 0 || separator + 1 >= argument_count ||
       (backend != NULL && ct_host_backend_is_valid(backend) == 0)) {
+    ct_host_usage("host exec");
     ct_path_map_destroy(&map);
     return CT_EXIT_USAGE;
   }
   workspace = calloc(1U, sizeof(*workspace));
-  if (workspace == NULL) return 125;
+  if (workspace == NULL) {
+    ct_cli_diagnostic("host exec", "resources",
+                      "free memory or reduce concurrent work, then retry");
+    return 125;
+  }
   loaded = ct_host_config_load(config_path, profile_name, &workspace->profile);
   if (loaded == CT_HOST_CONFIG_ABSENT && config_path == NULL && profile_name == NULL) { ct_host_default_profile(&workspace->profile); loaded = CT_HOST_CONFIG_OK; }
-  if (loaded != CT_HOST_CONFIG_OK || stat(workspace->profile.root, &status) != 0 ||
-      !S_ISDIR(status.st_mode) || ct_path_map_set_root(&map, workspace->profile.root) != 0) {
-    (void)fputs("container-tools: host exec: invalid selected-root profile\n", stderr);
+  if (loaded != CT_HOST_CONFIG_OK) {
+    ct_host_config_diagnostic("host exec", loaded);
+    ct_path_map_destroy(&map);
+    free(workspace);
+    return 125;
+  }
+  if (stat(workspace->profile.root, &status) != 0 || !S_ISDIR(status.st_mode) ||
+      ct_path_map_set_root(&map, workspace->profile.root) != 0) {
+    ct_cli_diagnostic("host exec", "selected-root",
+                      "configure an existing selected-root directory, then retry");
     ct_path_map_destroy(&map);
     free(workspace);
     return 125;
   }
   if (verbose != 0 &&
-      ct_host_verbose_selection("exec", &workspace->profile,
-                                backend == NULL ? "automatic" : backend) != 0) {
+      ct_host_verbose_selection("exec", backend == NULL ? "automatic" : backend) != 0) {
+    ct_cli_diagnostic("host exec", "diagnostic-output",
+                      "restore a writable stderr destination, then retry");
     ct_path_map_destroy(&map);
     free(workspace);
     return 125;
@@ -234,31 +373,50 @@ static int ct_host_exec(int argument_count, char **arguments)
         ct_path_map_manifest_entry, &manifest);
 
     if (mount_status == CT_MOUNT_PLAN_READ_FUTURE) {
-      ct_host_mount_plan_incompatible("exec", &workspace->metadata);
+      ct_host_mount_plan_diagnostic("host exec", mount_status);
       ct_path_map_destroy(&map);
       free(workspace);
       return 125;
     }
-    if (mount_status != CT_MOUNT_PLAN_READ_OK ||
-        ct_path_map_manifest_eligible(&workspace->profile, &workspace->metadata,
+    if (mount_status != CT_MOUNT_PLAN_READ_OK) {
+      ct_host_mount_plan_diagnostic("host exec", mount_status);
+      ct_path_map_destroy(&map);
+      free(workspace);
+      return 125;
+    }
+    if (ct_path_map_manifest_eligible(&workspace->profile, &workspace->metadata,
                                       &manifest) != 0) {
-      (void)fputs("container-tools: host exec: invalid exact mount plan\n", stderr);
+      ct_cli_diagnostic("host exec", "mount-plan",
+                        "regenerate a mount plan compatible with the selected profile, then retry");
       ct_path_map_destroy(&map);
       free(workspace);
       return 125;
     }
   }
   if (ct_host_add_projections(&workspace->profile, &map) != 0 ||
-      ct_path_map_sort(&map) != 0 ||
-      getcwd(workspace->caller_cwd, sizeof(workspace->caller_cwd)) == NULL ||
+      ct_path_map_sort(&map) != 0) {
+    ct_cli_diagnostic("host exec", "projection",
+                      "make configured projections exist and non-conflicting, then retry");
+    ct_path_map_destroy(&map);
+    free(workspace);
+    return 126;
+  }
+  if (getcwd(workspace->caller_cwd, sizeof(workspace->caller_cwd)) == NULL ||
       ct_path_map_cwd(&map, workspace->caller_cwd,
                       workspace->profile.cwd_unmapped,
-                      workspace->target_cwd) != 0 ||
-      ct_path_map_environment(&workspace->profile, workspace->environment,
+                      workspace->target_cwd) != 0) {
+    ct_cli_diagnostic("host exec", "cwd",
+                      "run from a mapped directory or set cwd_unmapped to root, then retry");
+    ct_path_map_destroy(&map);
+    free(workspace);
+    return 126;
+  }
+  if (ct_path_map_environment(&workspace->profile, workspace->environment,
                               &environment_count) != 0 ||
       environment_count == 0U ||
       ct_host_process_environment(workspace, environment_count) != 0) {
-    (void)fputs("container-tools: host exec: command planning failed\n", stderr);
+    ct_cli_diagnostic("host exec", "environment",
+                      "correct the selected profile environment and path entries, then retry");
     ct_path_map_destroy(&map);
     free(workspace);
     return 126;
@@ -267,10 +425,7 @@ static int ct_host_exec(int argument_count, char **arguments)
       &workspace->profile, &map, arguments[separator + 1],
       &workspace->executable);
   if (executable_result != CT_EXECUTABLE_OK) {
-    (void)fputs(executable_result == CT_EXECUTABLE_NOT_FOUND
-                    ? "container-tools: host exec: command not found\n"
-                    : "container-tools: host exec: command is not compatible\n",
-                 stderr);
+    ct_host_executable_diagnostic(executable_result);
     ct_path_map_destroy(&map);
     free(workspace);
     return executable_result == CT_EXECUTABLE_NOT_FOUND ? 127 : 126;
@@ -281,12 +436,15 @@ static int ct_host_exec(int argument_count, char **arguments)
     const int inherited_descriptor = ct_host_inherited_descriptor();
     struct ct_nested_request request;
     int dispatch_result;
+    enum ct_nested_pre_dispatch_failure dispatch_failure;
     trampoline_descriptor = open("/proc/self/exe", O_RDONLY);
     control_descriptor = ct_executable_control_open(CT_BUILD_IDENTITY);
     if (trampoline_descriptor < 0 || control_descriptor < 0) {
       if (trampoline_descriptor >= 0) (void)close(trampoline_descriptor);
       if (control_descriptor >= 0) (void)close(control_descriptor);
       ct_executable_close(&workspace->executable);
+      ct_cli_diagnostic("host exec", "trampoline",
+                        "restart with a working container-tools executable, then retry");
       ct_path_map_destroy(&map); free(workspace); return 125;
     }
     arguments[separator + 1] = workspace->executable.target_path;
@@ -300,11 +458,13 @@ static int ct_host_exec(int argument_count, char **arguments)
     request.inherited_descriptor = inherited_descriptor;
     request.bubblewrap_path = NULL;
     request.proot_path = NULL;
-    dispatch_result = ct_backend_nested_execute(&request, backend, allow_rewrite);
+    dispatch_result = ct_backend_nested_execute_detailed(
+        &request, backend, allow_rewrite, &dispatch_failure);
     (void)close(trampoline_descriptor); (void)close(control_descriptor);
     ct_executable_close(&workspace->executable);
     ct_path_map_destroy(&map);
     free(workspace);
+    ct_host_backend_diagnostic(dispatch_failure);
     return dispatch_result;
   }
 }
@@ -373,16 +533,35 @@ static int ct_host_doctor(int argument_count, char **arguments)
     else if (strcmp(arguments[index], "--profile") == 0 && profile_name == NULL && index + 1 < argument_count) profile_name = arguments[++index];
     else if (strcmp(arguments[index], "--json") == 0 && json == 0) json = 1;
     else if (strcmp(arguments[index], "--verbose") == 0 && verbose == 0) verbose = 1;
-    else { ct_path_map_destroy(&map); return 64; }
+    else {
+      ct_host_usage("host doctor");
+      ct_path_map_destroy(&map);
+      return CT_EXIT_USAGE;
+    }
   }
   workspace = calloc(1U, sizeof(*workspace));
-  if (workspace == NULL) goto invalid;
+  if (workspace == NULL) {
+    ct_cli_diagnostic("host doctor", "report",
+                      "free resources and retry the complete diagnosis");
+    goto invalid;
+  }
   memset(&mount_plan, 0, sizeof(mount_plan));
   loaded = ct_host_config_load(config_path, profile_name, &workspace->profile);
   if (loaded == CT_HOST_CONFIG_ABSENT && config_path == NULL && profile_name == NULL) { ct_host_default_profile(&workspace->profile); loaded = CT_HOST_CONFIG_OK; }
-  if (loaded != CT_HOST_CONFIG_OK || stat(workspace->profile.root, &status) != 0 || !S_ISDIR(status.st_mode) || ct_path_map_set_root(&map, workspace->profile.root) != 0) goto invalid;
+  if (loaded != CT_HOST_CONFIG_OK) {
+    ct_host_config_diagnostic("host doctor", loaded);
+    goto invalid;
+  }
+  if (stat(workspace->profile.root, &status) != 0 || !S_ISDIR(status.st_mode) ||
+      ct_path_map_set_root(&map, workspace->profile.root) != 0) {
+    ct_cli_diagnostic("host doctor", "selected-root",
+                      "configure an existing selected-root directory, then retry");
+    goto invalid;
+  }
   if (verbose != 0 &&
-      ct_host_verbose_selection("doctor", &workspace->profile, "bubblewrap,proot,rewrite") != 0) {
+      ct_host_verbose_selection("doctor", "bubblewrap,proot,rewrite") != 0) {
+    ct_cli_diagnostic("host doctor", "diagnostic-output",
+                      "restore a writable stderr destination, then retry");
     goto invalid;
   }
   mount_plan.configured = workspace->profile.mount_plan_configured;
@@ -395,11 +574,14 @@ static int ct_host_doctor(int argument_count, char **arguments)
         ct_path_map_manifest_entry, &manifest);
     if (manifest_status != CT_MOUNT_PLAN_READ_OK) {
       if (manifest_status == CT_MOUNT_PLAN_READ_FUTURE) {
-        ct_host_mount_plan_incompatible("doctor", &workspace->metadata);
+        ct_host_mount_plan_diagnostic("host doctor", manifest_status);
         goto invalid;
       }
       mount_status = ct_host_mount_status(manifest_status);
-      if (mount_status == NULL) goto invalid;
+      if (mount_status == NULL) {
+        ct_host_mount_plan_diagnostic("host doctor", manifest_status);
+        goto invalid;
+      }
       mount_plan.status = mount_status;
       mount_plan.detail = "exact mount plan was not usable";
       manifest_ready = 0;
@@ -424,11 +606,19 @@ static int ct_host_doctor(int argument_count, char **arguments)
   }
   if (manifest_ready != 0 &&
       (ct_host_add_projections(&workspace->profile, &map) != 0 ||
-       ct_path_map_sort(&map) != 0)) goto invalid;
+       ct_path_map_sort(&map) != 0)) {
+    ct_cli_diagnostic("host doctor", "projection",
+                      "make configured projections exist and non-conflicting, then retry");
+    goto invalid;
+  }
   inherited_descriptor = ct_host_inherited_descriptor();
   trampoline_descriptor = open("/proc/self/exe", O_RDONLY);
   control_descriptor = ct_executable_control_open(CT_BUILD_IDENTITY);
-  if (trampoline_descriptor < 0 || control_descriptor < 0) goto invalid;
+  if (trampoline_descriptor < 0 || control_descriptor < 0) {
+    ct_cli_diagnostic("host doctor", "trampoline",
+                      "restart with a working container-tools executable, then retry");
+    goto invalid;
+  }
   memset(&request, 0, sizeof(request));
   request.profile = &workspace->profile; request.map = &map; request.executable = NULL;
   request.cwd = "/"; request.payload = NULL; request.environment = NULL;
@@ -439,9 +629,15 @@ static int ct_host_doctor(int argument_count, char **arguments)
   request.bubblewrap_path = NULL; request.proot_path = NULL;
   if ((manifest_ready != 0
            ? ct_backend_nested_diagnose(&request, 0, reports)
-           : ct_backend_nested_blocked(&request, "mount-plan-unavailable", reports)) != 0 ||
-      (json != 0 ? ct_doctor_json(stdout, &workspace->profile, &mount_plan, reports)
+           : ct_backend_nested_blocked(&request, "mount-plan-unavailable", reports)) != 0) {
+    ct_cli_diagnostic("host doctor", "backend-probe",
+                      "repair backend cleanup or supervisor support, then retry");
+    goto invalid;
+  }
+  if ((json != 0 ? ct_doctor_json(stdout, &workspace->profile, &mount_plan, reports)
                  : ct_host_doctor_human(&workspace->profile, &mount_plan, reports)) != 0) {
+    ct_cli_diagnostic("host doctor", "report",
+                      "retry after restoring the output destination");
     goto invalid;
   }
   (void)close(trampoline_descriptor);
@@ -454,7 +650,6 @@ invalid:
   if (control_descriptor >= 0) (void)close(control_descriptor);
   ct_path_map_destroy(&map);
   free(workspace);
-  (void)fputs("container-tools: host doctor: unable to produce complete report\n", stderr);
   return 125;
 }
 
@@ -470,6 +665,8 @@ int main(int argument_count, char **arguments)
   }
   if (ct_cli_parse(argument_count - 1, (const char *const *)(arguments + 1), &parsed) !=
       CT_CLI_OK) {
+    ct_cli_diagnostic("command line", "usage",
+                      "use 'container-tools --help' for valid syntax");
     ct_cli_write_usage(stderr);
     return CT_EXIT_USAGE;
   }

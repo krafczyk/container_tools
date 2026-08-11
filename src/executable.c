@@ -23,18 +23,20 @@ static enum ct_executable_status ct_executable_open(
   }
   *descriptor = open(visible, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (*descriptor < 0) {
-    return errno == ENOENT || errno == ENOTDIR ? CT_EXECUTABLE_NOT_FOUND
-                                               : CT_EXECUTABLE_IO;
+    if (errno == ENOENT || errno == ENOTDIR) return CT_EXECUTABLE_NOT_FOUND;
+    return errno == EACCES || errno == EPERM ? CT_EXECUTABLE_INACCESSIBLE
+                                              : CT_EXECUTABLE_IO;
   }
   if (fstat(*descriptor, &status) != 0 || !S_ISREG(status.st_mode)) {
     (void)close(*descriptor);
     *descriptor = -1;
     return CT_EXECUTABLE_INCOMPATIBLE;
   }
-  if (access(visible, X_OK) != 0) {
+  if ((status.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0 ||
+      access(visible, X_OK) != 0) {
     (void)close(*descriptor);
     *descriptor = -1;
-    return CT_EXECUTABLE_INCOMPATIBLE;
+    return CT_EXECUTABLE_INACCESSIBLE;
   }
   {
     struct stat final;
@@ -265,7 +267,7 @@ static enum ct_executable_status ct_executable_loader(
       (void)close(executable->loader_descriptor);
       executable->loader_descriptor = -1;
     }
-    return result == CT_EXECUTABLE_OK ? CT_EXECUTABLE_INCOMPATIBLE : result;
+    return CT_EXECUTABLE_LOADER;
   }
   return CT_EXECUTABLE_OK;
 }
@@ -309,7 +311,10 @@ enum ct_executable_status ct_executable_resolve(
       goto invalid;
     }
     for (previous = 0U; previous < depth; ++previous) {
-      if (strcmp(executable->stages[previous].target_path, current) == 0) goto invalid;
+      if (strcmp(executable->stages[previous].target_path, current) == 0) {
+        result = CT_EXECUTABLE_SHEBANG;
+        goto failed;
+      }
     }
     executable->stage_count = depth + 1U;
     if (ct_elf_inspect(stage->descriptor, &stage->elf) == 0) {
@@ -323,17 +328,24 @@ enum ct_executable_status ct_executable_resolve(
         pending_env_command[0] = '\0';
         pending_env_path[0] = '\0';
         pending_env_path_override = 0;
-        if (result != CT_EXECUTABLE_OK) goto failed;
+        if (result != CT_EXECUTABLE_OK) {
+          result = CT_EXECUTABLE_SHEBANG;
+          goto failed;
+        }
         continue;
       }
-      if (ct_executable_loader(map, stage, executable) != CT_EXECUTABLE_OK) {
-        goto invalid;
+      result = ct_executable_loader(map, stage, executable);
+      if (result != CT_EXECUTABLE_OK) {
+        goto failed;
       }
       if (descriptor != executable->descriptor) (void)close(descriptor);
       return CT_EXECUTABLE_OK;
     }
     if (depth + 1U == CT_EXECUTABLE_MAX_STAGES ||
-        ct_shebang_parse(descriptor, &stage->shebang) != 0) goto invalid;
+        ct_shebang_parse(descriptor, &stage->shebang) != 0) {
+      result = CT_EXECUTABLE_SHEBANG;
+      goto failed;
+    }
     stage->is_shebang = 1;
     if (descriptor != executable->descriptor) (void)close(descriptor);
     descriptor = -1;
@@ -346,14 +358,16 @@ enum ct_executable_status ct_executable_resolve(
           (env.path_override != 0 &&
             ct_host_copy_bounded(pending_env_path, sizeof(pending_env_path),
                                  env.path) != 0)) {
-        goto invalid;
+        result = CT_EXECUTABLE_SHEBANG;
+        goto failed;
       }
       stage->env_argument_count = env.argument_count;
       for (previous = 0U; previous < env.argument_count; ++previous) {
         if (ct_host_copy_bounded(stage->env_arguments[previous],
                                  sizeof(stage->env_arguments[previous]),
                                  env.arguments[previous]) != 0) {
-          goto invalid;
+          result = CT_EXECUTABLE_SHEBANG;
+          goto failed;
         }
       }
       pending_env_path_override = env.path_override;
@@ -365,7 +379,10 @@ enum ct_executable_status ct_executable_resolve(
                                   stage->shebang.interpreter, &descriptor,
                                   current, visible);
     }
-    if (result != CT_EXECUTABLE_OK) goto failed;
+    if (result != CT_EXECUTABLE_OK) {
+      result = CT_EXECUTABLE_SHEBANG;
+      goto failed;
+    }
   }
 invalid:
   result = CT_EXECUTABLE_INCOMPATIBLE;

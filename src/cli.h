@@ -44,4 +44,15 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
 /** Print the stable bootstrap usage diagnostic to the supplied stream. */
 void ct_cli_write_usage(FILE *stream);
 
+/**
+ * Write one bounded, human-facing failure diagnostic to standard error.
+ *
+ * @param operation Stable operation name without caller-supplied values.
+ * @param category Stable cause category without caller-supplied values.
+ * @param action Concrete corrective action without caller-supplied values.
+ * @sideeffect Writes only to stderr; it never changes machine stdout.
+ */
+void ct_cli_diagnostic(const char *operation, const char *category,
+                       const char *action);
+
 #endif

@@ -20,7 +20,7 @@ foreach(operation IN ITEMS exec doctor)
     ERROR_VARIABLE error
   )
   if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
-     NOT error MATCHES "expected ct-mount-plan-v1, actual ct-mount-plan-v2")
+     NOT error STREQUAL "container-tools: host ${operation}: mount-plan: use a compatible container-tools version or regenerate the mount plan, then retry\n")
     message(FATAL_ERROR "future mount plan did not fail closed for host ${operation}: ${error}")
   endif()
 endforeach()

@@ -110,15 +110,15 @@ int main(void)
   ct_executable_close(&resolved);
   if (
       ct_executable_resolve(&profile, &map, recursive_a, &resolved) !=
-          CT_EXECUTABLE_INCOMPATIBLE ||
+          CT_EXECUTABLE_SHEBANG ||
       ct_executable_resolve(&profile, &map, missing, &resolved) !=
-          CT_EXECUTABLE_NOT_FOUND ||
+          CT_EXECUTABLE_SHEBANG ||
       ct_executable_resolve(&profile, &map, nonexec, &resolved) !=
-          CT_EXECUTABLE_INCOMPATIBLE ||
+          CT_EXECUTABLE_INACCESSIBLE ||
        ct_executable_resolve(&profile, &map, fifo, &resolved) !=
            CT_EXECUTABLE_INCOMPATIBLE ||
        ct_executable_resolve(&profile, &map, env_malformed, &resolved) !=
-           CT_EXECUTABLE_INCOMPATIBLE ||
+           CT_EXECUTABLE_SHEBANG ||
       ct_executable_resolve(&profile, &map, "not-present-container-tools-test", &resolved) !=
           CT_EXECUTABLE_NOT_FOUND) return 12;
   ct_path_map_destroy(&map);

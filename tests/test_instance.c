@@ -67,15 +67,31 @@ int main(void)
   }
   {
     FILE *stream = fopen(image, "w");
+    FILE *diagnostic_stream;
     char *identity[] = {"--apptainer", "--ct-instance-root", untouched, "--", image, "/bin/true"};
     char *reserved[] = {"--apptainer", "--ct-instance-root", untouched, "--ct-env",
                         "SINGULARITYENV_CONTAINER_TOOLS_PROFILE=caller", "--", image, "/bin/true"};
+    char diagnostics[512];
+    size_t diagnostic_size;
+    int saved_stderr;
     if (stream == NULL || fputs("image\n", stream) == EOF || fclose(stream) != 0 ||
         setenv("HOME", root, 1) != 0 || setenv("CT_MOUNT_CFG", mount_config, 1) != 0 ||
         setenv("CT_MOUNT_PLAN_STATE_ROOT", mount_plan_root, 1) != 0 ||
         setenv("CT_DRY_RUN", "1", 1) != 0 ||
         ct_instance_command(6, identity, 1) != 0 || access(untouched, F_OK) == 0 ||
-        ct_instance_command(8, reserved, 1) == 0 || unsetenv("CT_DRY_RUN") != 0) return 1;
+        (diagnostic_stream = tmpfile()) == NULL || (saved_stderr = dup(STDERR_FILENO)) < 0 ||
+        fflush(stderr) == EOF || dup2(fileno(diagnostic_stream), STDERR_FILENO) < 0 ||
+        ct_instance_command(8, reserved, 1) == 0 || fflush(stderr) == EOF ||
+        dup2(saved_stderr, STDERR_FILENO) < 0 || close(saved_stderr) != 0 ||
+        fseek(diagnostic_stream, 0L, SEEK_SET) != 0 ||
+        (diagnostic_size = fread(diagnostics, 1U, sizeof(diagnostics) - 1U,
+                                 diagnostic_stream)) == 0U ||
+        fclose(diagnostic_stream) != 0 || unsetenv("CT_DRY_RUN") != 0) return 1;
+    diagnostics[diagnostic_size] = '\0';
+    if (strstr(diagnostics,
+               "container-tools: persistent instance request: usage: use 'container-tools instance exec --help' for valid syntax") == NULL) {
+      return 1;
+    }
   }
   return 0;
 }

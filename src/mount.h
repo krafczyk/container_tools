@@ -32,10 +32,24 @@ enum ct_mount_status ct_mount_format_args(const char *const *file_tokens,
                                           size_t extra_count, char *output,
                                           size_t output_size);
 
-/** Execute the public `mount args` operation. */
+/**
+ * Execute the public `mount args` operation.
+ *
+ * @param argument_count Number of arguments beginning with the configuration path.
+ * @param arguments Mutable argument vector beginning with the configuration path.
+ * @return Zero on success, 64 for invalid syntax, or nonzero for configuration failure.
+ * @sideeffect Writes formatted arguments to stdout on success or a redacted diagnostic to stderr on failure.
+ */
 int ct_mount_args_command(int argument_count, char *const arguments[]);
 
-/** Execute the public `mount detect` operation. */
+/**
+ * Execute the public `mount detect` operation.
+ *
+ * @param argument_count Number of detector arguments.
+ * @param arguments Mutable detector argument vector.
+ * @return Zero on success, 64 for invalid syntax, or the discovery failure status.
+ * @sideeffect Writes detected paths to stdout on success or a redacted diagnostic to stderr on failure.
+ */
 int ct_mount_detect_command(int argument_count, char *const arguments[]);
 
 /**

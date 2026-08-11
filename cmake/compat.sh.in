@@ -3,6 +3,12 @@
 CT_PACKAGE_IDENTITY='@CONTAINER_TOOLS_BUILD_IDENTITY@'
 CT_COMPATIBILITY_SCRIPT='@CONTAINER_TOOLS_COMPAT_SCRIPT@'
 
-script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P) || exit 78
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P) || {
+  printf '%s\n' 'container-tools: compatibility launcher: location: reinstall the compatibility scripts beside their matching container-tools executable, then retry' >&2
+  exit 78
+}
+if [ ! -x "$script_dir/container-tools" ]; then
+  printf '%s\n' 'container-tools: compatibility launcher: sibling-executable: reinstall container-tools so the matching executable is present and executable, then retry' >&2
+fi
 exec "$script_dir/container-tools" --internal-compat "$CT_PACKAGE_IDENTITY" \
   "$CT_COMPATIBILITY_SCRIPT" "$@"

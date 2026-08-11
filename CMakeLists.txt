@@ -152,6 +152,11 @@ if(BUILD_TESTING)
   container_tools_enable_warnings(test_cli)
   add_test(NAME container_tools_cli COMMAND test_cli)
 
+  configure_file(tests/test_diagnostics.cmake.in
+    "${CMAKE_CURRENT_BINARY_DIR}/test_diagnostics.cmake" @ONLY)
+  add_test(NAME container_tools_diagnostics COMMAND "${CMAKE_COMMAND}" -P
+    "${CMAKE_CURRENT_BINARY_DIR}/test_diagnostics.cmake")
+
   add_executable(test_package tests/test_package.c)
   target_link_libraries(test_package PRIVATE container_tools_test_core)
   target_include_directories(test_package PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -189,6 +194,7 @@ if(BUILD_TESTING)
 
   add_executable(test_mount_sort tests/test_mount_sort.c)
   target_include_directories(test_mount_sort PRIVATE src)
+  target_link_libraries(test_mount_sort PRIVATE container_tools_test_core)
   container_tools_enable_warnings(test_mount_sort)
   add_test(NAME container_tools_mount_sort COMMAND test_mount_sort)
 

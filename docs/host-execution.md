@@ -20,7 +20,7 @@ never invoke Docker, Podman, SingularityCE, or Apptainer.
 
 Unknown, empty, missing, and duplicate `--backend` values fail with usage
 status before configuration, manifest, allocation, or backend access.
-`--verbose` writes one bounded profile/backend selection diagnostic to stderr
+`--verbose` writes one bounded backend-selection diagnostic to stderr
 before dispatch.
 
 Bubblewrap receives only the selected root, ordered requested overlays, a
@@ -46,10 +46,16 @@ parent-captured device/inode/type identity, and one descendant
 self-exec during a probe, then executes target argv directly. The
 selected root therefore needs no container-tools metadata or trampoline file.
 
-Before dispatch, status 125 identifies configuration, manifest, or setup
-failure; 126 identifies a target that exists but is not executable or
-compatible; 127 identifies a target command that was not found. After dispatch,
-command statuses pass through unchanged.
+Before dispatch, status 125 identifies configuration, manifest, backend, or
+trampoline setup failure; 126 identifies a target that exists but is not
+executable or compatible; 127 identifies a target command that was not found.
+The bounded stderr diagnostic names the correction without including the
+selected profile, root, paths, manifest content, backend output, or payload.
+Executable diagnostics distinguish not-found, inaccessible, incompatible,
+dynamic-loader, and shebang-chain failures. Backend diagnostics distinguish a
+missing tool, policy denial, probe timeout or failure, cleanup uncertainty, and
+trampoline setup. After dispatch, command statuses and output pass through
+unchanged without a container-tools suffix.
 
 ## Profiles
 
@@ -114,6 +120,8 @@ caller-namespace executable for the selected probe and launch, and never lets a
 profile PATH substitute that backend. Automatic selection falls through only
 after a fully cleaned capability failure or timeout; setup, cleanup, or signal
 restoration uncertainty exits 125.
+Probe child stdout and stderr are redirected to `/dev/null`; backend probe
+messages never appear in a host doctor JSON report or a host exec diagnostic.
 
 ## Doctor
 
@@ -196,7 +204,8 @@ capability and is not executed by doctor.
 A complete diagnosis exits `0`, including when no backend is operational.
 Invalid configuration or selected root, manifest I/O failure, an unrecognized
 mount-plan read result, probe/setup/cleanup uncertainty, or inability to build
-the report exits `125` with a stderr diagnostic. Before output begins, the
+the report exits `125` with a stderr diagnostic naming the failed phase and a
+recovery action. Before output begins, the
 serializer constructs the full object, so allocation or serialization failure
 emits no partial JSON. A strict no-partial-output guarantee for a failing stdout
 write is not implemented: a short or failed stream write can leave partial JSON

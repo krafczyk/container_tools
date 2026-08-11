@@ -45,6 +45,18 @@ enum ct_nested_operational {
   CT_NESTED_OPERATIONAL_YES = 1,
   CT_NESTED_OPERATIONAL_NOT_PROBED = 2
 };
+/** Closed actionable reason for a failure before a backend dispatch begins. */
+enum ct_nested_pre_dispatch_failure {
+  CT_NESTED_PRE_DISPATCH_NONE = 0,
+  CT_NESTED_PRE_DISPATCH_TOOL_MISSING,
+  CT_NESTED_PRE_DISPATCH_POLICY_DENIED,
+  CT_NESTED_PRE_DISPATCH_PROBE_TIMEOUT,
+  CT_NESTED_PRE_DISPATCH_PROBE_FAILED,
+  CT_NESTED_PRE_DISPATCH_CLEANUP_UNCERTAIN,
+  CT_NESTED_PRE_DISPATCH_TRAMPOLINE,
+  CT_NESTED_PRE_DISPATCH_COMMAND_BUILD,
+  CT_NESTED_PRE_DISPATCH_DIAGNOSTIC_OUTPUT
+};
 /** One closed capability result used by selection and doctor output. */
 struct ct_nested_backend_report {
   enum ct_nested_backend backend;
@@ -89,7 +101,23 @@ int ct_nested_command_add_trampoline(const struct ct_nested_request *request,
  * @return Exact dispatched status, or 125 before dispatch when none can run.
  */
 int ct_backend_nested_execute(const struct ct_nested_request *request,
-                              const char *forced, int allow_rewrite);
+                               const char *forced, int allow_rewrite);
+/**
+ * Dispatch one selected backend while retaining a pre-dispatch failure class.
+ *
+ * Payload and backend launch statuses retain their exact protocol value and set
+ * `failure` to `CT_NESTED_PRE_DISPATCH_NONE`; only failures before dispatch
+ * produce a non-none class.
+ *
+ * @param request Fully prepared selected-root request with live descriptors.
+ * @param forced Optional fixed backend selector.
+ * @param allow_rewrite Nonzero only for explicit full-root degradation consent.
+ * @param failure Destination for a closed pre-dispatch reason, if non-NULL.
+ * @return Exact dispatched status or 125 when dispatch cannot begin.
+ */
+int ct_backend_nested_execute_detailed(
+    const struct ct_nested_request *request, const char *forced,
+    int allow_rewrite, enum ct_nested_pre_dispatch_failure *failure);
 /**
  * Diagnose nested backends in fixed order without dispatching a payload.
  *

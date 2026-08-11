@@ -80,7 +80,7 @@ execute_process(
   OUTPUT_VARIABLE host_output
   ERROR_VARIABLE host_error
 )
-if(NOT host_result EQUAL 0 OR NOT host_error MATCHES "selection profile=root backend=rewrite" OR
+if(NOT host_result EQUAL 0 OR NOT host_error MATCHES "selection backend=rewrite" OR
    NOT host_error MATCHES "selected rewrite entry-point behavior" OR
    NOT host_output MATCHES "CT_U7_VALUE=planned" OR host_output MATCHES "CT_REMOVE_ME=secret")
   message(FATAL_ERROR "installed host command did not execute the selected-root rewrite plan: ${host_error}")
@@ -185,7 +185,7 @@ execute_process(
 if(NOT doctor_result EQUAL 0 OR NOT doctor_output MATCHES "container-tools.host-doctor/v1" OR
    NOT doctor_output MATCHES "\"name\":\"rewrite\"" OR
    doctor_output MATCHES "selection" OR
-   NOT doctor_error MATCHES "selection profile=root backend=bubblewrap,proot,rewrite")
+   NOT doctor_error MATCHES "selection backend=bubblewrap,proot,rewrite")
   message(FATAL_ERROR "installed host doctor did not emit one complete report")
 endif()
 
@@ -418,7 +418,7 @@ execute_process(
   RESULT_VARIABLE u7_future_result OUTPUT_VARIABLE u7_future_output ERROR_VARIABLE u7_future_error
 )
 if(NOT u7_future_result EQUAL 125 OR NOT u7_future_output STREQUAL "" OR EXISTS "${u7_backend_log}" OR
-   NOT u7_future_error MATCHES "expected ct-mount-plan-v1, actual ct-mount-plan-v2")
+   NOT u7_future_error STREQUAL "container-tools: host exec: mount-plan: use a compatible container-tools version or regenerate the mount plan, then retry\n")
   message(FATAL_ERROR "U7 future-major manifest reached a nested backend probe")
 endif()
 

@@ -20,6 +20,7 @@ int ct_storage_ensure_private_directory(const char *path);
  * @param backend singularity or apptainer.
  * @param config Parsed machine configuration.
  * @return Zero on success, otherwise nonzero before child dispatch.
+ * @sideeffect Writes one redacted actionable diagnostic to stderr on failure.
  */
 int ct_storage_select_runtime(const char *backend, const struct ct_runtime_config *config);
 

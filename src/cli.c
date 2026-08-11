@@ -104,3 +104,11 @@ void ct_cli_write_usage(FILE *stream)
                "          host exec|doctor\n",
                stream);
 }
+
+void ct_cli_diagnostic(const char *operation, const char *category,
+                       const char *action)
+{
+  if (operation == NULL || category == NULL || action == NULL) return;
+  (void)fprintf(stderr, "container-tools: %s: %s: %s\n", operation, category,
+                action);
+}

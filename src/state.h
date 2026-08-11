@@ -13,6 +13,13 @@ struct ct_state_pending {
   char nonce[34];
 };
 
+/** Distinguishes a contended profile lock from invalid or inaccessible state. */
+enum ct_state_lock_status {
+  CT_STATE_LOCK_OK = 0,
+  CT_STATE_LOCK_SETUP = 1,
+  CT_STATE_LOCK_TIMEOUT = 2,
+};
+
 /** Construct the pending-record path for a validated root and instance name. */
 int ct_state_pending_path(const char *root, const char *name,
                           char path[CT_STATE_PATH_MAX]);
@@ -49,9 +56,11 @@ int ct_state_prepare_root(const char *root);
  * Acquire one profile lock within `CT_INSTANCE_LOCK_TIMEOUT`.
  *
  * Creates the validated root when needed and returns its held descriptor through
- * `descriptor`. Returns nonzero on invalid state, I/O failure, or timeout.
+ * `descriptor`. Returns CT_STATE_LOCK_TIMEOUT for contention and
+ * CT_STATE_LOCK_SETUP for invalid state, I/O failure, or invalid timeout setup.
  */
-int ct_state_lock(const char *root, const char *name, int *descriptor);
+enum ct_state_lock_status ct_state_lock(const char *root, const char *name,
+                                        int *descriptor);
 /** Release and close a descriptor returned by `ct_state_lock`; negative is a no-op. */
 void ct_state_unlock(int descriptor);
 

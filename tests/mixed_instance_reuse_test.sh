@@ -63,7 +63,8 @@ identity=$("$native" instance identity --apptainer \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
   --ct-env 'TEST_VALUE=space value' \
   --ct-bootstrap "$work/bootstrap" \
-  -- "$work/image.sif" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*')
+  -- "$work/image.sif" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*' \
+  2>"$work/native-identity.err")
 json=$("$native" instance identity --apptainer \
   --ct-instance-root "$work/instance root" \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
@@ -80,6 +81,7 @@ alias_identity=$("$native" instance identity --apptainer \
 [[ $identity == "$expected_profile" \
   && $alias_identity == "$identity" \
   && $json == "{\"schema\":\"container-tools.instance-identity/v1\",\"identity\":\"$identity\"}" \
+  && ! -s "$work/native-identity.err" \
   && $(<"$work/call-count") == "$calls_before" ]] || {
   printf '%s\n' 'instance identity contacted a runtime or diverged from instance exec' >&2
   exit 1

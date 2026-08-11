@@ -115,6 +115,7 @@ int main(int argument_count, char **arguments)
   struct ct_nested_request request;
   struct ct_process_environment environment[7];
   struct ct_nested_backend_report reports[3];
+  enum ct_nested_pre_dispatch_failure failure;
   if (strcmp(base_name(arguments[0]), "bwrap") == 0 || strcmp(base_name(arguments[0]), "proot") == 0) {
     return fake_backend_main(argument_count, arguments);
   }
@@ -173,12 +174,29 @@ int main(int argument_count, char **arguments)
   if (clear_log(log) != 0 || ct_backend_nested_diagnose(&request, 0, reports) != 0 ||
       reports[0].operational != CT_NESTED_OPERATIONAL_YES ||
       strcmp(reports[1].reason_code, "earlier-backend-ready") != 0 ||
-      line_count(log) != 1) return 7;
+       line_count(log) != 1) return 7;
+  environment[3].value = "126";
+  if (ct_backend_nested_execute_detailed(&request, "bubblewrap", 0, &failure) !=
+          125 ||
+      failure != CT_NESTED_PRE_DISPATCH_POLICY_DENIED) return 7;
+  environment[3].value = "124";
+  if (ct_backend_nested_execute_detailed(&request, "bubblewrap", 0, &failure) !=
+          125 ||
+      failure != CT_NESTED_PRE_DISPATCH_PROBE_TIMEOUT) return 7;
+  environment[3].value = "0";
+  request.bubblewrap_path = "/not-a-container-tools-backend";
+  if (ct_backend_nested_execute_detailed(&request, "bubblewrap", 0, &failure) !=
+          125 ||
+      failure != CT_NESTED_PRE_DISPATCH_TOOL_MISSING) return 7;
+  request.bubblewrap_path = bwrap;
   bad = open("/dev/null", O_RDONLY);
   if (bad < 0) return 8;
   request.trampoline_descriptor = bad;
-  if (clear_log(log) != 0 || ct_backend_nested_execute(&request, "bubblewrap", 0) != 125 ||
-      line_count(log) != 1 || close(bad) != 0) return 8;
+  if (clear_log(log) != 0 ||
+      ct_backend_nested_execute_detailed(&request, "bubblewrap", 0, &failure) !=
+          125 ||
+      failure != CT_NESTED_PRE_DISPATCH_TRAMPOLINE || line_count(log) != 0 ||
+      close(bad) != 0) return 8;
   request.trampoline_descriptor = trampoline;
 #ifndef CT_TRAMPOLINE_TEST_SEAM
   bad = open("/dev/null", O_RDONLY);

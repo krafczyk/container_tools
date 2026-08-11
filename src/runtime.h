@@ -13,7 +13,9 @@
  * @param arguments Mutable launcher argument vector beginning with a backend.
  * @param shell_mode Nonzero to launch the configured interactive shell.
  * @return 64 for invalid arguments, the payload or backend status for an
- * attempted launch, or a nonzero internal failure status.
+ * attempted launch, or the established nonzero internal failure status.
+ * @sideeffect Writes one redacted actionable diagnostic to stderr on failure;
+ * stdout is reserved for successful dry-run output.
  */
 int ct_runtime_foreground_command(int argument_count, char *const arguments[], int shell_mode);
 
