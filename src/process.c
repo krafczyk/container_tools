@@ -166,16 +166,46 @@ static int ct_process_wait(pid_t child, int *status)
   return result == child ? 0 : 1;
 }
 
-static int ct_process_observe(pid_t child)
+static int ct_process_set_foreground_group(pid_t group)
+{
+  sigset_t blocked, old_mask;
+  int result;
+
+  if (group <= 0 || sigemptyset(&blocked) != 0 ||
+      sigaddset(&blocked, SIGTTOU) != 0 ||
+      sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) return 1;
+  result = tcsetpgrp(STDIN_FILENO, group);
+  if (sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) return 1;
+  return result != 0;
+}
+
+static int ct_process_observe(pid_t child, int handoff_terminal,
+                              pid_t caller_group)
 {
   siginfo_t information;
   int result;
 
-  do {
+  for (;;) {
     memset(&information, 0, sizeof(information));
-    result = waitid(P_PID, (id_t)child, &information, WEXITED | WNOWAIT);
-  } while (result != 0 && errno == EINTR);
-  return result == 0 && information.si_pid == child ? 0 : 1;
+    do {
+      result = waitid(P_PID, (id_t)child, &information,
+                      WEXITED | (handoff_terminal != 0 ? WSTOPPED : 0) |
+                          WNOWAIT);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0 || information.si_pid != child) return 1;
+    if (information.si_code != CLD_STOPPED) return 0;
+    do {
+      result = waitid(P_PID, (id_t)child, &information, WSTOPPED | WNOHANG);
+    } while (result != 0 && errno == EINTR);
+    if (result != 0) return 1;
+    if (information.si_pid == 0) continue;
+    if (tcgetpgrp(STDIN_FILENO) == child &&
+        ct_process_set_foreground_group(caller_group) != 0) return 1;
+    if (kill(0, SIGSTOP) != 0) return 1;
+    if (tcgetpgrp(STDIN_FILENO) == caller_group &&
+        ct_process_set_foreground_group(child) != 0) return 1;
+    if (kill(-child, SIGCONT) != 0 && errno != ESRCH) return 1;
+  }
 }
 
 int ct_process_run(char *const arguments[],
@@ -199,12 +229,19 @@ int ct_process_run(char *const arguments[],
   int observe_result;
   int mask_block_result;
   int wait_result;
+  const pid_t caller_group = getpgrp();
+  const bool handoff_terminal =
+      caller_group > 0 && isatty(STDIN_FILENO) != 0 &&
+      tcgetpgrp(STDIN_FILENO) == caller_group;
+  int terminal_handoff_result = 0;
+  int terminal_restore_result = 0;
 
   if (arguments == NULL || arguments[0] == NULL ||
       environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
       (environment_count != 0U && environment == NULL)) return 64;
   if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 ||
-      sigaddset(&blocked, SIGTERM) != 0 || sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) {
+      sigaddset(&blocked, SIGTERM) != 0 || sigaddset(&blocked, SIGTTOU) != 0 ||
+      sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) {
     return 125;
   }
   if (pipe(ready) != 0 || pipe(release) != 0) {
@@ -265,16 +302,24 @@ int ct_process_run(char *const arguments[],
   }
   terminate_installed = true;
   ct_process_child_group = (sig_atomic_t)child;
-  if (ct_process_write_byte(release[1], 0) == 0) child_released = true;
+  if (handoff_terminal && tcsetpgrp(STDIN_FILENO, child) != 0) {
+    terminal_handoff_result = 1;
+  }
+  if (terminal_handoff_result == 0 &&
+      ct_process_write_byte(release[1], 0) == 0) child_released = true;
   (void)close(release[1]);
   mask_restore_result = sigprocmask(SIG_SETMASK, &old_mask, NULL);
-  observe_result = ct_process_observe(child);
+  observe_result = ct_process_observe(child, handoff_terminal, caller_group);
   mask_block_result = sigprocmask(SIG_BLOCK, &blocked, NULL);
+  if (handoff_terminal && tcsetpgrp(STDIN_FILENO, caller_group) != 0) {
+    terminal_restore_result = 1;
+  }
   /* WNOWAIT keeps the PID/PGID non-reusable until the handler target is clear. */
   ct_process_child_group = 0;
   wait_result = ct_process_wait(child, &status);
   if (!child_released || mask_restore_result != 0 || observe_result != 0 ||
-      mask_block_result != 0 || wait_result != 0) {
+      mask_block_result != 0 || terminal_handoff_result != 0 ||
+      terminal_restore_result != 0 || wait_result != 0) {
     if (terminate_installed) (void)sigaction(SIGTERM, &old_terminate, NULL);
     if (interrupt_installed) (void)sigaction(SIGINT, &old_interrupt, NULL);
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);

@@ -15,7 +15,13 @@ int ct_process_apply_environment(
     size_t environment_count);
 
 /**
- * Run one argv-preserved child in an owned process group and wait for its outcome.
+ * Run one argv-preserved child and wait for its outcome.
+ *
+ * The child runs in an owned process group. When the caller owns an inherited
+ * foreground terminal, that terminal is handed to the child group for the
+ * duration of the command and restored before return. Child stops suspend the
+ * caller job and preserve foreground continuation. Signals delivered only to
+ * the supervisor are forwarded to the complete child group.
  *
  * @param arguments Null-terminated executable argv.
  * @param environment Bounded child-only environment removals and overrides.
