@@ -897,8 +897,15 @@ static void ct_instance_mount_config_diagnostic(
       ct_instance_diagnostic(
           "mount-configuration",
           has_config_override ?
-              "the file selected by CT_MOUNT_CFG contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry" :
-              "$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry");
+              "the file selected by CT_MOUNT_CFG contains an --add-path value that is not an absolute same-path mount; remove the remap from this file or pass --ct-bind HOST:CONTAINER to the container launcher instead, then retry" :
+              "$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount; remove the remap from this file or pass --ct-bind HOST:CONTAINER to the container launcher instead, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_CONFIG_CT_BIND:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          has_config_override ?
+              "the file selected by CT_MOUNT_CFG contains --ct-bind, which is a container launcher option rather than a mount detector option; remove it from this file and pass the bind to the container launcher, then retry" :
+              "$HOME/.config/ct_mount.conf contains --ct-bind, which is a container launcher option rather than a mount detector option; remove it from this file and pass the bind to the container launcher, then retry");
       return;
     case CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS:
       ct_instance_diagnostic(
@@ -908,7 +915,12 @@ static void ct_instance_mount_config_diagnostic(
     case CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH:
       ct_instance_diagnostic(
           "mount-configuration",
-          "MOUNT_DETECTOR_ARGS contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry");
+          "MOUNT_DETECTOR_ARGS contains an --add-path value that is not an absolute same-path mount; remove the remap from MOUNT_DETECTOR_ARGS or pass --ct-bind HOST:CONTAINER to the container launcher instead, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_EXTRA_CT_BIND:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "MOUNT_DETECTOR_ARGS contains --ct-bind, which is a container launcher option rather than a mount detector option; remove it from MOUNT_DETECTOR_ARGS and pass the bind to the container launcher, then retry");
       return;
     case CT_MOUNT_ENVIRONMENT_COMBINED_OPTIONS:
       ct_instance_diagnostic(

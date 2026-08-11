@@ -1,26 +1,132 @@
 set(work "@CMAKE_BINARY_DIR@/mount-plan-compatibility")
 set(manifest "${work}/future.manifest")
-set(config "${work}/host.toml")
+set(full_root_config "${work}/full-root.toml")
+set(rewrite_config "${work}/rewrite.toml")
+set(future_full_root_config "${work}/future-full-root.toml")
+set(future_rewrite_config "${work}/future-rewrite.toml")
+set(backends "${work}/backends")
+set(probe_marker "${work}/backend-probed")
+set(payload_marker "${work}/payload-dispatched")
+set(future_exec_error "container-tools: host exec: mount-plan: unsupported grammar: expected ct-mount-plan-v1, actual ct-mount-plan-v2; use a compatible container-tools version or regenerate the mount plan, then retry\n")
+set(future_doctor_error "container-tools: host doctor: mount-plan: unsupported grammar: expected ct-mount-plan-v1, actual ct-mount-plan-v2; use a compatible container-tools version or regenerate the mount plan, then retry\n")
+set(unsafe_future_exec_error "container-tools: host exec: mount-plan: unsupported grammar: expected ct-mount-plan-v1, actual unknown; use a compatible container-tools version or regenerate the mount plan, then retry\n")
+set(unsafe_future_doctor_error "container-tools: host doctor: mount-plan: unsupported grammar: expected ct-mount-plan-v1, actual unknown; use a compatible container-tools version or regenerate the mount plan, then retry\n")
 file(REMOVE_RECURSE "${work}")
-file(MAKE_DIRECTORY "${work}")
+file(MAKE_DIRECTORY "${work}" "${backends}")
 execute_process(COMMAND /usr/bin/printf "ct-mount-plan-v2\\0" OUTPUT_FILE "${manifest}")
-file(WRITE "${config}"
+file(WRITE "${full_root_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${rewrite_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${future_full_root_config}"
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${manifest}\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${future_rewrite_config}"
   "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"/\"\nroot_access = \"inherit\"\nsemantics = \"rewrite\"\nmount_plan = \"${manifest}\"\ncwd_unmapped = \"root\"\npath = [\"/usr/bin\", \"/bin\"]\n")
+file(WRITE "${backends}/bwrap" "#!/bin/sh\n: > '${probe_marker}'\nexit 1\n")
+file(CHMOD "${backends}/bwrap" PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE)
 
-foreach(operation IN ITEMS exec doctor)
-  if(operation STREQUAL "exec")
-    set(arguments host exec --config "${config}" --backend bubblewrap -- /bin/true)
-  else()
-    set(arguments host doctor --config "${config}" --json)
-  endif()
-  execute_process(
-    COMMAND "@CMAKE_BINARY_DIR@/container-tools" ${arguments}
-    RESULT_VARIABLE result
-    OUTPUT_VARIABLE output
-    ERROR_VARIABLE error
-  )
-  if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
-     NOT error STREQUAL "container-tools: host ${operation}: mount-plan: use a compatible container-tools version or regenerate the mount plan, then retry\n")
-    message(FATAL_ERROR "future mount plan did not fail closed for host ${operation}: ${error}")
-  endif()
-endforeach()
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host exec --config "${full_root_config}" --backend bubblewrap -- /bin/true
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "container-tools: host exec: backend-probe-failed: repair the selected backend installation or policy, then retry\n" OR
+   NOT EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "eligible Bubblewrap probe did not reach its fixture: ${error}")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host exec --config "${rewrite_config}" --backend rewrite -- /bin/sh -c ": > '${payload_marker}'"
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 0 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "container-tools: host exec: requested semantics rewrite; full-root attempts: bubblewrap=not-attempted, proot=not-attempted; selected rewrite entry-point behavior; descendants do not receive selected-root filesystem semantics and read-only access is not enforced\n" OR
+   NOT EXISTS "${probe_marker}" OR NOT EXISTS "${payload_marker}")
+  message(FATAL_ERROR "eligible rewrite dispatch did not reach its fixture: ${error}")
+endif()
+
+file(REMOVE "${probe_marker}" "${payload_marker}")
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host exec --config "${future_full_root_config}" --backend bubblewrap -- /bin/true
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "${future_exec_error}" OR
+   EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "future mount plan did not block Bubblewrap probing: ${error}")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host exec --config "${future_rewrite_config}" --backend rewrite -- /bin/sh -c ": > '${payload_marker}'"
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "${future_exec_error}" OR
+   EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "future mount plan did not block rewrite dispatch: ${error}")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host doctor --config "${future_full_root_config}" --json
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "${future_doctor_error}" OR
+   EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "future mount plan did not block Bubblewrap diagnosis: ${error}")
+endif()
+
+execute_process(COMMAND /usr/bin/printf "ct-mount-plan-v2\\nforged\\0" OUTPUT_FILE "${manifest}")
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host exec --config "${future_full_root_config}" --backend bubblewrap -- /bin/true
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "${unsafe_future_exec_error}" OR
+   EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "control-bearing future mount plan did not produce one safe host exec diagnostic: ${error}")
+endif()
+
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "PATH=${backends}" "@CMAKE_BINARY_DIR@/container-tools"
+          host doctor --config "${future_full_root_config}" --json
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 125 OR NOT output STREQUAL "" OR
+   NOT error STREQUAL "${unsafe_future_doctor_error}" OR
+   EXISTS "${probe_marker}" OR EXISTS "${payload_marker}")
+  message(FATAL_ERROR "control-bearing future mount plan did not produce one safe host doctor diagnostic: ${error}")
+endif()
+
+execute_process(
+  COMMAND "@CMAKE_BINARY_DIR@/container-tools" host doctor --config "${rewrite_config}" --json
+  RESULT_VARIABLE result
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE error
+)
+if(NOT result EQUAL 0 OR NOT output MATCHES "\\\"name\\\":\\\"rewrite\\\",\\\"installed\\\":true,\\\"eligible\\\":true,\\\"operational\\\":\\\"yes\\\",\\\"reason_code\\\":\\\"ready\\\"" OR
+   NOT error STREQUAL "")
+  message(FATAL_ERROR "supported rewrite path was not reported as ready: ${output} ${error}")
+endif()

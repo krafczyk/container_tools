@@ -216,10 +216,24 @@ default_mount_status=$?
 set -e
 default_mount_error=$(<"$work/default-mount-config.err")
 [[ $default_mount_status -eq 1 \
-  && $default_mount_error == *'$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount'* \
-  && $default_mount_error == *'remove the remap or use --ct-bind HOST:CONTAINER'* \
+  && $default_mount_error == *"\$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount"* \
+  && $default_mount_error == *'pass --ct-bind HOST:CONTAINER to the container launcher instead'* \
   && $default_mount_error != *'MOUNT_DETECTOR_ARGS'* ]] || {
   printf '%s\n' 'default mount configuration failure did not identify its source and repair' >&2
+  exit 1
+}
+
+printf '%s\n' '--ct-bind /host/default:/container/default' > "$HOME/.config/ct_mount.conf"
+set +e
+invoke >/dev/null 2>"$work/default-ct-bind.err"
+default_ct_bind_status=$?
+set -e
+default_ct_bind_error=$(<"$work/default-ct-bind.err")
+[[ $default_ct_bind_status -eq 1 \
+  && $default_ct_bind_error == *"\$HOME/.config/ct_mount.conf contains --ct-bind, which is a container launcher option rather than a mount detector option"* \
+  && $default_ct_bind_error == *'remove it from this file and pass the bind to the container launcher'* \
+  && $default_ct_bind_error != *'MOUNT_DETECTOR_ARGS'* ]] || {
+  printf '%s\n' 'default --ct-bind misuse did not identify its source and placement' >&2
   exit 1
 }
 
@@ -237,6 +251,19 @@ configured_mount_error=$(<"$work/configured-mount-config.err")
   exit 1
 }
 
+printf '%s\n' '--ct-bind /host/configured:/container/configured' > "$work/remapped-mount-config"
+set +e
+invoke >/dev/null 2>"$work/configured-ct-bind.err"
+configured_ct_bind_status=$?
+set -e
+configured_ct_bind_error=$(<"$work/configured-ct-bind.err")
+[[ $configured_ct_bind_status -eq 1 \
+  && $configured_ct_bind_error == *'file selected by CT_MOUNT_CFG contains --ct-bind, which is a container launcher option rather than a mount detector option'* \
+  && $configured_ct_bind_error != *'MOUNT_DETECTOR_ARGS'* ]] || {
+  printf '%s\n' 'CT_MOUNT_CFG --ct-bind misuse did not identify its source and placement' >&2
+  exit 1
+}
+
 export CT_MOUNT_CFG="$work/missing-mount-config"
 export MOUNT_DETECTOR_ARGS='--add-path /host/environment:/container/environment'
 set +e
@@ -248,6 +275,20 @@ environment_mount_error=$(<"$work/environment-mount-config.err")
   && $environment_mount_error == *'MOUNT_DETECTOR_ARGS contains an --add-path value that is not an absolute same-path mount'* \
   && $environment_mount_error != *'CT_MOUNT_CFG'* ]] || {
   printf '%s\n' 'MOUNT_DETECTOR_ARGS failure did not identify its source and repair' >&2
+  exit 1
+}
+
+export MOUNT_DETECTOR_ARGS='--ct-bind /host/environment:/container/environment'
+set +e
+invoke >/dev/null 2>"$work/environment-ct-bind.err"
+environment_ct_bind_status=$?
+set -e
+environment_ct_bind_error=$(<"$work/environment-ct-bind.err")
+[[ $environment_ct_bind_status -eq 1 \
+  && $environment_ct_bind_error == *'MOUNT_DETECTOR_ARGS contains --ct-bind, which is a container launcher option rather than a mount detector option'* \
+  && $environment_ct_bind_error == *'remove it from MOUNT_DETECTOR_ARGS and pass the bind to the container launcher'* \
+  && $environment_ct_bind_error != *'CT_MOUNT_CFG'* ]] || {
+  printf '%s\n' 'MOUNT_DETECTOR_ARGS --ct-bind misuse did not identify its source and placement' >&2
   exit 1
 }
 unset MOUNT_DETECTOR_ARGS

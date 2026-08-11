@@ -418,7 +418,7 @@ execute_process(
   RESULT_VARIABLE u7_future_result OUTPUT_VARIABLE u7_future_output ERROR_VARIABLE u7_future_error
 )
 if(NOT u7_future_result EQUAL 125 OR NOT u7_future_output STREQUAL "" OR EXISTS "${u7_backend_log}" OR
-   NOT u7_future_error STREQUAL "container-tools: host exec: mount-plan: use a compatible container-tools version or regenerate the mount plan, then retry\n")
+   NOT u7_future_error STREQUAL "container-tools: host exec: mount-plan: unsupported grammar: expected ct-mount-plan-v1, actual ct-mount-plan-v2; use a compatible container-tools version or regenerate the mount plan, then retry\n")
   message(FATAL_ERROR "U7 future-major manifest reached a nested backend probe")
 endif()
 

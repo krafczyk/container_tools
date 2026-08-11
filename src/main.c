@@ -145,19 +145,39 @@ static void ct_host_config_diagnostic(const char *operation,
   }
 }
 
+static bool ct_host_mount_plan_grammar_is_safe(const char *grammar)
+{
+  const unsigned char *cursor = (const unsigned char *)grammar;
+  if (cursor == NULL || cursor[0] == '\0') return false;
+  while (*cursor != '\0') {
+    if (*cursor < 0x20U || *cursor > 0x7eU) return false;
+    ++cursor;
+  }
+  return true;
+}
+
 static void ct_host_mount_plan_diagnostic(
-    const char *operation, enum ct_mount_plan_read_status status)
+    const char *operation, enum ct_mount_plan_read_status status,
+    const struct ct_mount_plan_metadata *metadata)
 {
   const char *action = "read the exact mount plan again after fixing its storage, then retry";
   switch (status) {
+  case CT_MOUNT_PLAN_READ_FUTURE: {
+    const char *actual = metadata == NULL ||
+                                 !ct_host_mount_plan_grammar_is_safe(metadata->grammar)
+                             ? "unknown" : metadata->grammar;
+    (void)fprintf(stderr,
+                  "container-tools: %s: mount-plan: unsupported grammar: "
+                  "expected %s, actual %s; use a compatible container-tools "
+                  "version or regenerate the mount plan, then retry\n",
+                  operation, CT_MANIFEST_GRAMMAR, actual);
+    return;
+  }
   case CT_MOUNT_PLAN_READ_ABSENT:
     action = "publish or bind the selected profile mount plan, then retry";
     break;
   case CT_MOUNT_PLAN_READ_MALFORMED:
     action = "regenerate the selected profile mount plan using the supported grammar, then retry";
-    break;
-  case CT_MOUNT_PLAN_READ_FUTURE:
-    action = "use a compatible container-tools version or regenerate the mount plan, then retry";
     break;
   case CT_MOUNT_PLAN_READ_DIGEST_MISMATCH:
     action = "republish the mount plan from its source launcher, then retry";
@@ -372,14 +392,9 @@ static int ct_host_exec(int argument_count, char **arguments)
         workspace->profile.mount_plan, &workspace->metadata,
         ct_path_map_manifest_entry, &manifest);
 
-    if (mount_status == CT_MOUNT_PLAN_READ_FUTURE) {
-      ct_host_mount_plan_diagnostic("host exec", mount_status);
-      ct_path_map_destroy(&map);
-      free(workspace);
-      return 125;
-    }
     if (mount_status != CT_MOUNT_PLAN_READ_OK) {
-      ct_host_mount_plan_diagnostic("host exec", mount_status);
+      ct_host_mount_plan_diagnostic("host exec", mount_status,
+                                    &workspace->metadata);
       ct_path_map_destroy(&map);
       free(workspace);
       return 125;
@@ -574,12 +589,14 @@ static int ct_host_doctor(int argument_count, char **arguments)
         ct_path_map_manifest_entry, &manifest);
     if (manifest_status != CT_MOUNT_PLAN_READ_OK) {
       if (manifest_status == CT_MOUNT_PLAN_READ_FUTURE) {
-        ct_host_mount_plan_diagnostic("host doctor", manifest_status);
+        ct_host_mount_plan_diagnostic("host doctor", manifest_status,
+                                      &workspace->metadata);
         goto invalid;
       }
       mount_status = ct_host_mount_status(manifest_status);
       if (mount_status == NULL) {
-        ct_host_mount_plan_diagnostic("host doctor", manifest_status);
+        ct_host_mount_plan_diagnostic("host doctor", manifest_status,
+                                      &workspace->metadata);
         goto invalid;
       }
       mount_plan.status = mount_status;

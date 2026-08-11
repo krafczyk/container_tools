@@ -85,6 +85,12 @@ Omitting `mount_plan` disables semantic-manifest consumption. A configured path
 is required and read exactly; container-tools never scans state directories.
 The shared `ct-mount-plan-v1` parser verifies bounds, framing, digest, enums,
 and every tuple. In-place changes and path replacement during the read fail.
+An unsupported grammar fails `host exec` or `host doctor` before a backend
+probe or payload dispatch. Its single stderr diagnostic reports the expected
+`ct-mount-plan-v1`, the actual observed discriminator when it consists solely
+of printable ASCII, or `unknown` otherwise, and directs the caller to use a
+compatible container-tools version or regenerate the mount plan. The operation
+leaves the containing runtime instance running.
 
 `bootstrap-internal` is never replayed. `generated-host-root` establishes root
 evidence and is not replayed. Detected, explicit caller-data, and persistent-CWD

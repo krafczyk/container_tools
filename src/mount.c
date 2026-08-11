@@ -131,13 +131,15 @@ static enum ct_mount_status ct_mount_tokenize(char *contents, const char **token
 static enum ct_mount_environment_status ct_mount_validate_environment_options(
     const char *const *tokens, size_t count,
     enum ct_mount_environment_status options_status,
-    enum ct_mount_environment_status add_path_status)
+    enum ct_mount_environment_status add_path_status,
+    enum ct_mount_environment_status ct_bind_status)
 {
   bool add_path = false;
   size_t index;
   for (index = 0U; index < count; ++index) {
     const char *token = tokens[index];
     if (ct_mount_is_flag(token)) {
+      if (strcmp(token, "--ct-bind") == 0) return ct_bind_status;
       if (strcmp(token, "--exclude-fs") != 0 &&
           strcmp(token, "--exclude-path") != 0 &&
           strcmp(token, "--add-path") != 0) return options_status;
@@ -368,7 +370,8 @@ enum ct_mount_environment_status ct_mount_collect_environment(
   }
   environment_status = ct_mount_validate_environment_options(
       file_tokens, file_count, CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS,
-      CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH);
+      CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH,
+      CT_MOUNT_ENVIRONMENT_CONFIG_CT_BIND);
   if (environment_status != CT_MOUNT_ENVIRONMENT_OK) return environment_status;
   if (extra != NULL && extra[0] != '\0') {
     if (snprintf(extra_contents, sizeof(extra_contents), "%s", extra) >=
@@ -379,7 +382,8 @@ enum ct_mount_environment_status ct_mount_collect_environment(
   }
   environment_status = ct_mount_validate_environment_options(
       extra_tokens, extra_count, CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS,
-      CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH);
+      CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH,
+      CT_MOUNT_ENVIRONMENT_EXTRA_CT_BIND);
   if (environment_status != CT_MOUNT_ENVIRONMENT_OK) return environment_status;
   if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
                             formatted, sizeof(formatted)) != CT_MOUNT_OK ||

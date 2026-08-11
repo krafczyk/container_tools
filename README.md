@@ -393,7 +393,9 @@ appends whitespace-tokenized `MOUNT_DETECTOR_ARGS`. Configuration diagnostics
 identify which of those sources failed validation.
 Persistent `--add-path` values are absolute same-path mounts. Legacy
 `HOST:CONTAINER` remaps are rejected during profile preparation; callers that
-need an explicit remap must pass `--ct-bind HOST:CONTAINER` instead.
+need an explicit remap must pass `--ct-bind HOST:CONTAINER` to the container
+launcher command instead. `--ct-bind` is not valid in `ct_mount.conf` or
+`MOUNT_DETECTOR_ARGS`.
 
 Container tools reads optional machine-local storage defaults from
 `~/.config/ct_runtime.conf`. Override that path with `CT_RUNTIME_CFG`. The file
