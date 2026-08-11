@@ -15,6 +15,20 @@ enum ct_mount_status {
   CT_MOUNT_NOT_FOUND = 3
 };
 
+/** Detailed result of collecting persistent mount options from the environment. */
+enum ct_mount_environment_status {
+  CT_MOUNT_ENVIRONMENT_OK = 0,
+  CT_MOUNT_ENVIRONMENT_CONFIG_IO = 1,
+  CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS = 2,
+  CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH = 3,
+  CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS = 4,
+  CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH = 5,
+  CT_MOUNT_ENVIRONMENT_COMBINED_OPTIONS = 6,
+  CT_MOUNT_ENVIRONMENT_DISCOVERY = 7,
+  CT_MOUNT_ENVIRONMENT_DETECTED_PATH = 8,
+  CT_MOUNT_ENVIRONMENT_INTERNAL = 9
+};
+
 /**
  * Format legacy whitespace-tokenized mount arguments while preserving flag groups.
  *
@@ -65,9 +79,9 @@ int ct_mount_detect_command(int argument_count, char *const arguments[]);
  *
  * @param paths Caller-owned output array receiving selected mount paths.
  * @param path_count Receives the number of complete entries in `paths`.
- * @return Zero on success, or nonzero after clearing `path_count` on failure.
+ * @return A detailed environment status after clearing `path_count` on failure.
  */
-int ct_mount_collect_environment(
+enum ct_mount_environment_status ct_mount_collect_environment(
     char paths[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX], size_t *path_count);
 
 #endif

@@ -16,6 +16,11 @@ static bool ct_mount_is_flag(const char *token)
   return token != NULL && token[0] == '-' && token[1] == '-';
 }
 
+static bool ct_mount_is_persistent_path(const char *path)
+{
+  return path != NULL && path[0] == '/' && strpbrk(path, ":,\n") == NULL;
+}
+
 static bool ct_mount_append(char *output, size_t output_size, size_t *used, const char *value)
 {
   const size_t length = strlen(value);
@@ -121,6 +126,27 @@ static enum ct_mount_status ct_mount_tokenize(char *contents, const char **token
     cursor = strtok_r(NULL, " \t\r\n", &state);
   }
   return CT_MOUNT_OK;
+}
+
+static enum ct_mount_environment_status ct_mount_validate_environment_options(
+    const char *const *tokens, size_t count,
+    enum ct_mount_environment_status options_status,
+    enum ct_mount_environment_status add_path_status)
+{
+  bool add_path = false;
+  size_t index;
+  for (index = 0U; index < count; ++index) {
+    const char *token = tokens[index];
+    if (ct_mount_is_flag(token)) {
+      if (strcmp(token, "--exclude-fs") != 0 &&
+          strcmp(token, "--exclude-path") != 0 &&
+          strcmp(token, "--add-path") != 0) return options_status;
+      add_path = strcmp(token, "--add-path") == 0;
+    } else if (add_path && !ct_mount_is_persistent_path(token)) {
+      return add_path_status;
+    }
+  }
+  return CT_MOUNT_ENVIRONMENT_OK;
 }
 
 int ct_mount_args_command(int argument_count, char *const arguments[])
@@ -306,7 +332,7 @@ int ct_mount_detect_command(int argument_count, char *const arguments[])
   return 0;
 }
 
-int ct_mount_collect_environment(
+enum ct_mount_environment_status ct_mount_collect_environment(
     char paths[CT_MOUNT_MAX_PATHS][CT_MOUNT_PATH_MAX], size_t *path_count)
 {
   char config_path[CT_MOUNT_PATH_MAX];
@@ -322,34 +348,51 @@ int ct_mount_collect_environment(
   const char *extra = getenv("MOUNT_DETECTOR_ARGS");
   const char *home = getenv("HOME");
   enum ct_mount_status status;
+  enum ct_mount_environment_status environment_status;
 
-  if (paths == NULL || path_count == NULL) return 1;
+  if (paths == NULL || path_count == NULL) return CT_MOUNT_ENVIRONMENT_INTERNAL;
+  *path_count = 0U;
   if (configured == NULL || configured[0] == '\0') {
     if (home == NULL || home[0] != '/' ||
         snprintf(config_path, sizeof(config_path), "%s/.config/ct_mount.conf", home) >=
-            (int)sizeof(config_path)) return 1;
+            (int)sizeof(config_path)) return CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS;
     configured = config_path;
   }
   status = ct_mount_read_tokens(configured, file_contents, file_tokens, &file_count);
   if (status == CT_MOUNT_NOT_FOUND) {
     file_count = 0U;
-  } else if (status != CT_MOUNT_OK) return 1;
+  } else if (status == CT_MOUNT_IO) {
+    return CT_MOUNT_ENVIRONMENT_CONFIG_IO;
+  } else if (status != CT_MOUNT_OK) {
+    return CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS;
+  }
+  environment_status = ct_mount_validate_environment_options(
+      file_tokens, file_count, CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS,
+      CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH);
+  if (environment_status != CT_MOUNT_ENVIRONMENT_OK) return environment_status;
   if (extra != NULL && extra[0] != '\0') {
     if (snprintf(extra_contents, sizeof(extra_contents), "%s", extra) >=
             (int)sizeof(extra_contents) ||
-        ct_mount_tokenize(extra_contents, extra_tokens, &extra_count) != CT_MOUNT_OK) return 1;
-  }
-  if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
-                            formatted, sizeof(formatted)) != CT_MOUNT_OK ||
-      ct_mount_tokenize(formatted, formatted_tokens, &formatted_count) != CT_MOUNT_OK) return 1;
-  if (ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
-                        paths, path_count) != 0) return 1;
-  for (index = 0U; index < *path_count; ++index) {
-    if (paths[index][0] != '/' || strchr(paths[index], ':') != NULL ||
-        strchr(paths[index], ',') != NULL || strchr(paths[index], '\n') != NULL) {
-      *path_count = 0U;
-      return 1;
+        ct_mount_tokenize(extra_contents, extra_tokens, &extra_count) != CT_MOUNT_OK) {
+      return CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS;
     }
   }
-  return 0;
+  environment_status = ct_mount_validate_environment_options(
+      extra_tokens, extra_count, CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS,
+      CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH);
+  if (environment_status != CT_MOUNT_ENVIRONMENT_OK) return environment_status;
+  if (ct_mount_format_args(file_tokens, file_count, extra_tokens, extra_count,
+                            formatted, sizeof(formatted)) != CT_MOUNT_OK ||
+      ct_mount_tokenize(formatted, formatted_tokens, &formatted_count) != CT_MOUNT_OK) {
+    return CT_MOUNT_ENVIRONMENT_COMBINED_OPTIONS;
+  }
+  if (ct_mount_collect((int)formatted_count, (char *const *)formatted_tokens,
+                        paths, path_count) != 0) return CT_MOUNT_ENVIRONMENT_DISCOVERY;
+  for (index = 0U; index < *path_count; ++index) {
+    if (!ct_mount_is_persistent_path(paths[index])) {
+      *path_count = 0U;
+      return CT_MOUNT_ENVIRONMENT_DETECTED_PATH;
+    }
+  }
+  return CT_MOUNT_ENVIRONMENT_OK;
 }

@@ -207,6 +207,52 @@ invoke() {
     -- "$image_path" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*'
 }
 
+mkdir -p "$HOME/.config"
+printf '%s\n' '--add-path /host/default:/container/default' > "$HOME/.config/ct_mount.conf"
+unset CT_MOUNT_CFG MOUNT_DETECTOR_ARGS
+set +e
+invoke >/dev/null 2>"$work/default-mount-config.err"
+default_mount_status=$?
+set -e
+default_mount_error=$(<"$work/default-mount-config.err")
+[[ $default_mount_status -eq 1 \
+  && $default_mount_error == *'$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount'* \
+  && $default_mount_error == *'remove the remap or use --ct-bind HOST:CONTAINER'* \
+  && $default_mount_error != *'MOUNT_DETECTOR_ARGS'* ]] || {
+  printf '%s\n' 'default mount configuration failure did not identify its source and repair' >&2
+  exit 1
+}
+
+printf '%s\n' '--add-path /host/configured:/container/configured' > "$work/remapped-mount-config"
+export CT_MOUNT_CFG="$work/remapped-mount-config"
+set +e
+invoke >/dev/null 2>"$work/configured-mount-config.err"
+configured_mount_status=$?
+set -e
+configured_mount_error=$(<"$work/configured-mount-config.err")
+[[ $configured_mount_status -eq 1 \
+  && $configured_mount_error == *'file selected by CT_MOUNT_CFG contains an --add-path value that is not an absolute same-path mount'* \
+  && $configured_mount_error != *'MOUNT_DETECTOR_ARGS'* ]] || {
+  printf '%s\n' 'CT_MOUNT_CFG failure did not identify its source and repair' >&2
+  exit 1
+}
+
+export CT_MOUNT_CFG="$work/missing-mount-config"
+export MOUNT_DETECTOR_ARGS='--add-path /host/environment:/container/environment'
+set +e
+invoke >/dev/null 2>"$work/environment-mount-config.err"
+environment_mount_status=$?
+set -e
+environment_mount_error=$(<"$work/environment-mount-config.err")
+[[ $environment_mount_status -eq 1 \
+  && $environment_mount_error == *'MOUNT_DETECTOR_ARGS contains an --add-path value that is not an absolute same-path mount'* \
+  && $environment_mount_error != *'CT_MOUNT_CFG'* ]] || {
+  printf '%s\n' 'MOUNT_DETECTOR_ARGS failure did not identify its source and repair' >&2
+  exit 1
+}
+unset MOUNT_DETECTOR_ARGS
+export CT_MOUNT_CFG="$work/mount-config"
+
 for unsafe_root in "$work/unsafe:root" "$work/unsafe,root"; do
   set +e
   "$helper" --apptainer --ct-instance-root "$unsafe_root" \

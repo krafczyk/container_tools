@@ -82,6 +82,7 @@ struct ct_instance_mount {
 struct ct_instance_prepared {
   struct ct_instance_mount *mounts;
   size_t mount_count;
+  enum ct_mount_environment_status mount_environment_status;
   char digest[CT_PROFILE_DIGEST_HEX_LENGTH];
   char name[40];
   char image_real[CT_INSTANCE_PATH_MAX];
@@ -499,13 +500,15 @@ static enum ct_instance_prepare_status ct_instance_add_detected_mounts(
   size_t count = 0U, index;
   enum ct_instance_prepare_status result = CT_INSTANCE_PREPARE_INTERNAL;
   if (paths == NULL) goto done;
-  if (ct_mount_collect_environment(paths, &count) != 0) {
+  prepared->mount_environment_status = ct_mount_collect_environment(paths, &count);
+  if (prepared->mount_environment_status != CT_MOUNT_ENVIRONMENT_OK) {
     result = CT_INSTANCE_PREPARE_MOUNT_CONFIG;
     goto done;
   }
   for (index = 0U; index < count; ++index) {
     char target[CT_INSTANCE_PATH_MAX];
     if (ct_instance_normalize_path(paths[index], target) != 0) {
+      prepared->mount_environment_status = CT_MOUNT_ENVIRONMENT_DETECTED_PATH;
       result = CT_INSTANCE_PREPARE_MOUNT_CONFIG;
       goto done;
     }
@@ -870,7 +873,70 @@ done:
   return result;
 }
 
-static void ct_instance_prepare_diagnostic(enum ct_instance_prepare_status status)
+static void ct_instance_mount_config_diagnostic(
+    enum ct_mount_environment_status status)
+{
+  const char *configured = getenv("CT_MOUNT_CFG");
+  const bool has_config_override = configured != NULL && configured[0] != '\0';
+  switch (status) {
+    case CT_MOUNT_ENVIRONMENT_CONFIG_IO:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          has_config_override ?
+              "make the file selected by CT_MOUNT_CFG readable, then retry" :
+              "make $HOME/.config/ct_mount.conf readable, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_CONFIG_OPTIONS:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          has_config_override ?
+              "the file selected by CT_MOUNT_CFG contains unsupported or malformed mount detector options; use only --exclude-fs, --exclude-path, and --add-path, then retry" :
+              "$HOME/.config/ct_mount.conf contains unsupported or malformed mount detector options; use only --exclude-fs, --exclude-path, and --add-path, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          has_config_override ?
+              "the file selected by CT_MOUNT_CFG contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry" :
+              "$HOME/.config/ct_mount.conf contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_EXTRA_OPTIONS:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "MOUNT_DETECTOR_ARGS contains unsupported or malformed mount detector options; use only --exclude-fs, --exclude-path, and --add-path, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_EXTRA_ADD_PATH:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "MOUNT_DETECTOR_ARGS contains an --add-path value that is not an absolute same-path mount; remove the remap or use --ct-bind HOST:CONTAINER, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_COMBINED_OPTIONS:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "the combined mount configuration file and MOUNT_DETECTOR_ARGS exceed supported limits; reduce the options, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_DISCOVERY:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "repair /proc/mounts access or reduce the configured mount set, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_DETECTED_PATH:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "mount detection produced a path that is not an absolute same-path mount; adjust the detector exclusions, then retry");
+      return;
+    case CT_MOUNT_ENVIRONMENT_OK:
+    case CT_MOUNT_ENVIRONMENT_INTERNAL:
+    default:
+      ct_instance_diagnostic(
+          "mount-configuration",
+          "retry; if this persists, reinstall container-tools and report the failure");
+  }
+}
+
+static void ct_instance_prepare_diagnostic(
+    enum ct_instance_prepare_status status,
+    const struct ct_instance_prepared *prepared)
 {
   switch (status) {
     case CT_INSTANCE_PREPARE_IMAGE:
@@ -889,7 +955,7 @@ static void ct_instance_prepare_diagnostic(enum ct_instance_prepare_status statu
       ct_instance_diagnostic("host-projection", "repair local runtime projection support or use --ct-host-root auto, then retry");
       return;
     case CT_INSTANCE_PREPARE_MOUNT_CONFIG:
-      ct_instance_diagnostic("mount-configuration", "correct CT_MOUNT_CFG and MOUNT_DETECTOR_ARGS persistent mount options, then retry");
+      ct_instance_mount_config_diagnostic(prepared->mount_environment_status);
       return;
     case CT_INSTANCE_PREPARE_BIND:
       ct_instance_diagnostic("bind-source", "make every requested or detected bind source accessible, then retry");
@@ -1182,14 +1248,14 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
   if (identity_only == 0 && dry_run != NULL && dry_run[0] != '\0') {
     prepare_status = ct_instance_prepare_dry(&request, &prepared);
     if (prepare_status != CT_INSTANCE_PREPARE_OK) {
-      ct_instance_prepare_diagnostic(prepare_status);
+      ct_instance_prepare_diagnostic(prepare_status, &prepared);
       return 1;
     }
     return ct_instance_payload(&request, &prepared, "instance://dry-run", 1);
   }
   prepare_status = ct_instance_prepare(&request, &prepared);
   if (prepare_status != CT_INSTANCE_PREPARE_OK) {
-    ct_instance_prepare_diagnostic(prepare_status);
+    ct_instance_prepare_diagnostic(prepare_status, &prepared);
     return 1;
   }
   if (identity_only != 0) {

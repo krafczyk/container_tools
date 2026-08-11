@@ -29,7 +29,8 @@ int main(void)
   stream = descriptor < 0 ? NULL : fdopen(descriptor, "w");
   if (stream == NULL || fputs("--add-path /host/path:/container/path\n", stream) == EOF ||
       fclose(stream) != 0 || setenv("CT_MOUNT_CFG", config, 1) != 0 ||
-      ct_mount_collect_environment(paths, &path_count) == 0 || path_count != 0U ||
+      ct_mount_collect_environment(paths, &path_count) !=
+          CT_MOUNT_ENVIRONMENT_CONFIG_ADD_PATH || path_count != 0U ||
       unlink(config) != 0) {
     (void)fputs("persistent mount configuration accepted a remapped --add-path\n", stderr);
     return 1;

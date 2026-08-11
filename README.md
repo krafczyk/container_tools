@@ -387,6 +387,10 @@ bootstrap execution does not use `eval` or reconstruct a command string.
 whitespace-tokenized grouping of mount arguments, and `container-tools mount
 detect` emits the current filtered mount list with optional `--exclude-fs`,
 `--exclude-path`, and `--add-path` values.
+Persistent instance preparation reads mount options from `CT_MOUNT_CFG`, or
+from `$HOME/.config/ct_mount.conf` when that variable is unset or empty, then
+appends whitespace-tokenized `MOUNT_DETECTOR_ARGS`. Configuration diagnostics
+identify which of those sources failed validation.
 Persistent `--add-path` values are absolute same-path mounts. Legacy
 `HOST:CONTAINER` remaps are rejected during profile preparation; callers that
 need an explicit remap must pass `--ct-bind HOST:CONTAINER` instead.
