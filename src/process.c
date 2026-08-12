@@ -38,6 +38,40 @@ int ct_process_apply_environment(
   return 0;
 }
 
+static int ct_process_validate_exec(
+    char *const arguments[], const struct ct_process_environment *environment,
+    size_t environment_count)
+{
+  return arguments == NULL || arguments[0] == NULL ||
+                 environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
+                 (environment_count != 0U && environment == NULL)
+             ? 64
+             : 0;
+}
+
+static int ct_process_exec_prepared(
+    char *const arguments[], const struct ct_process_environment *environment,
+    size_t environment_count)
+{
+  if (ct_process_apply_environment(environment, environment_count) != 0) {
+    return 125;
+  }
+  execvp(arguments[0], arguments);
+  return errno == ENOENT ? 127 : 126;
+}
+
+int ct_process_exec(char *const arguments[],
+                    const struct ct_process_environment *environment,
+                    size_t environment_count)
+{
+  const int validation =
+      ct_process_validate_exec(arguments, environment, environment_count);
+  return validation == 0
+             ? ct_process_exec_prepared(arguments, environment,
+                                        environment_count)
+             : validation;
+}
+
 static void ct_process_forward_signal(int signal_number)
 {
   ct_process_interrupted = signal_number;
@@ -236,9 +270,9 @@ int ct_process_run(char *const arguments[],
   int terminal_handoff_result = 0;
   int terminal_restore_result = 0;
 
-  if (arguments == NULL || arguments[0] == NULL ||
-      environment_count > CT_PROCESS_ENVIRONMENT_LIMIT ||
-      (environment_count != 0U && environment == NULL)) return 64;
+  if (ct_process_validate_exec(arguments, environment, environment_count) != 0) {
+    return 64;
+  }
   if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 ||
       sigaddset(&blocked, SIGTERM) != 0 || sigaddset(&blocked, SIGTTOU) != 0 ||
       sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) {
@@ -271,9 +305,7 @@ int ct_process_run(char *const arguments[],
         close(release[0]) != 0 || sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) {
       _exit(125);
     }
-    if (ct_process_apply_environment(environment, environment_count) != 0) _exit(125);
-    execvp(arguments[0], arguments);
-    _exit(errno == ENOENT ? 127 : 126);
+    _exit(ct_process_exec_prepared(arguments, environment, environment_count));
   }
   (void)close(ready[1]);
   (void)close(release[0]);

@@ -6,13 +6,31 @@
 
 #define CT_PROCESS_ENVIRONMENT_LIMIT 129U
 
-/** One child-only environment operation; a NULL value removes the variable. */
+/** One environment operation; a NULL value removes the variable. */
 struct ct_process_environment { const char *name; const char *value; };
 
-/** Apply bounded environment removals and overrides in a newly forked child. */
+/** Apply bounded environment removals and overrides to the current process. */
 int ct_process_apply_environment(
     const struct ct_process_environment *environment,
     size_t environment_count);
+
+/**
+ * Apply a bounded environment plan and replace this process with `arguments`.
+ *
+ * Standard descriptors, process group, terminal ownership, signals, and shell
+ * job control pass directly to the selected executable. This function returns
+ * only when setup or exec fails. Applied environment changes remain in the
+ * current process if exec fails.
+ *
+ * @param arguments Null-terminated executable argv.
+ * @param environment Bounded environment removals and overrides.
+ * @param environment_count Number of environment entries.
+ * @return 64 for invalid input, 125 for environment setup failure, 127 when
+ *         the executable is absent, or 126 for another exec failure.
+ */
+int ct_process_exec(char *const arguments[],
+                    const struct ct_process_environment *environment,
+                    size_t environment_count);
 
 /**
  * Run one argv-preserved child and wait for its outcome.

@@ -1177,7 +1177,7 @@ static int ct_instance_payload(const struct ct_instance_request *request,
     ct_instance_print_dry(command);
     result = 0;
   } else {
-    result = ct_process_run(command, NULL, 0U);
+    result = ct_backend_outer_dispatch(command, count);
   }
   free(command);
   return result;

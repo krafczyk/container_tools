@@ -4,7 +4,7 @@
 
 #include <stddef.h>
 
-/** Run an already-rendered outer-runtime argv exactly once under process ownership. */
+/** Replace the current process with one already-rendered outer-runtime argv. */
 int ct_backend_outer_dispatch(char *const arguments[], size_t count);
 
 /**

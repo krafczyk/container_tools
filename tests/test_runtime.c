@@ -6,7 +6,26 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+static int ct_test_runtime_foreground_command(int argument_count,
+                                              char *const arguments[])
+{
+  const pid_t child = fork();
+  int status;
+  if (child < 0) return 125;
+  if (child == 0) {
+    char expected[32];
+    if (snprintf(expected, sizeof(expected), "%lu", (unsigned long)getpid()) >=
+            (int)sizeof(expected) ||
+        setenv("CT_NATIVE_TEST_EXPECT_PID", expected, 1) != 0) _exit(125);
+    _exit(ct_runtime_foreground_command(argument_count, arguments, 0));
+  }
+  if (waitpid(child, &status, 0) != child) return 125;
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 125;
+}
 
 int main(void)
 {
@@ -44,18 +63,18 @@ int main(void)
   stream = fopen(mountinfo, "w");
   if (stream == NULL || fputs("1 0 0:1 / / rw - ext4 root rw\n", stream) == EOF || fclose(stream) != 0) return 1;
   stream = fopen(path, "w");
-  if (stream == NULL || fputs("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$CT_NATIVE_TEST_LOG\"\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(path, 0700) != 0 || symlink(path, apptainer) != 0 ||
+  if (stream == NULL || fputs("#!/bin/sh\ncase \"$1\" in run|exec) [ \"$$\" = \"$CT_NATIVE_TEST_EXPECT_PID\" ] || exit 97;; esac\nprintf '%s\\n' \"$@\" > \"$CT_NATIVE_TEST_LOG\"\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(path, 0700) != 0 || symlink(path, apptainer) != 0 ||
        setenv("PATH", fake, 1) != 0 || setenv("XDG_STATE_HOME", state, 1) != 0 || setenv("CT_NATIVE_TEST_LOG", log, 1) != 0 ||
        setenv("CT_HOST_PROJECTION_SOURCE_ROOT", source, 1) != 0 || setenv("CT_HOST_PROJECTION_MOUNTINFO", mountinfo, 1) != 0 ||
        setenv("CT_HOST_PROJECTION_CACHE_ROOT", state, 1) != 0 || setenv("CT_HOST_PROJECTION_FAKE_PROBE", "direct", 1) != 0 ||
-       ct_runtime_foreground_command(7, launch, 0) != 0) return 1;
+       ct_test_runtime_foreground_command(7, launch) != 0) return 1;
   stream = fopen(log, "r");
   if (stream == NULL) return 1;
   bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);
   if (fclose(stream) != 0 || bytes == 0U) return 1;
   contents[bytes] = '\0';
   if (strstr(contents, "/.container-tools-mount-plan,readonly") == NULL) return 1;
-  if (ct_runtime_foreground_command(7, readonly_launch, 0) != 0) return 1;
+  if (ct_test_runtime_foreground_command(7, readonly_launch) != 0) return 1;
   stream = fopen(log, "r");
   if (stream == NULL) return 1;
   bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);
@@ -63,7 +82,7 @@ int main(void)
   contents[bytes] = '\0';
   if (strstr(contents, "type=bind,source=") == NULL ||
       strstr(contents, ",target=/workspace,readonly") == NULL) return 1;
-  if (ct_runtime_foreground_command(7, readonly_native_launch, 0) != 0) return 1;
+  if (ct_test_runtime_foreground_command(7, readonly_native_launch) != 0) return 1;
   stream = fopen(log, "r");
   if (stream == NULL) return 1;
   bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);
@@ -75,7 +94,7 @@ int main(void)
   if (snprintf(alias, sizeof(alias), "%s/alias", work) >= (int)sizeof(alias) ||
       symlink(work, alias) != 0 ||
       snprintf(alias_binding, sizeof(alias_binding), "%s:/workspace", alias) >= (int)sizeof(alias_binding) ||
-      ct_runtime_foreground_command(7, alias_launch, 0) != 0) return 1;
+      ct_test_runtime_foreground_command(7, alias_launch) != 0) return 1;
   stream = fopen(log, "r");
   if (stream == NULL) return 1;
   bytes = fread(contents, 1U, sizeof(contents) - 1U, stream);

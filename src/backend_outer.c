@@ -9,7 +9,7 @@
 int ct_backend_outer_dispatch(char *const arguments[], size_t count)
 {
   if (arguments == NULL || count == 0U || arguments[0] == NULL || arguments[count] != NULL) return 125;
-  return ct_process_run(arguments, NULL, 0U);
+  return ct_process_exec(arguments, NULL, 0U);
 }
 
 int ct_backend_outer_projection_mount(const char *backend, const char *source,

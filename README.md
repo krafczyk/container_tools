@@ -96,11 +96,15 @@ content fails closed without reuse or mutation.
 `container-tools shell BACKEND [OPTIONS] [--] IMAGE` accept `--docker`,
 `--podman`, `--singularity`, or `--apptainer`, plus `--ct-bind`, `--ct-env`,
 `--ct-bootstrap`, `--ct-container-shell`, `--ct-host-root`, and
-`--ct-host-root-refresh`. They preserve payload argv and return the backend's
-normal status or `128 + signal`. `CT_DRY_RUN` prints the rendered argv and
-writes no selection or manifest state. Explicit remote Docker/Podman endpoints
-launch without a local manifest. Eligible local non-dry launches publish and
-read-only bind a validated `ct-mount-plan-v1` record.
+`--ct-host-root-refresh`. They preserve payload argv and replace themselves
+with the backend, so the caller observes its normal exit or signal termination
+directly. `CT_DRY_RUN` prints the rendered argv and writes no selection or
+manifest state. Explicit remote Docker/Podman endpoints launch without a local
+manifest. Eligible local non-dry launches publish and read-only bind a validated
+`ct-mount-plan-v1` record.
+After preparation, a foreground launcher replaces itself with the selected
+backend. The backend directly inherits standard descriptors, process-group and
+terminal ownership, signals, and shell job control.
 Foreground `--ct-bind` values use `HOST:CONTAINER` for writable binds and
 `HOST:CONTAINER:ro` for read-only binds.
 

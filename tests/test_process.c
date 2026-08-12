@@ -116,6 +116,65 @@ cleanup:
   return result;
 }
 
+static int ct_test_exec(void)
+{
+  char pid[32] = {0};
+  char *const command[] = {
+      "/bin/sh", "-c",
+      "printf '%s' \"$$\" >&3; test \"$CT_PROCESS_EXEC_REMOVED\" != secret && test \"$CT_PROCESS_EXEC_OVERRIDE\" = override",
+      NULL};
+  char *const missing[] = {"/not-a-container-tools-executable", NULL};
+  char path[] = "/tmp/mkchad-v1/container-tools-c11/process-exec.XXXXXX";
+  const struct ct_process_environment environment[] = {
+      {"CT_PROCESS_EXEC_REMOVED", NULL},
+      {"CT_PROCESS_EXEC_OVERRIDE", "override"}};
+  int descriptors[2] = {-1, -1};
+  int executable = -1;
+  int status;
+  pid_t child;
+
+  if (setenv("CT_PROCESS_EXEC_REMOVED", "secret", 1) != 0 ||
+      setenv("CT_PROCESS_EXEC_OVERRIDE", "inherited", 1) != 0 ||
+      pipe(descriptors) != 0 || (child = fork()) < 0) return 1;
+  if (child == 0) {
+    if ((descriptors[1] != 3 && dup2(descriptors[1], 3) < 0) ||
+        (descriptors[0] != 3 && close(descriptors[0]) != 0) ||
+        (descriptors[1] != 3 && close(descriptors[1]) != 0)) _exit(125);
+    _exit(ct_process_exec(command, environment,
+                          sizeof(environment) / sizeof(environment[0])));
+  }
+  (void)close(descriptors[1]);
+  descriptors[1] = -1;
+  if (read(descriptors[0], pid, sizeof(pid) - 1U) <= 0 ||
+      close(descriptors[0]) != 0 || waitpid(child, &status, 0) != child ||
+      !WIFEXITED(status) || WEXITSTATUS(status) != 0 ||
+      strtol(pid, NULL, 10) != child) return 1;
+  if ((child = fork()) < 0) return 1;
+  if (child == 0) _exit(ct_process_exec(missing, NULL, 0U));
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 127) return 1;
+  if ((child = fork()) < 0) return 1;
+  if (child == 0) {
+    const struct ct_process_environment invalid_environment[] = {{"", "value"}};
+    _exit(ct_process_exec(command, invalid_environment, 1U));
+  }
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 125) return 1;
+  executable = mkstemp(path);
+  if (executable < 0 || write(executable, "x", 1U) != 1 ||
+      close(executable) != 0 || (child = fork()) < 0) {
+    if (executable >= 0) (void)close(executable);
+    return 1;
+  }
+  if (child == 0) {
+    char *const not_executable[] = {path, NULL};
+    _exit(ct_process_exec(not_executable, NULL, 0U));
+  }
+  if (waitpid(child, &status, 0) != child || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 126 || unlink(path) != 0) return 1;
+  return ct_process_exec(NULL, NULL, 0U) != 64 ? 1 : 0;
+}
+
 int main(void)
 {
   char *const command[] = {"/bin/true", NULL};
@@ -134,7 +193,7 @@ int main(void)
   if (ct_process_run(command, NULL, 0U) != 0 ||
       ct_process_run(exit_42, NULL, 0U) != 42 ||
       ct_process_run(signaled, NULL, 0U) != 128 + SIGTERM ||
-      ct_test_interactive_run() != 0) return 1;
+      ct_test_interactive_run() != 0 || ct_test_exec() != 0) return 1;
   for (index = 0U; invalid[index] != NULL; ++index) {
     if (setenv("CT_RUNTIME_OPERATION_TIMEOUT", invalid[index], 1) != 0 ||
         ct_process_run_operation(command, "probe") != 125) return 1;

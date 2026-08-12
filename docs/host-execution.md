@@ -128,6 +128,11 @@ after a fully cleaned capability failure or timeout; setup, cleanup, or signal
 restoration uncertainty exits 125.
 Probe child stdout and stderr are redirected to `/dev/null`; backend probe
 messages never appear in a host doctor JSON report or a host exec diagnostic.
+After selection and final command construction, `host exec` replaces itself
+with Bubblewrap, PRoot, or the rewrite entry point. The selected backend or
+application directly inherits standard descriptors, process-group and terminal
+ownership, signals, and shell job control; container-tools does not supervise
+the final payload.
 
 ## Doctor
 

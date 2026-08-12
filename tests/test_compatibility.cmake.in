@@ -22,6 +22,14 @@ function(expect_result expected description)
   endif()
 endfunction()
 
+function(expect_signal description)
+  execute_process(COMMAND ${ARGN} RESULT_VARIABLE actual
+    OUTPUT_VARIABLE command_output ERROR_VARIABLE command_error)
+  if(NOT actual EQUAL 1 OR NOT command_error MATCHES "Subprocess terminated")
+    message(FATAL_ERROR "${description}: expected signal termination, got ${actual}: ${command_error}")
+  endif()
+endfunction()
+
 file(WRITE "${work}/mount.conf" "--exclude-path /one path --add-path /two\n")
 foreach(prefix IN ITEMS "${prefix_a}" "${prefix_b}")
   execute_process(COMMAND "${prefix}/bin/ct_args.sh" "${work}/mount.conf" --exclude-path /three
@@ -56,7 +64,7 @@ expect_result(37 "ct_exec.sh payload exit propagation"
   "@CMAKE_COMMAND@" -E env "PATH=${work}/fake-bin:$ENV{PATH}" CT_COMPAT_STATUS=37
   DOCKER_HOST=tcp://remote.invalid "${prefix_a}/bin/ct_exec.sh" --docker image command)
 file(WRITE "${work}/fake-bin/docker" "#!/bin/sh\nkill -TERM $$\n")
-expect_result(143 "ct_exec.sh payload signal propagation"
+expect_signal("ct_exec.sh payload signal propagation"
   "@CMAKE_COMMAND@" -E env "PATH=${work}/fake-bin:$ENV{PATH}"
   DOCKER_HOST=tcp://remote.invalid "${prefix_a}/bin/ct_exec.sh" --docker image command)
 

@@ -46,6 +46,7 @@ static const char *base_name(const char *path)
 static int fake_backend_main(int argument_count, char **arguments)
 {
   const char *backend = base_name(arguments[0]);
+  const char *expected_pid = getenv("CT_NESTED_EXPECT_PID");
   const char *trampoline = NULL;
   const char *cwd = NULL;
   int probe = 0;
@@ -65,7 +66,10 @@ static int fake_backend_main(int argument_count, char **arguments)
       break;
     }
   }
-  if (trampoline == NULL || cwd == NULL || append_log(backend, probe != 0 ? "probe" : "launch") != 0 ||
+  if (trampoline == NULL || cwd == NULL ||
+      (probe == 0 &&
+       (expected_pid == NULL || strtol(expected_pid, NULL, 10) != getpid())) ||
+      append_log(backend, probe != 0 ? "probe" : "launch") != 0 ||
       chdir(cwd) != 0) return 125;
   if (probe != 0) {
     const char *configured = strcmp(backend, "bwrap") == 0
@@ -102,6 +106,24 @@ static int clear_log(const char *path)
 {
   const int descriptor = open(path, O_WRONLY | O_TRUNC | O_CREAT, 0600);
   return descriptor < 0 || close(descriptor) != 0;
+}
+
+static int ct_test_nested_execute(const struct ct_nested_request *request,
+                                  const char *forced, int allow_rewrite)
+{
+  const pid_t child = fork();
+  int status;
+  if (child < 0) return 125;
+  if (child == 0) {
+    char expected[32];
+    if (snprintf(expected, sizeof(expected), "%lu", (unsigned long)getpid()) >=
+            (int)sizeof(expected) ||
+        setenv("CT_NESTED_EXPECT_PID", expected, 1) != 0) _exit(125);
+    _exit(ct_backend_nested_execute(request, forced, allow_rewrite));
+  }
+  if (waitpid(child, &status, 0) != child) return 125;
+  if (WIFEXITED(status)) return WEXITSTATUS(status);
+  return WIFSIGNALED(status) ? 128 + WTERMSIG(status) : 125;
 }
 
 int main(int argument_count, char **arguments)
@@ -161,14 +183,14 @@ int main(int argument_count, char **arguments)
   request.trampoline_descriptor = trampoline; request.control_descriptor = control;
   request.inherited_descriptor = inherited; request.bubblewrap_path = bwrap;
   request.proot_path = proot;
-  if (ct_backend_nested_execute(&request, "bubblewrap", 0) != 42 || line_count(log) != 2) return 4;
+  if (ct_test_nested_execute(&request, "bubblewrap", 0) != 42 || line_count(log) != 2) return 4;
   if (clear_log(log) != 0) return 5;
   environment[2].value = "signal";
-  if (ct_backend_nested_execute(&request, "bubblewrap", 0) != 128 + SIGTERM ||
+  if (ct_test_nested_execute(&request, "bubblewrap", 0) != 128 + SIGTERM ||
       line_count(log) != 2) return 5;
   environment[2].value = "41";
   environment[3].value = "7";
-  if (clear_log(log) != 0 || ct_backend_nested_execute(&request, NULL, 0) != 41 ||
+  if (clear_log(log) != 0 || ct_test_nested_execute(&request, NULL, 0) != 41 ||
       line_count(log) != 3) return 6;
   environment[3].value = "0";
   if (clear_log(log) != 0 || ct_backend_nested_diagnose(&request, 0, reports) != 0 ||
@@ -202,13 +224,13 @@ int main(int argument_count, char **arguments)
   bad = open("/dev/null", O_RDONLY);
   if (bad < 0) return 9;
   request.control_descriptor = bad;
-  if (clear_log(log) != 0 || ct_backend_nested_execute(&request, "bubblewrap", 0) != 125 ||
+  if (clear_log(log) != 0 || ct_test_nested_execute(&request, "bubblewrap", 0) != 125 ||
       line_count(log) != 1 || close(bad) != 0) return 9;
   request.control_descriptor = control;
 #endif
   strcpy(profile.root_access, "read-only");
   if (ct_backend_nested_requires_read_only(&request) == 0 ||
-      ct_backend_nested_execute(&request, "proot", 0) != 125) return 10;
+      ct_test_nested_execute(&request, "proot", 0) != 125) return 10;
   ct_path_map_destroy(&map);
   return close(inherited) != 0 || close(control) != 0 || close(trampoline) != 0 ||
                  unlink(log) != 0 || unlink(bwrap) != 0 || unlink(proot) != 0 ||

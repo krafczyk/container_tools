@@ -580,7 +580,7 @@ int ct_backend_nested_execute_detailed(
       if (failure != NULL) *failure = CT_NESTED_PRE_DISPATCH_DIAGNOSTIC_OUTPUT;
       return 125;
     }
-    result = ct_process_run(command.arguments, request->environment,
+    result = ct_process_exec(command.arguments, request->environment,
                             request->environment_count);
     ct_nested_command_destroy(&command);
     return result;
