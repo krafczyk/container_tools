@@ -9,7 +9,16 @@
 /** One environment operation; a NULL value removes the variable. */
 struct ct_process_environment { const char *name; const char *value; };
 
-/** Apply bounded environment removals and overrides to the current process. */
+/**
+ * Apply bounded environment removals and overrides to the current process.
+ *
+ * Operations are applied in order and are not rolled back if a later operation
+ * fails.
+ *
+ * @param environment Environment removals and overrides.
+ * @param environment_count Number of environment entries.
+ * @return Zero on success or one for invalid input or an environment failure.
+ */
 int ct_process_apply_environment(
     const struct ct_process_environment *environment,
     size_t environment_count);
