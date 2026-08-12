@@ -186,6 +186,12 @@ static int ct_copy(char destination[CT_HOST_PATH_MAX], const char *source)
   return written < 0 || (size_t)written >= CT_HOST_PATH_MAX;
 }
 
+static int ct_projection_omittable_error(int error)
+{
+  return error == EACCES || error == EPERM || error == ENOENT ||
+         error == ENOTDIR || error == ELOOP;
+}
+
 static int ct_unescape_mountinfo(char *value)
 {
   char result[CT_HOST_PATH_MAX];
@@ -248,7 +254,8 @@ static int ct_entry_add(struct ct_host_projection *selection, const char *source
   if (selection->entry_count == CT_HOST_PROJECTION_MAX_ENTRIES || !ct_host_projection_source_is_eligible(source, NULL) ||
       ct_root_relative(source, root, &relative) != 0) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
   target = realpath(source, resolved);
-  if (target == NULL || !ct_host_projection_source_is_eligible(target, NULL)) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
+  if (target == NULL) return ct_projection_omittable_error(errno) ? 0 : 1;
+  if (!ct_host_projection_source_is_eligible(target, NULL)) return 0;
   for (index = 0U; index < selection->entry_count; ++index) if (strcmp(selection->entries[index].source, source) == 0) return 0;
   if (ct_copy(selection->entries[selection->entry_count].source, source) != 0 || ct_copy(selection->entries[selection->entry_count].target, target) != 0 ||
        snprintf(selection->entries[selection->entry_count].destination, CT_HOST_PATH_MAX, "%s%s", "/host", strcmp(source, "/") == 0 ? "" : source) >= (int)CT_HOST_PATH_MAX) return 1;
@@ -300,7 +307,7 @@ static int ct_build_fallback_branch(struct ct_host_projection *selection, const 
   if (!ct_fallback_has_excluded_descendant(mounts, count, source)) return ct_entry_add(selection, source);
   if (depth >= 64U || *visited >= CT_HOST_FALLBACK_MAX_VISITED) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
   directory = ct_storage_timeout_opendir(source);
-  if (directory == NULL) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
+  if (directory == NULL) return ct_projection_omittable_error(errno) ? 0 : 1;
   errno = 0;
   while ((entry = ct_storage_timeout_readdir(directory)) != NULL) {
     char child[CT_HOST_PATH_MAX];
@@ -653,7 +660,7 @@ int ct_host_projection_cache_key(const char *backend, const char *image,
   else requested_group_mode = "native-inherited";
   if ((strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) &&
       getenv("CT_SINGULARITY_ARGS") != NULL) projection_options = getenv("CT_SINGULARITY_ARGS");
-  values[value_count++] = "host-projection-v6";
+  values[value_count++] = "host-projection-v7";
   values[value_count++] = backend;
   values[value_count++] = hostname_value;
   values[value_count++] = executable;
@@ -824,7 +831,7 @@ static int ct_cache_read(const char *key, struct ct_host_projection *selection)
       (strcmp(fields[4], "primary-only") != 0 && strcmp(fields[4], "numeric-supplementary") != 0 && strcmp(fields[4], "keep-groups") != 0 && strcmp(fields[4], "native-inherited") != 0) ||
        (strcmp(fields[2], "fallback") == 0 ? count != 7U + pairs * 2U : (pairs != 0U || count != 7U))) return 2;
   (void)snprintf(selection->strategy, sizeof(selection->strategy), "%s", fields[2]); (void)snprintf(selection->completeness, sizeof(selection->completeness), "%s", fields[3]); (void)snprintf(selection->group_mode, sizeof(selection->group_mode), "%s", fields[4]); selection->entry_count = 0U;
-  if (strcmp(fields[2], "fallback") == 0) for (index = 0U; index < pairs; ++index) { if (fields[7U + index * 2U][0] != '/' || fields[8U + index * 2U][0] != '/' || ct_entry_add(selection, fields[7U + index * 2U]) != 0) return 2; if (strcmp(selection->entries[selection->entry_count - 1U].target, fields[8U + index * 2U]) != 0) (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); }
+  if (strcmp(fields[2], "fallback") == 0) for (index = 0U; index < pairs; ++index) { const size_t before = selection->entry_count; if (fields[7U + index * 2U][0] != '/' || fields[8U + index * 2U][0] != '/' || ct_entry_add(selection, fields[7U + index * 2U]) != 0) return 2; if (selection->entry_count == before || strcmp(selection->entries[selection->entry_count - 1U].target, fields[8U + index * 2U]) != 0) (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); }
   return 0;
 }
 
@@ -854,12 +861,12 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
   if (cache_hit && ct_probe_sources_current(selection) != 0) goto failed;
   if (!cache_hit) {
     if (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) {
-      const int probe = ct_build_direct(selection) == 0 ? ct_probe_projection(backend, image, selection) : 1;
+      const int probe = ct_build_direct(selection) == 0 && selection->entry_count != 0U ? ct_probe_projection(backend, image, selection) : 1;
       if (probe == 0) (void)snprintf(selection->strategy, sizeof(selection->strategy), "direct");
       else if (probe == 2) { terminal_failure = 1; goto failed; }
     }
     if (selection->strategy[0] == '\0') {
-      const int probe = ct_build_fallback(selection) == 0 ? ct_probe_projection(backend, image, selection) : 1;
+      const int probe = ct_build_fallback(selection) == 0 && selection->entry_count != 0U ? ct_probe_projection(backend, image, selection) : 1;
       if (probe == 0) (void)snprintf(selection->strategy, sizeof(selection->strategy), "fallback");
       else if (probe == 2) { terminal_failure = 1; goto failed; }
     }

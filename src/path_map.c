@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 void ct_path_map_init(struct ct_path_map *map)
 {
@@ -259,12 +260,6 @@ void ct_path_map_manifest_init(struct ct_path_map_manifest_context *context,
   }
 }
 
-static int ct_path_generated_source(const char *target,
-                                    char output[CT_HOST_PATH_MAX])
-{
-  return ct_path_map_root_path("/host", target, output);
-}
-
 int ct_path_map_manifest_entry(const struct ct_mount_plan_entry *entry,
                                void *opaque)
 {
@@ -273,9 +268,19 @@ int ct_path_map_manifest_entry(const struct ct_mount_plan_entry *entry,
       context->profile == NULL) return 1;
   if (strcmp(entry->role, "bootstrap-internal") == 0) return 0;
   if (strcmp(entry->role, "generated-host-root") == 0) {
+    struct stat caller_status, target_status;
     char expected[CT_HOST_PATH_MAX];
-    if (ct_path_generated_source(entry->target_path, expected) != 0 ||
-        strcmp(expected, entry->caller_path) != 0) return 1;
+    const char *generated_root = "/host";
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+    const char *test_root = getenv("CT_TEST_PATH_MAP_HOST_ROOT");
+    if (test_root != NULL && test_root[0] != '\0') generated_root = test_root;
+#endif
+    if (ct_path_map_root_path(generated_root, entry->target_path, expected) != 0 ||
+        (strcmp(entry->caller_path, expected) != 0 &&
+         (stat(entry->caller_path, &caller_status) != 0 ||
+          stat(expected, &target_status) != 0 ||
+          caller_status.st_dev != target_status.st_dev ||
+          caller_status.st_ino != target_status.st_ino))) return 1;
     ++context->generated_roots;
     return 0;
   }

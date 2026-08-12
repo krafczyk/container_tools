@@ -2,7 +2,10 @@
 #include "path_map.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 int main(void)
 {
@@ -97,6 +100,29 @@ int main(void)
     strcpy(metadata.completeness, "complete");
     if (ct_path_map_manifest_eligible(&profile, &metadata, &manifest) != 0) return 9;
     ct_path_map_destroy(&map);
+    {
+      char host_root[] = "/tmp/mkchad-v1/container-tools-c11/path-map-host.XXXXXX";
+      char usr[CT_HOST_PATH_MAX], usr_bin[CT_HOST_PATH_MAX], bin[CT_HOST_PATH_MAX], arbitrary[CT_HOST_PATH_MAX];
+      struct ct_mount_plan_entry generated_remap = {
+        "generated-host-root", bin, "/usr/bin", "inherit", "non-recursive"};
+      struct ct_mount_plan_entry malformed_generated = {
+        "generated-host-root", arbitrary, "/usr/bin", "inherit", "non-recursive"};
+      if (mkdtemp(host_root) == NULL ||
+          snprintf(usr, sizeof(usr), "%s/usr", host_root) >= (int)sizeof(usr) ||
+          snprintf(usr_bin, sizeof(usr_bin), "%s/bin", usr) >= (int)sizeof(usr_bin) ||
+          snprintf(bin, sizeof(bin), "%s/bin", host_root) >= (int)sizeof(bin) ||
+          snprintf(arbitrary, sizeof(arbitrary), "%s/arbitrary", host_root) >=
+              (int)sizeof(arbitrary) ||
+          mkdir(usr, 0700) != 0 || mkdir(usr_bin, 0700) != 0 ||
+          mkdir(arbitrary, 0700) != 0 || symlink("usr/bin", bin) != 0 ||
+          setenv("CT_TEST_PATH_MAP_HOST_ROOT", host_root, 1) != 0) return 10;
+      ct_path_map_init(&map);
+      ct_path_map_manifest_init(&manifest, &map, &profile);
+      if (ct_path_map_manifest_entry(&generated_remap, &manifest) != 0 ||
+          ct_path_map_manifest_entry(&malformed_generated, &manifest) == 0 ||
+          unsetenv("CT_TEST_PATH_MAP_HOST_ROOT") != 0) return 10;
+      ct_path_map_destroy(&map);
+    }
   }
   ct_path_map_init(&map);
   for (size_t entry = 0U; entry < CT_PATH_MAP_MAX_ENTRIES; ++entry) {
@@ -106,12 +132,12 @@ int main(void)
         ct_path_map_add(&map, path, path, "inherit", 0U,
                         (unsigned int)entry) != 0) {
       ct_path_map_destroy(&map);
-      return 10;
+      return 11;
     }
   }
   if (ct_path_map_add(&map, "/excess", "/excess", "inherit", 0U, 0U) == 0) {
     ct_path_map_destroy(&map);
-    return 10;
+    return 11;
   }
   ct_path_map_destroy(&map);
   return 0;

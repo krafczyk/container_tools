@@ -262,6 +262,15 @@ DIR *ct_storage_timeout_opendir(const char *path)
   struct ct_storage_timeout timeout;
   DIR *result;
   int operation_errno;
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+  {
+    const char *forced_path = getenv("CT_TEST_STORAGE_OPENDIR_FAIL");
+    if (forced_path != NULL && strcmp(forced_path, path) == 0) {
+      errno = getenv("CT_TEST_STORAGE_OPENDIR_TIMEOUT") == NULL ? EACCES : ETIMEDOUT;
+      return NULL;
+    }
+  }
+#endif
   if (ct_storage_timeout_begin(&timeout) != 0) return NULL;
   result = opendir(path);
   operation_errno = errno;

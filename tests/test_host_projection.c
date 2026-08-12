@@ -11,7 +11,7 @@
 int main(void)
 {
   char work[] = "/tmp/mkchad-v1/container-tools-c11/native-host-projection.XXXXXX";
-  char root[4096], cache[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_temporary[4096], other_temporary[4096];
+  char root[4096], fallback_root[4096], empty_root[4096], blocked[4096], unresolved[4096], visible[4096], cache[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_temporary[4096], other_temporary[4096];
   FILE *stream;
   DIR *directory;
   struct dirent *entry;
@@ -26,7 +26,7 @@ int main(void)
       setenv("CT_HOST_PROJECTION_BOOT_ID", "fixture-boot", 1) != 0 ||
       setenv("CT_HOST_PROJECTION_GROUPS", "42 7", 1) != 0 ||
       ct_host_projection_cache_key("apptainer", "/fixture/image.sif", cache_key) != 0 ||
-      strcmp(cache_key, "a7d27cfef10c2ce1bd8c6a9e75be8970ecff1f7df5e87af534380725a2d27fe0") != 0 ||
+      strcmp(cache_key, "65e95b19f1cdbbefa28ea517a942172677e971143ccc6b825652fb46ebeb83c9") != 0 ||
       unsetenv("CT_HOST_PROJECTION_HOSTNAME") != 0 ||
       unsetenv("CT_HOST_PROJECTION_EXECUTABLE") != 0 ||
       unsetenv("CT_HOST_PROJECTION_ENDPOINT") != 0 ||
@@ -49,7 +49,7 @@ int main(void)
        snprintf(path, sizeof(path), "%s:%s", fake, getenv("PATH") == NULL ? "" : getenv("PATH")) >= (int)sizeof(path) ||
        snprintf(mountinfo, sizeof(mountinfo), "%s/mountinfo", work) >= (int)sizeof(mountinfo)) return 1;
   stream = fopen(executable, "w");
-  if (stream == NULL || fputs("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CT_NATIVE_PROJECTION_LOG\"\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\nif [ \"${CT_NATIVE_PROJECTION_WEDGE:-}\" = \"$1\" ]; then trap '' TERM; (trap '' TERM; while :; do sleep 1; done) & wait; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(executable, 0700) != 0) return 1;
+  if (stream == NULL || fputs("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CT_NATIVE_PROJECTION_LOG\"\nif [ \"${CT_NATIVE_PROJECTION_FORCE_FALLBACK:-}\" = 1 ] && [ \"$1\" = create ]; then for arg; do case \"$arg\" in *\"source=$CT_HOST_PROJECTION_SOURCE_ROOT,target=/host$CT_HOST_PROJECTION_SOURCE_ROOT,\"*) exit 20;; esac; done; fi\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\nif [ \"${CT_NATIVE_PROJECTION_WEDGE:-}\" = \"$1\" ]; then trap '' TERM; (trap '' TERM; while :; do sleep 1; done) & wait; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(executable, 0700) != 0) return 1;
   stream = fopen(mountinfo, "w");
   if (stream == NULL || fprintf(stream, "1 0 0:1 / / rw - ext4 root rw\n") < 0 || fclose(stream) != 0 ||
       setenv("CT_HOST_PROJECTION_SOURCE_ROOT", root, 1) != 0 || setenv("CT_HOST_PROJECTION_MOUNTINFO", mountinfo, 1) != 0 ||
@@ -100,6 +100,48 @@ int main(void)
   if (strstr(contents, "start") != NULL || strstr(contents, "container") == NULL || strstr(contents, "rm") == NULL) { (void)fputs("wedge cleanup contract failed\n", stderr); return 1; }
   if (unsetenv("CT_NATIVE_PROJECTION_WEDGE") != 0 || unsetenv("CT_RUNTIME_CREATE_TIMEOUT") != 0 ||
       unsetenv("CT_RUNTIME_OPERATION_TIMEOUT") != 0) return 1;
+  if (snprintf(fallback_root, sizeof(fallback_root), "%s/fallback-root", work) >=
+          (int)sizeof(fallback_root) ||
+      snprintf(empty_root, sizeof(empty_root), "%s/empty-root", work) >=
+          (int)sizeof(empty_root) ||
+      snprintf(blocked, sizeof(blocked), "%s/blocked", fallback_root) >=
+          (int)sizeof(blocked) ||
+      snprintf(unresolved, sizeof(unresolved), "%s/unresolved", fallback_root) >=
+          (int)sizeof(unresolved) ||
+      snprintf(visible, sizeof(visible), "%s/visible", fallback_root) >=
+          (int)sizeof(visible) ||
+      mkdir(fallback_root, 0700) != 0 || mkdir(empty_root, 0700) != 0 ||
+      mkdir(blocked, 0700) != 0 ||
+      symlink("missing", unresolved) != 0 || mkdir(visible, 0700) != 0) return 1;
+  stream = fopen(mountinfo, "w");
+  if (stream == NULL ||
+      fprintf(stream, "1 0 0:1 / / rw - ext4 root rw\n2 1 0:2 / %s/proc rw - proc proc rw\n", blocked) < 0 ||
+      fclose(stream) != 0 ||
+      setenv("CT_HOST_PROJECTION_SOURCE_ROOT", fallback_root, 1) != 0 ||
+      setenv("CT_NATIVE_PROJECTION_FORCE_FALLBACK", "1", 1) != 0 ||
+      setenv("CT_TEST_STORAGE_OPENDIR_FAIL", blocked, 1) != 0 ||
+      ct_host_projection_prepare("docker", "fallback-image", "required", 1,
+                                 &selection) != 0 ||
+      strcmp(selection.strategy, "fallback") != 0 ||
+      strcmp(selection.completeness, "complete") != 0 ||
+      selection.entry_count != 1U ||
+      strcmp(selection.entries[0].source, visible) != 0 || rmdir(visible) != 0 ||
+      ct_host_projection_prepare("docker", "fallback-image", "required", 0,
+                                 &selection) != 0 ||
+      strcmp(selection.strategy, "fallback") != 0 ||
+      strcmp(selection.completeness, "partial") != 0 ||
+      selection.entry_count != 0U ||
+      setenv("CT_TEST_STORAGE_OPENDIR_TIMEOUT", "1", 1) != 0 ||
+      ct_host_projection_prepare("docker", "fallback-timeout-image", "auto", 1,
+                                 &selection) != 0 ||
+      strcmp(selection.strategy, "none") != 0 ||
+      unsetenv("CT_TEST_STORAGE_OPENDIR_TIMEOUT") != 0 ||
+      setenv("CT_HOST_PROJECTION_SOURCE_ROOT", empty_root, 1) != 0 ||
+      ct_host_projection_prepare("docker", "empty-fallback-image", "auto", 1,
+                                 &selection) != 0 ||
+      strcmp(selection.strategy, "none") != 0 ||
+      unsetenv("CT_TEST_STORAGE_OPENDIR_FAIL") != 0 ||
+      unsetenv("CT_NATIVE_PROJECTION_FORCE_FALLBACK") != 0) return 1;
   stream = fopen(config, "w");
    if (stream == NULL || fputs("{\"currentContext\":\"remote-context\"}", stream) == EOF || fclose(stream) != 0 ||
         setenv("DOCKER_CONFIG", work, 1) != 0 || unsetenv("DOCKER_CONTEXT") != 0 || ct_host_projection_endpoint_is_local("docker") != 0) return 1;

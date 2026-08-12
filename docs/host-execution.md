@@ -96,9 +96,11 @@ leaves the containing runtime instance running.
 evidence and is not replayed. Detected, explicit caller-data, and persistent-CWD
 entries are overlays; none may target `/`. A full-root profile requires a
 complete direct or fallback plan and at least one generated entry. Every
-generated caller path must equal the normalized join of the outer runtime's
-fixed `/host` projection and its target path; the selected lower root remains
-independent.
+generated caller path identifies the selected lexical source beneath the outer
+runtime's fixed `/host` projection. Its target path records the independently
+canonicalized lower-root location, so ordinary host symlinks can make the two
+suffixes differ. When they do, both visible paths must identify the same live
+filesystem object.
 
 ## Executables And Probes
 

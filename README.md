@@ -149,7 +149,7 @@ Strategies are `direct`, `fallback`, and `none`; completeness is `complete` or
 `partial`. Group modes are `numeric-supplementary`, `keep-groups`,
 `primary-only`, `native-inherited`, and `none`.
 
-Each ordered entry records a role, caller-visible canonical container path,
+Each ordered entry records a role, normalized caller-visible container path,
 resolved selected-root target path, access (`inherit` or `read-only`), and
 recursion (`non-recursive` or `runtime-default`). Roles are
 `generated-host-root`, `detected-automatic`, `explicit`,
@@ -202,7 +202,7 @@ ancestors and retains their safe file, socket, symlink, and directory siblings.
 Branches the caller cannot list or traverse are omitted without warning because
 they are already unavailable under caller authority. Cold entries that cannot
 be resolved are treated the same way; losing a previously proven warm entry
-still reports partial. Policy v6 invalidates older cached selections that
+still reports partial. Policy v7 invalidates older cached selections that
 dropped these ordinary or caller-unavailable trees or reprojected a reserved
 host mirror.
 The reserved `/host` destination is never projected again as source data, so a

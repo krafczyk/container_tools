@@ -23,7 +23,7 @@ int ct_host_projection_endpoint_is_local(const char *backend);
 /** Return nonzero for lexical host paths that must never be mirrored beneath /host. */
 int ct_host_projection_source_is_eligible(const char *path, const char *filesystem);
 /**
- * Derive the canonical profile-v6 selection-record key for one local launch.
+ * Derive the canonical profile-v7 selection-record key for one local launch.
  *
  * Hashes the effective endpoint, executable, host identity, image, runtime
  * options, requested group mode, boot identity, and sorted caller groups using

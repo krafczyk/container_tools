@@ -815,7 +815,7 @@ static enum ct_instance_prepare_status ct_instance_prepare(
     goto done;
   }
   projection_fields[projection_count++] = "ct-host-projection-profile-v1";
-  projection_fields[projection_count++] = "host-projection-v6";
+  projection_fields[projection_count++] = "host-projection-v7";
   projection_fields[projection_count++] = projection.strategy;
   projection_fields[projection_count++] = "runtime-default";
   for (index = 0U; index < projection.entry_count; ++index) {
