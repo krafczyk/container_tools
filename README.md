@@ -18,7 +18,8 @@ rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `mount detect`, `mount args`, `mount plan inspect`, `mount
-plan compare`, `host exec`, and `host doctor`. `--help`, `--version`, and
+plan compare`, `mount plan clear`, `mount plan location`, `host exec`, and
+`host doctor`. `--help`, `--version`, and
 `--version --json` are global. Version
 output is compiled into the executable and reports the product version, source
 commit, architecture, and supported mount-plan grammar. Compatibility scripts
@@ -144,6 +145,7 @@ container-tools mount plan inspect --json /mnt/plan.manifest
 container-tools mount plan inspect -- --option-like.manifest
 container-tools mount plan compare --json /mnt/expected.manifest
 container-tools mount plan compare /mnt/expected.manifest /mnt/actual.manifest
+container-tools mount plan location
 container-tools mount plan clear
 ```
 
@@ -161,6 +163,11 @@ validation share one bounded process-group operation. Stale content-addressed
 records may remain after an instance exits. A timed-out operation receives one
 separate one-second bounded recovery attempt after its process group is dead;
 later publishers also recover any private temporary that remains.
+
+`container-tools mount plan location [--help]` prints the resolved absolute
+cache root for that invocation without creating, inspecting, or modifying it.
+It uses `CT_MOUNT_PLAN_STATE_ROOT`, then `XDG_STATE_HOME`, then `HOME`, matching
+publishers and `mount plan clear`.
 
 `container-tools mount plan clear [--help]` clears only that managed cache root;
 it accepts no path argument. An absent cache is successful. Clear validates the

@@ -703,10 +703,15 @@ static int ct_mount_plan_command_output_end(
 
 static int ct_mount_plan_usage(const char *command)
 {
-  return fprintf(stdout, "usage: container-tools mount plan %s\n",
-                 strcmp(command, "inspect") == 0 ? "inspect [--json] [--] [PATH]"
-                 : strcmp(command, "compare") == 0 ? "compare [--json] [--] LEFT [RIGHT]"
-                                                    : "clear [--help]") < 0 ||
+  const char *arguments = "location [--help]";
+  if (strcmp(command, "inspect") == 0) {
+    arguments = "inspect [--json] [--] [PATH]";
+  } else if (strcmp(command, "compare") == 0) {
+    arguments = "compare [--json] [--] LEFT [RIGHT]";
+  } else if (strcmp(command, "clear") == 0) {
+    arguments = "clear [--help]";
+  }
+  return fprintf(stdout, "usage: container-tools mount plan %s\n", arguments) < 0 ||
          fflush(stdout) != 0 || ferror(stdout) != 0;
 }
 
@@ -756,10 +761,11 @@ static int ct_mount_plan_clear_command(int argument_count, char **arguments)
     goto complete;
   }
   if (argument_count != 0) {
-    (void)ct_mount_plan_diagnostic(
-        "mount plan clear", "usage",
-        "use 'container-tools mount plan clear [--help]'");
-    result = CT_EXIT_USAGE;
+    result = ct_mount_plan_diagnostic(
+                 "mount plan clear", "usage",
+                 "use 'container-tools mount plan clear [--help]'") != 0
+                 ? 125
+                 : CT_EXIT_USAGE;
     goto complete;
   }
   if (ct_mount_plan_state_root(state_root) != 0 ||
@@ -767,6 +773,47 @@ static int ct_mount_plan_clear_command(int argument_count, char **arguments)
     (void)ct_mount_plan_diagnostic(
         "mount plan clear", "cleanup",
         "repair the private mount-plan cache and retry");
+    goto complete;
+  }
+  result = 0;
+complete:
+  return ct_mount_plan_command_output_end(&output) != 0 ? 125 : result;
+}
+
+static int ct_mount_plan_location_command(int argument_count, char **arguments)
+{
+  struct ct_mount_plan_command_output output = {0};
+  char state_root[4096];
+  int result = 125;
+
+  if (ct_mount_plan_command_output_begin(&output) != 0) return 125;
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    if (ct_mount_plan_usage("location") != 0) {
+      (void)ct_mount_plan_diagnostic("mount plan location", "report",
+                                     "restore the output destination and retry");
+    } else {
+      result = 0;
+    }
+    goto complete;
+  }
+  if (argument_count != 0) {
+    result = ct_mount_plan_diagnostic(
+                 "mount plan location", "usage",
+                 "use 'container-tools mount plan location [--help]'") != 0
+                 ? 125
+                 : CT_EXIT_USAGE;
+    goto complete;
+  }
+  if (ct_mount_plan_state_root(state_root) != 0) {
+    (void)ct_mount_plan_diagnostic(
+        "mount plan location", "configuration",
+        "set CT_MOUNT_PLAN_STATE_ROOT, XDG_STATE_HOME, or HOME to a safe absolute path and retry");
+    goto complete;
+  }
+  if (fprintf(stdout, "%s\n", state_root) < 0 || fflush(stdout) != 0 ||
+      ferror(stdout) != 0) {
+    (void)ct_mount_plan_diagnostic("mount plan location", "report",
+                                   "restore the output destination and retry");
     goto complete;
   }
   result = 0;
@@ -947,6 +994,9 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_MOUNT_PLAN_CLEAR) {
     return ct_mount_plan_clear_command(argument_count - 4, arguments + 4);
+  }
+  if (parsed.command == CT_COMMAND_MOUNT_PLAN_LOCATION) {
+    return ct_mount_plan_location_command(argument_count - 4, arguments + 4);
   }
   if (parsed.command == CT_COMMAND_EXEC) {
     return ct_runtime_foreground_command(argument_count - 2, arguments + 2, 0);

@@ -8,6 +8,10 @@ NUL-delimited bytes.
 
 ## Managed Cache Clear
 
+`container-tools mount plan location [--help]` prints the resolved absolute
+cache root without accessing it. Its environment precedence and normalization
+are identical to publishers and managed cache clearing.
+
 `container-tools mount plan clear [--help]` is the sole host-side cache cleanup
 grammar. It selects the producer state root, including the narrow
 `CT_MOUNT_PLAN_STATE_ROOT` test override, and accepts no deletion path. A clear

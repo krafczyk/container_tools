@@ -31,6 +31,7 @@ struct command_options {
   int fail_allocations;
   int closed_stdout;
   int shared_output;
+  int closed_stderr;
 };
 
 #define ARRAY_LENGTH(values) (sizeof(values) / sizeof((values)[0]))
@@ -147,6 +148,10 @@ static int run_command(char *const arguments[],
   if (options != NULL && options->closed_stdout != 0) {
     (void)close(stdout_pipe[0]);
     stdout_pipe[0] = -1;
+  }
+  if (options != NULL && options->closed_stderr != 0) {
+    (void)close(stderr_pipe[0]);
+    stderr_pipe[0] = -1;
   }
   if (capture_output(stdout_pipe[0], stderr_pipe[0], result) != 0) {
     if (stdout_pipe[0] >= 0) (void)close(stdout_pipe[0]);
@@ -281,6 +286,7 @@ int main(void)
     "docker", "none", "complete", "primary-only", changed_entries, 1U};
   char work[] = "/tmp/mkchad-v1/container-tools-c11/mount-plan-cli.XXXXXX";
   char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], unexpected[4096];
+  char xdg_state[4096], home[4096], expected_location[4096];
   char *inspect_default[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", NULL};
   char *inspect_human[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", left, NULL};
   char *inspect_json[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", left, NULL};
@@ -297,12 +303,16 @@ int main(void)
   char *clear[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", NULL};
   char *clear_help[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", "--help", NULL};
   char *clear_invalid[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", "/tmp", NULL};
+  char *location[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "location", NULL};
+  char *location_help[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "location", "--help", NULL};
+  char *location_invalid[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "location", "/tmp", NULL};
   char *invalid[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", "--json", left, NULL};
   struct command_result result;
-  const struct command_options default_right = {right, 0, 0, 0};
-  const struct command_options default_left_fail_allocations = {left, 1, 0, 0};
-  const struct command_options closed_stdout = {NULL, 0, 1, 0};
-  const struct command_options shared_closed_output = {NULL, 0, 1, 1};
+  const struct command_options default_right = {right, 0, 0, 0, 0};
+  const struct command_options default_left_fail_allocations = {left, 1, 0, 0, 0};
+  const struct command_options closed_stdout = {NULL, 0, 1, 0, 0};
+  const struct command_options closed_stderr = {NULL, 0, 0, 0, 1};
+  const struct command_options shared_closed_output = {NULL, 0, 1, 1, 0};
   struct ct_mount_plan_report report;
   int descriptor;
 
@@ -316,6 +326,8 @@ int main(void)
       snprintf(cache_locks, sizeof(cache_locks), "%s/.locks", cache) >= (int)sizeof(cache_locks) ||
       snprintf(cache_manifest, sizeof(cache_manifest), "%s/%064d.manifest", cache, 0) >= (int)sizeof(cache_manifest) ||
       snprintf(unexpected, sizeof(unexpected), "%s/unexpected", cache) >= (int)sizeof(unexpected) ||
+      snprintf(xdg_state, sizeof(xdg_state), "%s/xdg-state", work) >= (int)sizeof(xdg_state) ||
+      snprintf(home, sizeof(home), "%s/home", work) >= (int)sizeof(home) ||
       write_plan(left, &plan) != 0 || write_plan(right, &plan) != 0 ||
       write_plan(option_path, &plan) != 0 || chdir(work) != 0) return 1;
 
@@ -422,6 +434,16 @@ int main(void)
     return 1;
   }
   if (setenv("CT_MOUNT_PLAN_STATE_ROOT", cache, 1) != 0 ||
+      run_command(location, NULL, &result) != 0 || result.stderr_length != 0U ||
+      result.stdout_length != strlen(cache) + 1U ||
+      strncmp(result.stdout_text, cache, strlen(cache)) != 0 ||
+      result.stdout_text[result.stdout_length - 1U] != '\n' || access(cache, F_OK) == 0 ||
+      run_command(location_help, NULL, &result) != 0 || result.stderr_length != 0U ||
+      strcmp(result.stdout_text, "usage: container-tools mount plan location [--help]\n") != 0 ||
+      run_command(location, &closed_stdout, &result) != 125 || result.stderr_length == 0U ||
+      run_command(location_invalid, NULL, &result) != 64 || result.stdout_length != 0U ||
+      result.stderr_length == 0U || strstr(result.stderr_text, cache) != NULL ||
+      run_command(location_invalid, &closed_stderr, &result) != 125 ||
       run_command(clear, NULL, &result) != 0 || result.stdout_length != 0U ||
       result.stderr_length != 0U || mkdir(cache, 0700) != 0 ||
       mkdir(cache_locks, 0700) != 0 || write_plan(cache_manifest, &plan) != 0 ||
@@ -439,6 +461,7 @@ int main(void)
       run_command(clear_invalid, NULL, &result) != 64 ||
       result.stdout_length != 0U || result.stderr_length == 0U ||
       strstr(result.stderr_text, cache) != NULL ||
+      run_command(clear_invalid, &closed_stderr, &result) != 125 ||
       unlink(unexpected) != 0 || symlink(left, cache_manifest) != 0 ||
       run_command(clear, NULL, &result) != 125 || access(cache_manifest, F_OK) != 0 ||
       unlink(cache_manifest) != 0 || write_plan(cache_manifest, &plan) != 0 ||
@@ -446,6 +469,25 @@ int main(void)
       access(cache_manifest, F_OK) != 0 || unlink(cache_manifest) != 0 ||
       unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
     (void)fprintf(stderr, "clear command failed\n");
+    return 1;
+  }
+  if (setenv("XDG_STATE_HOME", xdg_state, 1) != 0 ||
+      snprintf(expected_location, sizeof(expected_location),
+               "%s/container-tools/mount-plans/v1\n", xdg_state) >=
+          (int)sizeof(expected_location) ||
+      run_command(location, NULL, &result) != 0 || result.stderr_length != 0U ||
+      strcmp(result.stdout_text, expected_location) != 0 || access(xdg_state, F_OK) == 0 ||
+      unsetenv("XDG_STATE_HOME") != 0 || setenv("HOME", home, 1) != 0 ||
+      snprintf(expected_location, sizeof(expected_location),
+               "%s/.local/state/container-tools/mount-plans/v1\n", home) >=
+          (int)sizeof(expected_location) ||
+      run_command(location, NULL, &result) != 0 || result.stderr_length != 0U ||
+      strcmp(result.stdout_text, expected_location) != 0 || access(home, F_OK) == 0 ||
+      setenv("XDG_STATE_HOME", "relative", 1) != 0 ||
+      run_command(location, NULL, &result) != 125 || result.stdout_length != 0U ||
+      result.stderr_length == 0U || strstr(result.stderr_text, "relative") != NULL ||
+      unsetenv("XDG_STATE_HOME") != 0) {
+    (void)fprintf(stderr, "location resolution failed\n");
     return 1;
   }
   if (run_command(invalid, NULL, &result) != 64 ||
