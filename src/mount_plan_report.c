@@ -210,7 +210,7 @@ static int ct_mount_plan_report_write_entries_human(
 int ct_mount_plan_report_write_human(FILE *stream,
                                      const struct ct_mount_plan_report *report)
 {
-  struct ct_mount_plan_output output = {{0}, 0};
+  struct ct_mount_plan_output output = {0};
   int result;
   if (stream == NULL || report == NULL ||
       ct_mount_plan_output_begin(&output) != 0) return 1;
@@ -275,7 +275,7 @@ static int ct_mount_plan_report_json_write(FILE *stream, yyjson_mut_doc *documen
 int ct_mount_plan_report_write_json(FILE *stream,
                                     const struct ct_mount_plan_report *report)
 {
-  struct ct_mount_plan_output output = {{0}, 0};
+  struct ct_mount_plan_output output = {0};
   yyjson_mut_doc *document;
   yyjson_mut_val *root;
   int result = 1;
@@ -301,7 +301,7 @@ int ct_mount_plan_report_compare_write_human(
     FILE *stream, int equal, const struct ct_mount_plan_report *left,
     const struct ct_mount_plan_report *right)
 {
-  struct ct_mount_plan_output output = {{0}, 0};
+  struct ct_mount_plan_output output = {0};
   int result;
   if (stream == NULL || left == NULL || right == NULL ||
       ct_mount_plan_output_begin(&output) != 0) return 1;
@@ -320,7 +320,7 @@ int ct_mount_plan_report_compare_write_json(
     FILE *stream, int equal, const struct ct_mount_plan_report *left,
     const struct ct_mount_plan_report *right)
 {
-  struct ct_mount_plan_output output = {{0}, 0};
+  struct ct_mount_plan_output output = {0};
   yyjson_mut_doc *document;
   yyjson_mut_val *root;
   yyjson_mut_val *left_object;
