@@ -15,9 +15,15 @@ requires a current-user-owned mode-0700 root and protocol directories and
 current-user-owned mode-0600 regular entries. It deletes only digest-named
 manifests, per-digest lock files, and digest-named temporary files after locking
 the cache-wide `.locks/.cache.lock` exclusively; publishers hold that lock shared.
+Persisted legacy publisher state is also protocol-owned: clear accepts
+mode-0600 or mode-0644 per-digest lock files, locks and retains a mode-0600 or
+mode-0644 `.work/.lock`, and deletes only `.work/.body.*`, `.work/.candidate.*`,
+and root `.<64-lowercase-hex>.tmp.*` regular files. These legacy lock-mode
+exceptions apply only beneath their current-user-owned mode-0700 directories.
 Any symlink, unexpected entry, ownership or mode failure, entry overflow, or
 timeout fails closed with exit 125. The private root, `.locks`, and cache-wide
-lock remain as synchronization metadata after managed entries are cleared.
+lock plus `.work` and its legacy lock remain as synchronization metadata after
+managed entries are cleared.
 
 ## Report Path Encoding
 

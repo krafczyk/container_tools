@@ -106,8 +106,8 @@ int ct_mount_plan_state_root(char output[4096]);
  *
  * @param state_root Absolute protocol state-root path.
  * @return Zero on a fully cleared or absent cache, otherwise nonzero.
- * @sideeffect Removes validated manifest, per-digest lock, and temporary cache
- *             entries while retaining cache-wide synchronization metadata.
+ * @sideeffect Removes validated manifest, per-digest lock, and native or legacy
+ *             temporary entries while retaining synchronization metadata.
  */
 int ct_mount_plan_clear(const char *state_root);
 /** Return nonzero when a writable source would expose private manifest state. */

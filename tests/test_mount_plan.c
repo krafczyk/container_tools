@@ -155,12 +155,13 @@ int main(void)
       unsetenv("CT_TEST_STORAGE_TIMEOUT_FORCE") != 0 || rmdir(malformed_cache) != 0) return 1;
 #endif
   if (snprintf(stale, sizeof(stale), "%s/.work", state) >= (int)sizeof(stale) ||
-      mkdir(stale, 0700) != 0 ||
       snprintf(keep, sizeof(keep), "%s/.tmp.%064d.x", stale, 0) >=
           (int)sizeof(keep) ||
       (stream = fopen(keep, "w")) == NULL || fclose(stream) != 0 ||
       chmod(keep, 0600) != 0 || ct_mount_plan_clear(state) != 0 ||
-      access(keep, F_OK) == 0 || access(stale, F_OK) == 0 ||
+      access(keep, F_OK) == 0 || access(stale, F_OK) != 0 ||
+      snprintf(keep, sizeof(keep), "%s/.lock", stale) >= (int)sizeof(keep) ||
+      access(keep, F_OK) != 0 ||
       ct_mount_plan_publish(&plan, state, first) != 0 ||
       snprintf(lock, sizeof(lock), "%s/.locks/.cache.lock", state) >=
           (int)sizeof(lock)) return 1;
@@ -207,5 +208,47 @@ int main(void)
         ct_mount_plan_publish(&plan, state, first) != 0 ||
         ct_mount_plan_clear(state) != 0) return 1;
   }
+  if (ct_mount_plan_publish(&plan, state, first) != 0 ||
+      snprintf(lock, sizeof(lock), "%s/.locks/%s.lock", state, digest) >=
+          (int)sizeof(lock) || chmod(lock, 0644) != 0 ||
+      snprintf(stale, sizeof(stale), "%s/.work/.body.legacy", state) >=
+          (int)sizeof(stale) ||
+      snprintf(keep, sizeof(keep), "%s/.work/.candidate.legacy", state) >=
+          (int)sizeof(keep) ||
+      snprintf(second, sizeof(second), "%s/.%s.tmp.legacy", state, digest) >=
+          (int)sizeof(second) ||
+      (stream = fopen(stale, "w")) == NULL || fclose(stream) != 0 ||
+      chmod(stale, 0600) != 0 || (stream = fopen(keep, "w")) == NULL ||
+      fclose(stream) != 0 || chmod(keep, 0600) != 0 ||
+      (stream = fopen(second, "w")) == NULL || fclose(stream) != 0 ||
+      chmod(second, 0600) != 0 || chmod(first, 0600) != 0 ||
+      ct_mount_plan_clear(state) != 0 || access(stale, F_OK) == 0 ||
+      access(keep, F_OK) == 0 || access(second, F_OK) == 0 ||
+      access(first, F_OK) == 0 || access(lock, F_OK) == 0) return 1;
+  if (snprintf(keep, sizeof(keep), "%s/.work/.lock", state) >=
+          (int)sizeof(keep) ||
+      chmod(keep, 0644) != 0 || ct_mount_plan_publish(&plan, state, first) != 0) return 1;
+  {
+    int ready[2], release[2], child_status;
+    pid_t child;
+    char byte;
+    if (pipe(ready) != 0 || pipe(release) != 0 || (child = fork()) < 0) return 1;
+    if (child == 0) {
+      const int descriptor = open(keep, O_RDWR | O_CLOEXEC);
+      (void)close(ready[0]); (void)close(release[1]);
+      if (descriptor < 0 || flock(descriptor, LOCK_EX) != 0 || write(ready[1], "1", 1U) != 1 ||
+          read(release[0], &byte, 1U) != 1 || close(descriptor) != 0) _exit(1);
+      _exit(0);
+    }
+    (void)close(ready[1]); (void)close(release[0]);
+    if (read(ready[0], &byte, 1U) != 1 || close(ready[0]) != 0 ||
+        setenv("CT_RUNTIME_STORAGE_TIMEOUT", "0.1", 1) != 0 ||
+        ct_mount_plan_clear(state) == 0 || access(first, F_OK) != 0 ||
+        unsetenv("CT_RUNTIME_STORAGE_TIMEOUT") != 0 || write(release[1], "1", 1U) != 1 ||
+        close(release[1]) != 0 || waitpid(child, &child_status, 0) != child ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0) return 1;
+  }
+  if (ct_mount_plan_clear(state) != 0 ||
+      access(keep, F_OK) != 0) return 1;
   return ct_mount_plan_source_exposes_state("/tmp", "/tmp/state") != 0 ? 0 : 1;
 }

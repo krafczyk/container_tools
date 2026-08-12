@@ -167,7 +167,11 @@ it accepts no path argument. An absent cache is successful. Clear validates the
 private protocol layout before mutation, serializes against active publishers by
 the cache-wide protocol lock, and deletes only `<64-lowercase-hex>.manifest`, matching
 `.locks/<64-lowercase-hex>.lock`, and `.work/.tmp.<64-lowercase-hex>.*` files.
-It removes `.work` when empty and retains the private root, `.locks`, and
+It also recognizes the persisted legacy `.work/.lock`, `.work/.body.*`,
+`.work/.candidate.*`, and `.<64-lowercase-hex>.tmp.*` publisher layout. Clear
+accepts historical per-digest and work lock modes `0600` or `0644` only inside
+their private mode-0700 protocol directories. It retains the private root,
+`.work`, `.work/.lock`, `.locks`, and
 `.locks/.cache.lock` as synchronization metadata. Symlinks, unexpected entries
 or types, wrong ownership or mode, entry-limit overflow, and bounded storage
 timeout failures leave unrecognized entries in place and return 125; usage
