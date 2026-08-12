@@ -34,6 +34,21 @@ static enum ct_cli_status ct_parse_pair(const char *first, const char *second,
   return CT_CLI_OK;
 }
 
+static enum ct_cli_status ct_parse_triple(const char *first, const char *second,
+                                           const char *third,
+                                           enum ct_command command,
+                                           int argument_count,
+                                           const char *const *arguments,
+                                           struct ct_cli *parsed)
+{
+  if (argument_count < 3 || strcmp(arguments[0], first) != 0 ||
+      strcmp(arguments[1], second) != 0 || strcmp(arguments[2], third) != 0) {
+    return CT_CLI_INVALID;
+  }
+  parsed->command = command;
+  return CT_CLI_OK;
+}
+
 enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments,
                                 struct ct_cli *parsed)
 {
@@ -78,9 +93,13 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
   }
   if (strcmp(arguments[0], "mount") == 0) {
     if (ct_parse_pair("mount", "detect", CT_COMMAND_MOUNT_DETECT, argument_count,
-                      arguments, parsed) == CT_CLI_OK ||
+                       arguments, parsed) == CT_CLI_OK ||
         ct_parse_pair("mount", "args", CT_COMMAND_MOUNT_ARGS, argument_count,
-                      arguments, parsed) == CT_CLI_OK) {
+                      arguments, parsed) == CT_CLI_OK ||
+        ct_parse_triple("mount", "plan", "inspect", CT_COMMAND_MOUNT_PLAN_INSPECT,
+                        argument_count, arguments, parsed) == CT_CLI_OK ||
+        ct_parse_triple("mount", "plan", "compare", CT_COMMAND_MOUNT_PLAN_COMPARE,
+                        argument_count, arguments, parsed) == CT_CLI_OK) {
       return CT_CLI_OK;
     }
     return CT_CLI_INVALID;
@@ -100,7 +119,8 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
 void ct_cli_write_usage(FILE *stream)
 {
   (void)fputs("usage: container-tools [--help] [--version [--json]] COMMAND ...\n"
-               "commands: exec, shell, instance exec|identity, mount detect|args,\n"
+               "commands: exec, shell, instance exec|identity,\n"
+               "          mount detect|args|plan inspect|plan compare,\n"
                "          host exec|doctor\n",
                stream);
 }

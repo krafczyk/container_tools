@@ -82,6 +82,12 @@ int main(void)
           ct_mount_plan_read(link, &metadata, visit_entry, &visited) == 0 ||
           unlink(link) != 0 ||
           ct_mount_plan_read_status(future, &metadata, visit_entry, &visited) != CT_MOUNT_PLAN_READ_ABSENT) return 1;
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+  if (setenv("CT_TEST_STORAGE_TIMEOUT_FORCE", "1", 1) != 0 ||
+      ct_mount_plan_read_status(first, &metadata, visit_entry, &visited) !=
+          CT_MOUNT_PLAN_READ_IO ||
+      unsetenv("CT_TEST_STORAGE_TIMEOUT_FORCE") != 0) return 1;
+#endif
   {
     const unsigned char future_bytes[] = "ct-mount-plan-v2\0";
     int descriptor = open(future, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);

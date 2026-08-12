@@ -17,8 +17,9 @@ then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
 rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
-`instance identity`, `mount detect`, `mount args`, `host exec`, and `host
-doctor`. `--help`, `--version`, and `--version --json` are global. Version
+`instance identity`, `mount detect`, `mount args`, `mount plan inspect`, `mount
+plan compare`, `host exec`, and `host doctor`. `--help`, `--version`, and
+`--version --json` are global. Version
 output is compiled into the executable and reports the product version, source
 commit, architecture, and supported mount-plan grammar. Compatibility scripts
 authenticate their compiled sibling executable before dispatch; direct commands
@@ -117,6 +118,33 @@ selected-root `host exec` reads that bound file directly; it never scans host
 state or infers a plan hash. Automatic launches through an explicit remote
 Docker/Podman endpoint retain the existing remote launch without a local-only
 manifest bind; required host projection already rejects those endpoints.
+
+`container-tools mount plan inspect [--json] [--] [PATH]` validates and reports one
+manifest, defaulting to `/.container-tools-mount-plan`. `container-tools mount
+plan compare [--json] [--] LEFT [RIGHT]` validates both and compares their canonical
+validated content; `RIGHT` has the same default. Inspection reports the grammar,
+digest, backend, strategy, completeness, group mode, entry count, and every
+ordered entry. JSON uses the closed `container-tools.mount-plan-inspect/v1` and
+`container-tools.mount-plan-compare/v1` schemas; comparison's `equal` field is
+a JSON boolean. Equal comparisons exit 0, different valid comparisons exit 1,
+usage errors exit 64, and read or report failures exit 125. Failed JSON reports
+caused by plan validation or reading write no JSON to standard output. These
+commands are read-only and redact caller-selected paths from diagnostics. The
+optional `--` permits paths that begin with `-`. JSON has a required
+`"path_encoding":"backslash-escaped-bytes"` field: path fields contain ASCII
+bytes unchanged except that `\\`, `"`, and every byte outside printable ASCII
+are encoded as `\\`, `\"`, and `\xHH` respectively (lowercase hexadecimal).
+This is lossless for every valid Linux path byte sequence and keeps JSON valid
+UTF-8. Human reports use that same safe escaping. A broken or buffered standard
+output failure returns 125 rather than terminating on `SIGPIPE`.
+
+```sh
+container-tools mount plan inspect
+container-tools mount plan inspect --json /mnt/plan.manifest
+container-tools mount plan inspect -- --option-like.manifest
+container-tools mount plan compare --json /mnt/expected.manifest
+container-tools mount plan compare /mnt/expected.manifest /mnt/actual.manifest
+```
 
 The default host record path is
 `${XDG_STATE_HOME:-$HOME/.local/state}/container-tools/mount-plans/v1/<64-hex-mount-plan-digest>.manifest`.

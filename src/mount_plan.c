@@ -310,24 +310,25 @@ enum ct_mount_plan_read_status ct_mount_plan_read_status(
   if (path == NULL || metadata == NULL || visitor == NULL) {
     return CT_MOUNT_PLAN_READ_MALFORMED;
   }
-  descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  descriptor = ct_storage_timeout_open(path, O_RDONLY | O_CLOEXEC | O_NONBLOCK,
+                                       0);
   if (descriptor < 0) {
     return errno == ENOENT || errno == ENOTDIR ? CT_MOUNT_PLAN_READ_ABSENT
                                                : CT_MOUNT_PLAN_READ_IO;
   }
-  if (fstat(descriptor, &before) != 0) {
-    (void)close(descriptor);
+  if (ct_storage_timeout_fstat(descriptor, &before) != 0) {
+    (void)ct_storage_timeout_close(descriptor);
     return CT_MOUNT_PLAN_READ_IO;
   }
   if (!S_ISREG(before.st_mode) || before.st_size < 1 ||
       (uintmax_t)before.st_size > CT_MOUNT_PLAN_MAX_BYTES) {
-    (void)close(descriptor);
+    (void)ct_storage_timeout_close(descriptor);
     return CT_MOUNT_PLAN_READ_MALFORMED;
   }
   bytes = malloc((size_t)before.st_size);
   if (bytes == NULL ||
       ct_plan_read_exact(descriptor, bytes, (size_t)before.st_size) != 0) {
-    (void)close(descriptor);
+    (void)ct_storage_timeout_close(descriptor);
     free(bytes);
     return CT_MOUNT_PLAN_READ_IO;
   }
@@ -340,15 +341,17 @@ enum ct_mount_plan_read_status ct_mount_plan_read_status(
     }
   }
   #endif
-  if (fstat(descriptor, &after) != 0 || before.st_dev != after.st_dev ||
+  if (ct_storage_timeout_fstat(descriptor, &after) != 0 ||
+      before.st_dev != after.st_dev ||
       before.st_ino != after.st_ino || before.st_size != after.st_size ||
       before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
       before.st_mtim.tv_nsec != after.st_mtim.tv_nsec) {
-    (void)close(descriptor);
+    (void)ct_storage_timeout_close(descriptor);
     free(bytes);
     return CT_MOUNT_PLAN_READ_CHANGED;
   }
-  if (close(descriptor) != 0 || stat(path, &final) != 0 ||
+  if (ct_storage_timeout_close(descriptor) != 0 ||
+      ct_storage_timeout_stat(path, &final) != 0 ||
       !S_ISREG(final.st_mode) || final.st_dev != before.st_dev ||
       final.st_ino != before.st_ino || final.st_size != before.st_size ||
       final.st_mtim.tv_sec != before.st_mtim.tv_sec ||

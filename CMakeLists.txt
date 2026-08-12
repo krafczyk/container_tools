@@ -92,6 +92,7 @@ target_include_directories(container_tools_json PRIVATE vendor/yyjson)
 set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c
   src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
+  src/mount_plan_report.c
   src/profile.c src/state.c src/instance.c src/host_config.c src/path_map.c src/executable.c src/elf.c
   src/shebang.c src/supervisor.c src/supervisor_process.c ${CONTAINER_TOOLS_NESTED_FILES})
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
@@ -119,7 +120,8 @@ if(BUILD_TESTING)
   target_include_directories(container_tools_test_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_compile_definitions(container_tools_test_core PRIVATE
     _POSIX_C_SOURCE=200809L CT_STORAGE_TIMEOUT_TEST_SEAM=1
-    CT_SUPERVISOR_TEST_SEAM=1 CT_TRAMPOLINE_TEST_SEAM=1)
+    CT_SUPERVISOR_TEST_SEAM=1 CT_TRAMPOLINE_TEST_SEAM=1
+    CT_MOUNT_PLAN_REPORT_TEST_SEAM=1)
   target_link_libraries(container_tools_test_core PRIVATE container_tools_toml container_tools_json)
   container_tools_enable_warnings(container_tools_test_core)
 
@@ -151,6 +153,19 @@ if(BUILD_TESTING)
   target_include_directories(test_cli PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
   container_tools_enable_warnings(test_cli)
   add_test(NAME container_tools_cli COMMAND test_cli)
+
+  add_executable(test_mount_plan_cli tests/test_mount_plan_cli.c)
+  target_link_libraries(test_mount_plan_cli PRIVATE container_tools_test_core)
+  target_include_directories(test_mount_plan_cli PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  add_executable(container-tools-mount-plan-test src/main.c)
+  target_link_libraries(container-tools-mount-plan-test PRIVATE container_tools_test_core)
+  target_include_directories(container-tools-mount-plan-test PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  target_compile_definitions(container-tools-mount-plan-test PRIVATE CT_MOUNT_PLAN_TEST_SEAM=1)
+  container_tools_enable_warnings(container-tools-mount-plan-test)
+  target_compile_definitions(test_mount_plan_cli PRIVATE CT_MOUNT_PLAN_CLI="$<TARGET_FILE:container-tools-mount-plan-test>")
+  add_dependencies(test_mount_plan_cli container-tools-mount-plan-test)
+  container_tools_enable_warnings(test_mount_plan_cli)
+  add_test(NAME container_tools_mount_plan_cli COMMAND test_mount_plan_cli)
 
   configure_file(tests/test_diagnostics.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/test_diagnostics.cmake" @ONLY)

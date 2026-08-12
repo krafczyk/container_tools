@@ -12,6 +12,7 @@ int ct_storage_timeout_is_valid(void);
 
 /** Run one filesystem metadata or mutation operation under the storage deadline. */
 int ct_storage_timeout_lstat(const char *path, struct stat *status);
+int ct_storage_timeout_stat(const char *path, struct stat *status);
 int ct_storage_timeout_open(const char *path, int flags, mode_t mode);
 int ct_storage_timeout_fstat(int descriptor, struct stat *status);
 ssize_t ct_storage_timeout_read(int descriptor, void *buffer, size_t count);

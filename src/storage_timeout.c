@@ -186,6 +186,11 @@ int ct_storage_timeout_lstat(const char *path, struct stat *status)
   CT_STORAGE_TIMEOUT_INT_CALL(lstat(path, status));
 }
 
+int ct_storage_timeout_stat(const char *path, struct stat *status)
+{
+  CT_STORAGE_TIMEOUT_INT_CALL(stat(path, status));
+}
+
 int ct_storage_timeout_open(const char *path, int flags, mode_t mode)
 {
   CT_STORAGE_TIMEOUT_INT_CALL(open(path, flags, mode));

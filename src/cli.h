@@ -14,6 +14,8 @@ enum ct_command {
   CT_COMMAND_INSTANCE_IDENTITY,
   CT_COMMAND_MOUNT_DETECT,
   CT_COMMAND_MOUNT_ARGS,
+  CT_COMMAND_MOUNT_PLAN_INSPECT,
+  CT_COMMAND_MOUNT_PLAN_COMPARE,
   CT_COMMAND_HOST_EXEC,
   CT_COMMAND_HOST_DOCTOR,
 };
@@ -41,7 +43,7 @@ struct ct_cli {
 enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments,
                                 struct ct_cli *parsed);
 
-/** Print the stable bootstrap usage diagnostic to the supplied stream. */
+/** Print the stable top-level usage diagnostic to the supplied stream. */
 void ct_cli_write_usage(FILE *stream);
 
 /**

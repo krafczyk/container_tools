@@ -3,6 +3,7 @@
 #include "instance.h"
 #include "host_config.h"
 #include "mount_plan.h"
+#include "mount_plan_report.h"
 #include "path_map.h"
 #include "executable.h"
 #include "backend_nested.h"
@@ -17,6 +18,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -670,6 +672,200 @@ invalid:
   return 125;
 }
 
+struct ct_mount_plan_command_output {
+  struct sigaction previous;
+  int active;
+};
+
+static int ct_mount_plan_command_output_begin(
+    struct ct_mount_plan_command_output *output)
+{
+  struct sigaction ignored;
+  if (output == NULL || sigaction(SIGPIPE, NULL, &output->previous) != 0) return 1;
+  memset(&ignored, 0, sizeof(ignored));
+  ignored.sa_handler = SIG_IGN;
+  if (sigemptyset(&ignored.sa_mask) != 0 ||
+      sigaction(SIGPIPE, &ignored, NULL) != 0) return 1;
+  output->active = 1;
+  return 0;
+}
+
+static int ct_mount_plan_command_output_end(
+    struct ct_mount_plan_command_output *output)
+{
+  int result = 0;
+  if (output != NULL && output->active != 0) {
+    if (sigaction(SIGPIPE, &output->previous, NULL) != 0) result = 1;
+    output->active = 0;
+  }
+  return result;
+}
+
+static int ct_mount_plan_usage(const char *command)
+{
+  return fprintf(stdout, "usage: container-tools mount plan %s\n",
+                 strcmp(command, "inspect") == 0 ? "inspect [--json] [--] [PATH]"
+                                                 : "compare [--json] [--] LEFT [RIGHT]") < 0 ||
+         fflush(stdout) != 0 || ferror(stdout) != 0;
+}
+
+static int ct_mount_plan_diagnostic(const char *operation, const char *category,
+                                    const char *action)
+{
+  ct_cli_diagnostic(operation, category, action);
+  return fflush(stderr) != 0 || ferror(stderr) != 0;
+}
+
+static const char *ct_mount_plan_default_path(void)
+{
+#ifdef CT_MOUNT_PLAN_TEST_SEAM
+  const char *path = getenv("CT_MOUNT_PLAN_TEST_DEFAULT_PATH");
+  if (path != NULL && path[0] != '\0') return path;
+#endif
+  return "/.container-tools-mount-plan";
+}
+
+static int ct_mount_plan_read_diagnostic(const char *operation,
+                                         enum ct_mount_plan_read_status status)
+{
+  const char *action = "publish or select a valid stable mount plan, then retry";
+  if (status == CT_MOUNT_PLAN_READ_FUTURE) {
+    action = "use a compatible container-tools version or regenerate the mount plan, then retry";
+  } else if (status == CT_MOUNT_PLAN_READ_CHANGED) {
+    action = "wait for mount-plan publication to finish, then retry";
+  }
+  (void)ct_mount_plan_diagnostic(operation, "mount-plan", action);
+  return 125;
+}
+
+static int ct_mount_plan_inspect(int argument_count, char **arguments)
+{
+  struct ct_mount_plan_report report;
+  struct ct_mount_plan_command_output output = {0};
+  const char *path = ct_mount_plan_default_path();
+  int json = 0;
+  int path_separator = 0;
+  int result = 125;
+  enum ct_mount_plan_read_status status;
+
+  if (ct_mount_plan_command_output_begin(&output) != 0) return 125;
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    if (ct_mount_plan_usage("inspect") != 0) {
+      ct_mount_plan_diagnostic("mount plan inspect", "report",
+                               "restore the output destination and retry");
+    } else {
+      result = 0;
+    }
+    goto complete;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--json") == 0) {
+    json = 1;
+    ++arguments;
+    --argument_count;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--") == 0) {
+    ++arguments;
+    --argument_count;
+    path_separator = 1;
+  }
+  if (argument_count > 1 ||
+      (argument_count == 1 && (arguments[0][0] == '\0' ||
+       (path_separator == 0 && strncmp(arguments[0], "--", 2U) == 0)))) {
+    ct_mount_plan_diagnostic("mount plan inspect", "usage",
+                             "use 'container-tools mount plan inspect [--json] [--] [PATH]'");
+    result = CT_EXIT_USAGE;
+    goto complete;
+  }
+  if (argument_count == 1) path = arguments[0];
+  ct_mount_plan_report_init(&report);
+  status = ct_mount_plan_report_read(path, &report);
+  if (status != CT_MOUNT_PLAN_READ_OK) {
+    result = ct_mount_plan_read_diagnostic("mount plan inspect", status);
+    goto complete;
+  }
+  if ((json != 0 ? ct_mount_plan_report_write_json(stdout, &report)
+                  : ct_mount_plan_report_write_human(stdout, &report)) != 0) {
+    ct_mount_plan_report_destroy(&report);
+    ct_mount_plan_diagnostic("mount plan inspect", "report",
+                             "restore the output destination and retry");
+    goto complete;
+  }
+  ct_mount_plan_report_destroy(&report);
+  result = 0;
+complete:
+  return ct_mount_plan_command_output_end(&output) != 0 ? 125 : result;
+}
+
+static int ct_mount_plan_compare(int argument_count, char **arguments)
+{
+  struct ct_mount_plan_report left, right;
+  struct ct_mount_plan_command_output output = {0};
+  const char *right_path = ct_mount_plan_default_path();
+  int json = 0;
+  int path_separator = 0;
+  int equal;
+  int result = 125;
+  enum ct_mount_plan_read_status status;
+
+  if (ct_mount_plan_command_output_begin(&output) != 0) return 125;
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    if (ct_mount_plan_usage("compare") != 0) {
+      ct_mount_plan_diagnostic("mount plan compare", "report",
+                               "restore the output destination and retry");
+    } else {
+      result = 0;
+    }
+    goto complete;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--json") == 0) {
+    json = 1;
+    ++arguments;
+    --argument_count;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--") == 0) {
+    ++arguments;
+    --argument_count;
+    path_separator = 1;
+  }
+  if (argument_count < 1 || argument_count > 2 || arguments[0][0] == '\0' ||
+      (path_separator == 0 && strncmp(arguments[0], "--", 2U) == 0) ||
+      (argument_count == 2 && (arguments[1][0] == '\0' ||
+       (path_separator == 0 && strncmp(arguments[1], "--", 2U) == 0)))) {
+    ct_mount_plan_diagnostic("mount plan compare", "usage",
+                             "use 'container-tools mount plan compare [--json] [--] LEFT [RIGHT]'");
+    result = CT_EXIT_USAGE;
+    goto complete;
+  }
+  if (argument_count == 2) right_path = arguments[1];
+  ct_mount_plan_report_init(&left);
+  ct_mount_plan_report_init(&right);
+  status = ct_mount_plan_report_read(arguments[0], &left);
+  if (status != CT_MOUNT_PLAN_READ_OK) {
+    result = ct_mount_plan_read_diagnostic("mount plan compare", status);
+    goto complete;
+  }
+  status = ct_mount_plan_report_read(right_path, &right);
+  if (status != CT_MOUNT_PLAN_READ_OK) {
+    ct_mount_plan_report_destroy(&left);
+    result = ct_mount_plan_read_diagnostic("mount plan compare", status);
+    goto complete;
+  }
+  equal = strcmp(left.metadata.digest, right.metadata.digest) == 0;
+  if ((json != 0 ? ct_mount_plan_report_compare_write_json(stdout, equal, &left, &right)
+                 : ct_mount_plan_report_compare_write_human(stdout, equal, &left, &right)) != 0) {
+    ct_mount_plan_report_destroy(&left);
+    ct_mount_plan_report_destroy(&right);
+    ct_mount_plan_diagnostic("mount plan compare", "report",
+                             "restore the output destination and retry");
+    goto complete;
+  }
+  ct_mount_plan_report_destroy(&left);
+  ct_mount_plan_report_destroy(&right);
+  result = equal != 0 ? 0 : 1;
+complete:
+  return ct_mount_plan_command_output_end(&output) != 0 ? 125 : result;
+}
+
 int main(int argument_count, char **arguments)
 {
   struct ct_cli parsed;
@@ -706,6 +902,12 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_MOUNT_DETECT) {
     return ct_mount_detect_command(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_MOUNT_PLAN_INSPECT) {
+    return ct_mount_plan_inspect(argument_count - 4, arguments + 4);
+  }
+  if (parsed.command == CT_COMMAND_MOUNT_PLAN_COMPARE) {
+    return ct_mount_plan_compare(argument_count - 4, arguments + 4);
   }
   if (parsed.command == CT_COMMAND_EXEC) {
     return ct_runtime_foreground_command(argument_count - 2, arguments + 2, 0);
