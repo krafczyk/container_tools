@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -279,7 +280,7 @@ int main(void)
   const struct ct_mount_plan changed = {
     "docker", "none", "complete", "primary-only", changed_entries, 1U};
   char work[] = "/tmp/mkchad-v1/container-tools-c11/mount-plan-cli.XXXXXX";
-  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096];
+  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], unexpected[4096];
   char *inspect_default[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", NULL};
   char *inspect_human[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", left, NULL};
   char *inspect_json[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", left, NULL};
@@ -293,6 +294,9 @@ int main(void)
   char *inspect_missing[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", missing, NULL};
   char *compare_malformed[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", malformed, left, NULL};
   char *usage[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--help", NULL};
+  char *clear[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", NULL};
+  char *clear_help[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", "--help", NULL};
+  char *clear_invalid[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", "/tmp", NULL};
   char *invalid[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", "--json", left, NULL};
   struct command_result result;
   const struct command_options default_right = {right, 0, 0, 0};
@@ -308,6 +312,10 @@ int main(void)
       snprintf(option_path, sizeof(option_path), "%s/--option", work) >= (int)sizeof(option_path) ||
       snprintf(malformed, sizeof(malformed), "%s/malformed", work) >= (int)sizeof(malformed) ||
       snprintf(missing, sizeof(missing), "%s/missing", work) >= (int)sizeof(missing) ||
+      snprintf(cache, sizeof(cache), "%s/cache", work) >= (int)sizeof(cache) ||
+      snprintf(cache_locks, sizeof(cache_locks), "%s/.locks", cache) >= (int)sizeof(cache_locks) ||
+      snprintf(cache_manifest, sizeof(cache_manifest), "%s/%064d.manifest", cache, 0) >= (int)sizeof(cache_manifest) ||
+      snprintf(unexpected, sizeof(unexpected), "%s/unexpected", cache) >= (int)sizeof(unexpected) ||
       write_plan(left, &plan) != 0 || write_plan(right, &plan) != 0 ||
       write_plan(option_path, &plan) != 0 || chdir(work) != 0) return 1;
 
@@ -411,6 +419,33 @@ int main(void)
   if (run_command(usage, NULL, &result) != 0 || result.stderr_length != 0U ||
       strcmp(result.stdout_text, "usage: container-tools mount plan inspect [--json] [--] [PATH]\n") != 0) {
     (void)fprintf(stderr, "usage failed\n");
+    return 1;
+  }
+  if (setenv("CT_MOUNT_PLAN_STATE_ROOT", cache, 1) != 0 ||
+      run_command(clear, NULL, &result) != 0 || result.stdout_length != 0U ||
+      result.stderr_length != 0U || mkdir(cache, 0700) != 0 ||
+      mkdir(cache_locks, 0700) != 0 || write_plan(cache_manifest, &plan) != 0 ||
+      run_command(clear, NULL, &result) != 0 || result.stdout_length != 0U ||
+      result.stderr_length != 0U || access(cache_manifest, F_OK) == 0 ||
+      run_command(clear, NULL, &result) != 0 ||
+      run_command(clear_help, NULL, &result) != 0 || result.stderr_length != 0U ||
+      strcmp(result.stdout_text, "usage: container-tools mount plan clear [--help]\n") != 0 ||
+      run_command(clear_help, &closed_stdout, &result) != 125 ||
+      result.stderr_length == 0U ||
+      (descriptor = open(unexpected, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600)) < 0 ||
+      close(descriptor) != 0 || run_command(clear, NULL, &result) != 125 ||
+      result.stdout_length != 0U || result.stderr_length == 0U ||
+      strstr(result.stderr_text, cache) != NULL || access(unexpected, F_OK) != 0 ||
+      run_command(clear_invalid, NULL, &result) != 64 ||
+      result.stdout_length != 0U || result.stderr_length == 0U ||
+      strstr(result.stderr_text, cache) != NULL ||
+      unlink(unexpected) != 0 || symlink(left, cache_manifest) != 0 ||
+      run_command(clear, NULL, &result) != 125 || access(cache_manifest, F_OK) != 0 ||
+      unlink(cache_manifest) != 0 || write_plan(cache_manifest, &plan) != 0 ||
+      chmod(cache_manifest, 0644) != 0 || run_command(clear, NULL, &result) != 125 ||
+      access(cache_manifest, F_OK) != 0 || unlink(cache_manifest) != 0 ||
+      unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
+    (void)fprintf(stderr, "clear command failed\n");
     return 1;
   }
   if (run_command(invalid, NULL, &result) != 64 ||

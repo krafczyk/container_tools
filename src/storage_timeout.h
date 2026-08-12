@@ -20,6 +20,14 @@ int ct_storage_timeout_close(int descriptor);
 int ct_storage_timeout_fsync(int descriptor);
 ssize_t ct_storage_timeout_write(int descriptor, const void *buffer, size_t count);
 int ct_storage_timeout_flock_lock(int descriptor);
+/**
+ * Acquire a shared advisory lock under the configured storage deadline.
+ *
+ * @param descriptor Open descriptor whose advisory lock is acquired.
+ * @return Zero on success, or -1 with errno set on timeout or lock failure.
+ * @sideeffect Holds a shared flock until explicitly unlocked or closed.
+ */
+int ct_storage_timeout_flock_shared(int descriptor);
 int ct_storage_timeout_flock_unlock(int descriptor);
 int ct_storage_timeout_mkdir(const char *path, mode_t mode);
 int ct_storage_timeout_chmod(const char *path, mode_t mode);

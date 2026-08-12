@@ -601,23 +601,10 @@ static int ct_instance_user(char output[256])
 
 static int ct_instance_state_root(char output[CT_INSTANCE_PATH_MAX])
 {
-  const char *override = getenv("CT_MOUNT_PLAN_STATE_ROOT");
-  const char *base;
   char path[CT_INSTANCE_PATH_MAX];
-  if (override != NULL && override[0] != '\0') {
-    return ct_instance_normalize_path(override, output);
-  }
-  base = getenv("XDG_STATE_HOME");
-  if (base != NULL && base[0] != '\0') {
-    if (snprintf(path, sizeof(path), "%s/container-tools/mount-plans/v1", base) >=
-        (int)sizeof(path)) return 1;
-    return ct_instance_normalize_path(path, output);
-  }
-  base = getenv("HOME");
-  if (base == NULL || base[0] != '/' ||
-      snprintf(path, sizeof(path), "%s/.local/state/container-tools/mount-plans/v1",
-               base) >= (int)sizeof(path)) return 1;
-  return ct_instance_normalize_path(path, output);
+  return ct_mount_plan_state_root(path) != 0
+             ? 1
+             : ct_instance_normalize_path(path, output);
 }
 
 static int ct_instance_assets_current(const struct ct_instance_request *request,

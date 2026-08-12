@@ -170,20 +170,6 @@ static int ct_runtime_add_mask(const char *source, const char *destination, cons
   return 0;
 }
 
-static int ct_runtime_state_root(char output[CT_RUNTIME_PATH_MAX])
-{
-  const char *override = getenv("CT_MOUNT_PLAN_STATE_ROOT");
-  const char *base;
-  if (override != NULL && override[0] != '\0') {
-    if (!ct_runtime_path_valid(override)) return 1;
-    { const int written = snprintf(output, CT_RUNTIME_PATH_MAX, "%s", override); return written < 0 || (size_t)written >= CT_RUNTIME_PATH_MAX; }
-  }
-  base = getenv("XDG_STATE_HOME");
-  if (base == NULL || base[0] == '\0') base = getenv("HOME");
-  if (base == NULL || base[0] != '/') return 1;
-  { const int written = snprintf(output, CT_RUNTIME_PATH_MAX, "%s/%s", base, getenv("XDG_STATE_HOME") != NULL && getenv("XDG_STATE_HOME")[0] != '\0' ? "container-tools/mount-plans/v1" : ".local/state/container-tools/mount-plans/v1"); return written < 0 || (size_t)written >= CT_RUNTIME_PATH_MAX; }
-}
-
 int ct_runtime_foreground_command(int argument_count, char *const arguments[], int shell_mode)
 {
   const char *backend, *host_root = "auto", *bootstrap = NULL, *container_shell = "/bin/sh";
@@ -259,7 +245,8 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   if (!dry && !remote) {
     struct ct_mount_plan plan;
     if (projection.entry_count + bind_count + (bootstrap != NULL ? 1U : 0U) > sizeof(entries) / sizeof(entries[0])) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce explicit binds and retry");
-    if (ct_runtime_state_root(state_root) != 0) return ct_runtime_failure(1, operation, "state-directory", "set XDG_STATE_HOME or HOME to an absolute path and retry");
+    if (ct_mount_plan_state_root(state_root) != 0 ||
+        !ct_runtime_path_valid(state_root)) return ct_runtime_failure(1, operation, "state-directory", "set XDG_STATE_HOME or HOME to an absolute path and retry");
     if (ct_runtime_cache_root(cache_root) != 0) return ct_runtime_failure(1, operation, "cache-directory", "set CT_HOST_PROJECTION_CACHE_ROOT to an absolute normalized path and retry");
     for (index = 0U; index < bind_count; ++index) {
       char resolved[CT_RUNTIME_PATH_MAX];

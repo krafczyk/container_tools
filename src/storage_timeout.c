@@ -242,6 +242,11 @@ int ct_storage_timeout_flock_lock(int descriptor)
   CT_STORAGE_TIMEOUT_INT_CALL(flock(descriptor, LOCK_EX));
 }
 
+int ct_storage_timeout_flock_shared(int descriptor)
+{
+  CT_STORAGE_TIMEOUT_INT_CALL(flock(descriptor, LOCK_SH));
+}
+
 int ct_storage_timeout_flock_unlock(int descriptor)
 {
   CT_STORAGE_TIMEOUT_INT_CALL(flock(descriptor, LOCK_UN));

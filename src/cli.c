@@ -99,6 +99,8 @@ enum ct_cli_status ct_cli_parse(int argument_count, const char *const *arguments
         ct_parse_triple("mount", "plan", "inspect", CT_COMMAND_MOUNT_PLAN_INSPECT,
                         argument_count, arguments, parsed) == CT_CLI_OK ||
         ct_parse_triple("mount", "plan", "compare", CT_COMMAND_MOUNT_PLAN_COMPARE,
+                        argument_count, arguments, parsed) == CT_CLI_OK ||
+        ct_parse_triple("mount", "plan", "clear", CT_COMMAND_MOUNT_PLAN_CLEAR,
                         argument_count, arguments, parsed) == CT_CLI_OK) {
       return CT_CLI_OK;
     }
@@ -120,7 +122,7 @@ void ct_cli_write_usage(FILE *stream)
 {
   (void)fputs("usage: container-tools [--help] [--version [--json]] COMMAND ...\n"
                "commands: exec, shell, instance exec|identity,\n"
-               "          mount detect|args|plan inspect|plan compare,\n"
+               "          mount detect|args|plan inspect|plan compare|plan clear,\n"
                "          host exec|doctor\n",
                stream);
 }

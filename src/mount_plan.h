@@ -6,6 +6,7 @@
 
 #define CT_MOUNT_PLAN_MAX_ENTRIES 4096U
 #define CT_MOUNT_PLAN_MAX_BYTES 1048576U
+#define CT_MOUNT_PLAN_CACHE_MAX_ENTRIES 4096U
 
 /** One closed semantic mount-plan tuple in launcher assembly order. */
 struct ct_mount_plan_entry { const char *role; const char *caller_path; const char *target_path; const char *access; const char *recursion; };
@@ -74,8 +75,41 @@ int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata
 enum ct_mount_plan_read_status ct_mount_plan_read_status(
     const char *path, struct ct_mount_plan_metadata *metadata,
     ct_mount_plan_entry_visitor visitor, void *context);
-/** Publish one content-addressed plan in state_root and return its immutable path. */
+/**
+ * Publish one content-addressed mount plan to the private managed cache.
+ *
+ * Publication validates the plan, creates private protocol directories as
+ * needed, and serializes with cache clearing and same-digest publishers.
+ *
+ * @param plan Valid semantic mount plan to serialize.
+ * @param state_root Absolute private cache root selected by the caller.
+ * @param path Receives the immutable manifest path on success.
+ * @return Zero on success, otherwise nonzero for invalid input, unsafe cache
+ *         state, storage timeout, or another publication failure.
+ * @sideeffect Creates private cache directories, lock files, and a manifest.
+ */
 int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_root, char path[4096]);
+/**
+ * Resolve the normalized absolute mount-plan cache root from the environment.
+ *
+ * @param output Receives the selected path from CT_MOUNT_PLAN_STATE_ROOT,
+ *               XDG_STATE_HOME, or HOME in that order.
+ * @return Zero on success, otherwise nonzero when no safe absolute path fits.
+ */
+int ct_mount_plan_state_root(char output[4096]);
+/**
+ * Remove only validated private ct-mount-plan-v1 cache protocol entries.
+ *
+ * An absent cache succeeds. The operation serializes with publishers and fails
+ * without deleting entries when the state root contains unexpected, symlinked,
+ * non-private, or over-limit entries.
+ *
+ * @param state_root Absolute protocol state-root path.
+ * @return Zero on a fully cleared or absent cache, otherwise nonzero.
+ * @sideeffect Removes validated manifest, per-digest lock, and temporary cache
+ *             entries while retaining cache-wide synchronization metadata.
+ */
+int ct_mount_plan_clear(const char *state_root);
 /** Return nonzero when a writable source would expose private manifest state. */
 int ct_mount_plan_source_exposes_state(const char *source, const char *state_root);
 

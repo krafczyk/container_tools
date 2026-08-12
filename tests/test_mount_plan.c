@@ -3,6 +3,7 @@
 #include "sha256.h"
 
 #include <fcntl.h>
+#include <sys/file.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -38,7 +39,7 @@ int main(void)
   unsigned char raw[32];
   char golden[65];
   char work[] = "/tmp/mkchad-v1/container-tools-c11/native-mount-plan.XXXXXX";
-  char state[4096], first[4096], second[4096], stale[4096], keep[4096], alternate_digest[65], other_stale[4096], lock[4096], link[4096], future[4096], mismatch[4096];
+  char state[4096], first[4096], second[4096], stale[4096], keep[4096], alternate_digest[65], other_stale[4096], lock[4096], link[4096], future[4096], mismatch[4096], malformed_cache[4096], state_override[4096], resolved_state[4096];
   FILE *stream;
   struct ct_mount_plan_metadata metadata;
   struct visit_context visited = {0U, 0};
@@ -63,6 +64,12 @@ int main(void)
   if (ct_mount_plan_serialize(&alternate, &bytes, &length, alternate_digest) != 0) return 1;
   free(bytes); bytes = NULL;
   if (mkdtemp(work) == NULL || snprintf(state, sizeof(state), "%s/state", work) >= (int)sizeof(state) ||
+      snprintf(state_override, sizeof(state_override), "%s/", state) >=
+          (int)sizeof(state_override) ||
+      setenv("CT_MOUNT_PLAN_STATE_ROOT", state_override, 1) != 0 ||
+      ct_mount_plan_state_root(resolved_state) != 0 ||
+      strcmp(resolved_state, state) != 0 ||
+      unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0 ||
       ct_mount_plan_publish(&plan, state, first) != 0 || ct_mount_plan_publish(&plan, state, second) != 0 ||
       strcmp(first, second) != 0 || lstat(first, &(struct stat){0}) != 0 ||
        snprintf(stale, sizeof(stale), "%s/.work/.tmp.%s.interrupted", state, alternate_digest) >= (int)sizeof(stale) ||
@@ -130,5 +137,75 @@ int main(void)
   stream = fopen(stale, "w");
   if (stream == NULL || fputs("bad", stream) == EOF || fclose(stream) != 0 || chmod(stale, 0644) != 0 ||
       ct_mount_plan_publish(&alternate, state, second) == 0 || access(lock, F_OK) != 0) return 1;
+  if (unlink(stale) != 0 || unlink(keep) != 0 || chmod(other_stale, 0600) != 0 ||
+      ct_mount_plan_clear(state) != 0 || access(state, F_OK) != 0 ||
+      ct_mount_plan_clear(state) != 0 ||
+      snprintf(malformed_cache, sizeof(malformed_cache), "%s/malformed-cache", work) >=
+          (int)sizeof(malformed_cache) || ct_mount_plan_clear(malformed_cache) != 0 ||
+      mkdir(malformed_cache, 0700) != 0 ||
+      snprintf(first, sizeof(first), "%s/unexpected", malformed_cache) >= (int)sizeof(first) ||
+      (stream = fopen(first, "w")) == NULL || fputs("bad", stream) == EOF ||
+      fclose(stream) != 0 || chmod(first, 0600) != 0 ||
+      ct_mount_plan_clear(malformed_cache) == 0 || access(first, F_OK) != 0 ||
+      unlink(first) != 0 || rmdir(malformed_cache) != 0) return 1;
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+  if (mkdir(malformed_cache, 0700) != 0 ||
+      setenv("CT_TEST_STORAGE_TIMEOUT_FORCE", "1", 1) != 0 ||
+      ct_mount_plan_clear(malformed_cache) == 0 || access(malformed_cache, F_OK) != 0 ||
+      unsetenv("CT_TEST_STORAGE_TIMEOUT_FORCE") != 0 || rmdir(malformed_cache) != 0) return 1;
+#endif
+  if (snprintf(stale, sizeof(stale), "%s/.work", state) >= (int)sizeof(stale) ||
+      mkdir(stale, 0700) != 0 ||
+      snprintf(keep, sizeof(keep), "%s/.tmp.%064d.x", stale, 0) >=
+          (int)sizeof(keep) ||
+      (stream = fopen(keep, "w")) == NULL || fclose(stream) != 0 ||
+      chmod(keep, 0600) != 0 || ct_mount_plan_clear(state) != 0 ||
+      access(keep, F_OK) == 0 || access(stale, F_OK) == 0 ||
+      ct_mount_plan_publish(&plan, state, first) != 0 ||
+      snprintf(lock, sizeof(lock), "%s/.locks/.cache.lock", state) >=
+          (int)sizeof(lock)) return 1;
+  {
+    int ready[2], release[2], child_status;
+    pid_t child;
+    char byte;
+    if (pipe(ready) != 0 || pipe(release) != 0 || (child = fork()) < 0) return 1;
+    if (child == 0) {
+      const int descriptor = open(lock, O_RDWR | O_CLOEXEC);
+      (void)close(ready[0]); (void)close(release[1]);
+      if (descriptor < 0 || flock(descriptor, LOCK_SH) != 0 || write(ready[1], "1", 1U) != 1 ||
+          read(release[0], &byte, 1U) != 1 || close(descriptor) != 0) _exit(1);
+      _exit(0);
+    }
+    (void)close(ready[1]); (void)close(release[0]);
+    if (read(ready[0], &byte, 1U) != 1 || close(ready[0]) != 0 ||
+        setenv("CT_RUNTIME_STORAGE_TIMEOUT", "0.1", 1) != 0 ||
+        ct_mount_plan_clear(state) == 0 || access(first, F_OK) != 0 ||
+        unsetenv("CT_RUNTIME_STORAGE_TIMEOUT") != 0 || write(release[1], "1", 1U) != 1 ||
+        close(release[1]) != 0 || waitpid(child, &child_status, 0) != child ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0 ||
+        ct_mount_plan_clear(state) != 0) return 1;
+  }
+  {
+    int ready[2], release[2], child_status;
+    pid_t child;
+    char byte;
+    if (pipe(ready) != 0 || pipe(release) != 0 || (child = fork()) < 0) return 1;
+    if (child == 0) {
+      const int descriptor = open(lock, O_RDWR | O_CLOEXEC);
+      (void)close(ready[0]); (void)close(release[1]);
+      if (descriptor < 0 || flock(descriptor, LOCK_EX) != 0 || write(ready[1], "1", 1U) != 1 ||
+          read(release[0], &byte, 1U) != 1 || close(descriptor) != 0) _exit(1);
+      _exit(0);
+    }
+    (void)close(ready[1]); (void)close(release[0]);
+    if (read(ready[0], &byte, 1U) != 1 || close(ready[0]) != 0 ||
+        setenv("CT_RUNTIME_STORAGE_TIMEOUT", "0.1", 1) != 0 ||
+        ct_mount_plan_publish(&plan, state, first) == 0 || access(first, F_OK) == 0 ||
+        unsetenv("CT_RUNTIME_STORAGE_TIMEOUT") != 0 || write(release[1], "1", 1U) != 1 ||
+        close(release[1]) != 0 || waitpid(child, &child_status, 0) != child ||
+        !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 0 ||
+        ct_mount_plan_publish(&plan, state, first) != 0 ||
+        ct_mount_plan_clear(state) != 0) return 1;
+  }
   return ct_mount_plan_source_exposes_state("/tmp", "/tmp/state") != 0 ? 0 : 1;
 }

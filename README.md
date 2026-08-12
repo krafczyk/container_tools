@@ -144,6 +144,7 @@ container-tools mount plan inspect --json /mnt/plan.manifest
 container-tools mount plan inspect -- --option-like.manifest
 container-tools mount plan compare --json /mnt/expected.manifest
 container-tools mount plan compare /mnt/expected.manifest /mnt/actual.manifest
+container-tools mount plan clear
 ```
 
 The default host record path is
@@ -160,6 +161,17 @@ validation share one bounded process-group operation. Stale content-addressed
 records may remain after an instance exits. A timed-out operation receives one
 separate one-second bounded recovery attempt after its process group is dead;
 later publishers also recover any private temporary that remains.
+
+`container-tools mount plan clear [--help]` clears only that managed cache root;
+it accepts no path argument. An absent cache is successful. Clear validates the
+private protocol layout before mutation, serializes against active publishers by
+the cache-wide protocol lock, and deletes only `<64-lowercase-hex>.manifest`, matching
+`.locks/<64-lowercase-hex>.lock`, and `.work/.tmp.<64-lowercase-hex>.*` files.
+It removes `.work` when empty and retains the private root, `.locks`, and
+`.locks/.cache.lock` as synchronization metadata. Symlinks, unexpected entries
+or types, wrong ownership or mode, entry-limit overflow, and bounded storage
+timeout failures leave unrecognized entries in place and return 125; usage
+returns 64. Diagnostics never include the state path.
 
 The closed NUL-delimited `ct-mount-plan-v1` grammar is:
 
