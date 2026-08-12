@@ -285,8 +285,9 @@ int main(void)
   const struct ct_mount_plan changed = {
     "docker", "none", "complete", "primary-only", changed_entries, 1U};
   char work[] = "/tmp/mkchad-v1/container-tools-c11/mount-plan-cli.XXXXXX";
-  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], unexpected[4096];
+  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], digest_manifest[4096], mismatched_manifest[4096], explicit_digest_path[4096], unexpected[4096];
   char xdg_state[4096], home[4096], expected_location[4096];
+  char digest[65], missing_digest[65], mismatched_digest[65];
   char *inspect_default[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", NULL};
   char *inspect_human[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", left, NULL};
   char *inspect_json[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", left, NULL};
@@ -298,6 +299,10 @@ int main(void)
   char *compare_different[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", left, right, NULL};
   char *inspect_malformed[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", malformed, NULL};
   char *inspect_missing[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", missing, NULL};
+  char *inspect_digest[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", digest, NULL};
+  char *inspect_missing_digest[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", missing_digest, NULL};
+  char *inspect_mismatched_digest[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", mismatched_digest, NULL};
+  char *inspect_explicit_digest_path[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", explicit_digest_path, NULL};
   char *compare_malformed[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", malformed, left, NULL};
   char *usage[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--help", NULL};
   char *clear[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", NULL};
@@ -325,6 +330,8 @@ int main(void)
       snprintf(cache, sizeof(cache), "%s/cache", work) >= (int)sizeof(cache) ||
       snprintf(cache_locks, sizeof(cache_locks), "%s/.locks", cache) >= (int)sizeof(cache_locks) ||
       snprintf(cache_manifest, sizeof(cache_manifest), "%s/%064d.manifest", cache, 0) >= (int)sizeof(cache_manifest) ||
+      snprintf(missing_digest, sizeof(missing_digest), "%064d", 1) >= (int)sizeof(missing_digest) ||
+      snprintf(mismatched_digest, sizeof(mismatched_digest), "%064d", 2) >= (int)sizeof(mismatched_digest) ||
       snprintf(unexpected, sizeof(unexpected), "%s/unexpected", cache) >= (int)sizeof(unexpected) ||
       snprintf(xdg_state, sizeof(xdg_state), "%s/xdg-state", work) >= (int)sizeof(xdg_state) ||
       snprintf(home, sizeof(home), "%s/home", work) >= (int)sizeof(home) ||
@@ -339,7 +346,14 @@ int main(void)
     (void)fprintf(stderr, "report reread failed\n");
     return 1;
   }
+  (void)snprintf(digest, sizeof(digest), "%s", report.metadata.digest);
   ct_mount_plan_report_destroy(&report);
+  if (snprintf(digest_manifest, sizeof(digest_manifest), "%s/%s.manifest", cache,
+               digest) >= (int)sizeof(digest_manifest) ||
+      snprintf(mismatched_manifest, sizeof(mismatched_manifest), "%s/%s.manifest",
+               cache, mismatched_digest) >= (int)sizeof(mismatched_manifest) ||
+      snprintf(explicit_digest_path, sizeof(explicit_digest_path), "./%s",
+               digest) >= (int)sizeof(explicit_digest_path)) return 1;
 
   if (run_command(inspect_default, &default_right, &result) != 0 ||
       result.stderr_length != 0U || validate_inspect_json(&result, escaped_path, 2U) != 0) {
@@ -429,7 +443,7 @@ int main(void)
     return 1;
   }
   if (run_command(usage, NULL, &result) != 0 || result.stderr_length != 0U ||
-      strcmp(result.stdout_text, "usage: container-tools mount plan inspect [--json] [--] [PATH]\n") != 0) {
+      strcmp(result.stdout_text, "usage: container-tools mount plan inspect [--json] [--] [PATH|DIGEST]\n") != 0) {
     (void)fprintf(stderr, "usage failed\n");
     return 1;
   }
@@ -469,6 +483,26 @@ int main(void)
       access(cache_manifest, F_OK) != 0 || unlink(cache_manifest) != 0 ||
       unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
     (void)fprintf(stderr, "clear command failed\n");
+    return 1;
+  }
+  if (setenv("CT_MOUNT_PLAN_STATE_ROOT", cache, 1) != 0 ||
+      write_plan(digest_manifest, &plan) != 0 ||
+      write_plan(explicit_digest_path, &changed) != 0 ||
+      run_command(inspect_digest, NULL, &result) != 0 || result.stderr_length != 0U ||
+      validate_inspect_json(&result, escaped_path, 2U) != 0 ||
+      run_command(inspect_missing_digest, NULL, &result) != 125 ||
+      result.stdout_length != 0U || result.stderr_length == 0U ||
+      strstr(result.stderr_text, cache) != NULL ||
+      write_plan(mismatched_manifest, &changed) != 0 ||
+      run_command(inspect_mismatched_digest, NULL, &result) != 125 ||
+      result.stdout_length != 0U || result.stderr_length == 0U ||
+      strstr(result.stderr_text, cache) != NULL || unlink(mismatched_manifest) != 0 ||
+      run_command(inspect_explicit_digest_path, NULL, &result) != 0 ||
+      result.stderr_length != 0U ||
+      validate_inspect_json(&result, "/other", 1U) != 0 ||
+      unlink(digest_manifest) != 0 || unlink(explicit_digest_path) != 0 ||
+      unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
+    (void)fprintf(stderr, "digest inspect failed\n");
     return 1;
   }
   if (setenv("XDG_STATE_HOME", xdg_state, 1) != 0 ||

@@ -705,7 +705,7 @@ static int ct_mount_plan_usage(const char *command)
 {
   const char *arguments = "location [--help]";
   if (strcmp(command, "inspect") == 0) {
-    arguments = "inspect [--json] [--] [PATH]";
+    arguments = "inspect [--json] [--] [PATH|DIGEST]";
   } else if (strcmp(command, "compare") == 0) {
     arguments = "compare [--json] [--] LEFT [RIGHT]";
   } else if (strcmp(command, "clear") == 0) {
@@ -729,6 +729,29 @@ static const char *ct_mount_plan_default_path(void)
   if (path != NULL && path[0] != '\0') return path;
 #endif
   return "/.container-tools-mount-plan";
+}
+
+static int ct_mount_plan_is_digest(const char *value)
+{
+  size_t index;
+
+  if (value == NULL || strnlen(value, 65U) != 64U) return 0;
+  for (index = 0U; index < 64U; ++index) {
+    if (!((value[index] >= '0' && value[index] <= '9') ||
+          (value[index] >= 'a' && value[index] <= 'f'))) return 0;
+  }
+  return 1;
+}
+
+/* Resolve only a bare content digest; prefixed values remain explicit paths. */
+static int ct_mount_plan_digest_path(const char *digest, char path[4096])
+{
+  char state_root[4096];
+  int written;
+
+  if (ct_mount_plan_state_root(state_root) != 0) return 1;
+  written = snprintf(path, 4096U, "%s/%s.manifest", state_root, digest);
+  return written < 0 || written >= 4096;
 }
 
 static int ct_mount_plan_read_diagnostic(const char *operation,
@@ -826,6 +849,8 @@ static int ct_mount_plan_inspect(int argument_count, char **arguments)
   struct ct_mount_plan_report report;
   struct ct_mount_plan_command_output output = {0};
   const char *path = ct_mount_plan_default_path();
+  const char *requested_digest = NULL;
+  char digest_path[4096];
   int json = 0;
   int path_separator = 0;
   int result = 125;
@@ -855,15 +880,34 @@ static int ct_mount_plan_inspect(int argument_count, char **arguments)
       (argument_count == 1 && (arguments[0][0] == '\0' ||
        (path_separator == 0 && strncmp(arguments[0], "--", 2U) == 0)))) {
     ct_mount_plan_diagnostic("mount plan inspect", "usage",
-                             "use 'container-tools mount plan inspect [--json] [--] [PATH]'");
+                             "use 'container-tools mount plan inspect [--json] [--] [PATH|DIGEST]'");
     result = CT_EXIT_USAGE;
     goto complete;
   }
-  if (argument_count == 1) path = arguments[0];
+  if (argument_count == 1) {
+    path = arguments[0];
+    if (ct_mount_plan_is_digest(path) != 0) {
+      requested_digest = path;
+      if (ct_mount_plan_digest_path(path, digest_path) != 0) {
+        ct_mount_plan_diagnostic(
+            "mount plan inspect", "configuration",
+            "set CT_MOUNT_PLAN_STATE_ROOT, XDG_STATE_HOME, or HOME to a safe absolute path and retry");
+        goto complete;
+      }
+      path = digest_path;
+    }
+  }
   ct_mount_plan_report_init(&report);
   status = ct_mount_plan_report_read(path, &report);
   if (status != CT_MOUNT_PLAN_READ_OK) {
     result = ct_mount_plan_read_diagnostic("mount plan inspect", status);
+    goto complete;
+  }
+  if (requested_digest != NULL &&
+      strcmp(report.metadata.digest, requested_digest) != 0) {
+    ct_mount_plan_report_destroy(&report);
+    result = ct_mount_plan_read_diagnostic(
+        "mount plan inspect", CT_MOUNT_PLAN_READ_DIGEST_MISMATCH);
     goto complete;
   }
   if ((json != 0 ? ct_mount_plan_report_write_json(stdout, &report)

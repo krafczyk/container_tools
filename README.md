@@ -120,8 +120,10 @@ state or infers a plan hash. Automatic launches through an explicit remote
 Docker/Podman endpoint retain the existing remote launch without a local-only
 manifest bind; required host projection already rejects those endpoints.
 
-`container-tools mount plan inspect [--json] [--] [PATH]` validates and reports one
-manifest, defaulting to `/.container-tools-mount-plan`. `container-tools mount
+`container-tools mount plan inspect [--json] [--] [PATH|DIGEST]` validates and reports one
+manifest, defaulting to `/.container-tools-mount-plan`. A bare lowercase 64-hex
+`DIGEST` selects `<resolved-cache-root>/<DIGEST>.manifest`; prefix it with `./`
+to select a same-named path instead. `container-tools mount
 plan compare [--json] [--] LEFT [RIGHT]` validates both and compares their canonical
 validated content; `RIGHT` has the same default. Inspection reports the grammar,
 digest, backend, strategy, completeness, group mode, entry count, and every
@@ -142,6 +144,8 @@ output failure returns 125 rather than terminating on `SIGPIPE`.
 ```sh
 container-tools mount plan inspect
 container-tools mount plan inspect --json /mnt/plan.manifest
+container-tools mount plan inspect --json 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+container-tools mount plan inspect --json ./0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 container-tools mount plan inspect -- --option-like.manifest
 container-tools mount plan compare --json /mnt/expected.manifest
 container-tools mount plan compare /mnt/expected.manifest /mnt/actual.manifest
