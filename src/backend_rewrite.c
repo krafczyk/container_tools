@@ -21,6 +21,19 @@ static int ct_rewrite_secure_descriptor(int descriptor)
   return capability_size == 0 || errno == ENODATA ? 0 : 1;
 }
 
+static int ct_rewrite_secure_path(int descriptor, const char *path)
+{
+  struct stat descriptor_status;
+  struct stat path_status;
+  return path == NULL || fstat(descriptor, &descriptor_status) != 0 ||
+                 stat(path, &path_status) != 0 ||
+                 descriptor_status.st_dev != path_status.st_dev ||
+                 descriptor_status.st_ino != path_status.st_ino ||
+                 ct_rewrite_secure_descriptor(descriptor) != 0
+             ? 1
+             : 0;
+}
+
 static int ct_rewrite_dynamic(const struct ct_nested_request *request,
                               const struct ct_executable_stage *stage,
                               struct ct_nested_command *command)
@@ -33,8 +46,9 @@ static int ct_rewrite_dynamic(const struct ct_nested_request *request,
   size_t used = 0U;
   if (strstr(stage->elf.interpreter, "ld-musl") != NULL ||
       ct_host_copy_bounded(loader, sizeof(loader),
-                           request->executable->loader_visible_path) != 0 ||
-      ct_rewrite_secure_descriptor(request->executable->loader_descriptor) != 0) {
+                            request->executable->loader_visible_path) != 0 ||
+      ct_rewrite_secure_path(request->executable->loader_descriptor,
+                             request->executable->loader_visible_path) != 0) {
     return 1;
   }
   libraries[0] = '\0';
@@ -76,6 +90,10 @@ int ct_backend_rewrite_arguments(const struct ct_nested_request *request,
             request->executable->stages[index].descriptor) != 0) {
       return 1;
     }
+  }
+  if (ct_rewrite_secure_path(request->executable->stages[0].descriptor,
+                             request->executable->stages[0].visible_path) != 0) {
+    return 1;
   }
   final_stage = &request->executable->stages[request->executable->stage_count - 1U];
   if (final_stage->is_shebang != 0 || final_stage->elf.kind == CT_ELF_INVALID) {

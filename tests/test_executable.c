@@ -26,7 +26,9 @@ int main(void)
   char control[4096], direct[4096], env_script[4096], env_split[4096];
   char env_assignment[4096], env_ignore[4096], env_malformed[4096];
   char recursive_a[4096], recursive_b[4096], missing[4096], nonexec[4096];
-  char fifo[4096];
+  char fifo[4096], proxy[4096], relative_proxy[4096], proxy_target[4096];
+  char proxy_directory[4096], proxy_directory_link[4096], parent_proxy[4096];
+  char proxy_loop[4096];
   const char identity[] = "unit-build-identity";
   int descriptor;
   int generated_control;
@@ -46,7 +48,20 @@ int main(void)
       snprintf(recursive_a, sizeof(recursive_a), "%s/a", work) >= (int)sizeof(recursive_a) ||
       snprintf(recursive_b, sizeof(recursive_b), "%s/b", work) >= (int)sizeof(recursive_b) ||
       snprintf(missing, sizeof(missing), "%s/missing", work) >= (int)sizeof(missing) ||
-      snprintf(nonexec, sizeof(nonexec), "%s/nonexec", work) >= (int)sizeof(nonexec)) return 1;
+      snprintf(nonexec, sizeof(nonexec), "%s/nonexec", work) >= (int)sizeof(nonexec) ||
+      snprintf(proxy, sizeof(proxy), "%s/proxy", work) >= (int)sizeof(proxy) ||
+      snprintf(relative_proxy, sizeof(relative_proxy), "%s/relative-proxy", work) >=
+          (int)sizeof(relative_proxy) ||
+      snprintf(proxy_target, sizeof(proxy_target), "%s/proxy-target", work) >=
+          (int)sizeof(proxy_target) ||
+      snprintf(proxy_directory, sizeof(proxy_directory), "%s/proxy-directory", work) >=
+          (int)sizeof(proxy_directory) ||
+      snprintf(proxy_directory_link, sizeof(proxy_directory_link), "%s/linked-directory", work) >=
+          (int)sizeof(proxy_directory_link) ||
+      snprintf(parent_proxy, sizeof(parent_proxy), "%s/proxy-directory/parent-proxy", work) >=
+          (int)sizeof(parent_proxy) ||
+      snprintf(proxy_loop, sizeof(proxy_loop), "%s/proxy-loop", work) >=
+          (int)sizeof(proxy_loop)) return 1;
   if (snprintf(fifo, sizeof(fifo), "%s/fifo", work) >= (int)sizeof(fifo)) return 1;
   descriptor = open(control, O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (descriptor < 0 || executable < 0) return 1;
@@ -68,7 +83,14 @@ int main(void)
        write_executable(env_ignore, "#!/usr/bin/env -S -i sh\n", 0700) != 0 ||
        write_executable(env_malformed, "#!/usr/bin/env -S sh 'unterminated\n", 0700) != 0 ||
       write_executable(missing, "#!/missing/interpreter\n", 0700) != 0 ||
-      write_executable(nonexec, "#!/bin/sh\n", 0600) != 0) return 6;
+      write_executable(nonexec, "#!/bin/sh\n", 0600) != 0 ||
+      write_executable(proxy_target, "#!/bin/sh\n", 0700) != 0 ||
+      symlink("/overlay/proxy-target", proxy) != 0 ||
+      symlink("proxy-target", relative_proxy) != 0 ||
+      mkdir(proxy_directory, 0700) != 0 ||
+      symlink("/overlay", proxy_directory_link) != 0 ||
+      symlink("../proxy-target", parent_proxy) != 0 ||
+      symlink("proxy-loop", proxy_loop) != 0) return 6;
   if (mkfifo(fifo, 0600) != 0) return 6;
   {
     char line[8192];
@@ -95,6 +117,24 @@ int main(void)
   if (ct_executable_resolve(&profile, &map, "/overlay/direct", &resolved) !=
           CT_EXECUTABLE_OK || strcmp(resolved.visible_path, direct) != 0) return 9;
   ct_executable_close(&resolved);
+  if (ct_executable_resolve(&profile, &map, "/overlay/proxy", &resolved) !=
+          CT_EXECUTABLE_OK || strcmp(resolved.target_path, "/overlay/proxy") != 0 ||
+      strcmp(resolved.visible_path, proxy) != 0) return 9;
+  ct_executable_close(&resolved);
+  if (ct_executable_resolve(&profile, &map, "/overlay/relative-proxy", &resolved) !=
+          CT_EXECUTABLE_OK || strcmp(resolved.visible_path, relative_proxy) != 0) return 9;
+  ct_executable_close(&resolved);
+  if (ct_executable_resolve(&profile, &map,
+                            "/overlay/linked-directory/proxy-target", &resolved) !=
+          CT_EXECUTABLE_OK || strstr(resolved.visible_path,
+                                     "/linked-directory/proxy-target") == NULL) return 9;
+  ct_executable_close(&resolved);
+  if (ct_executable_resolve(&profile, &map,
+                            "/overlay/proxy-directory/parent-proxy", &resolved) !=
+          CT_EXECUTABLE_OK || strcmp(resolved.visible_path, parent_proxy) != 0) return 9;
+  ct_executable_close(&resolved);
+  if (ct_executable_resolve(&profile, &map, "/overlay/proxy-loop", &resolved) !=
+      CT_EXECUTABLE_INCOMPATIBLE) return 9;
   if (ct_executable_resolve(&profile, &map, env_script, &resolved) != CT_EXECUTABLE_OK ||
       resolved.stage_count != 3U || resolved.stages[0].shebang.uses_env == 0) return 10;
   ct_executable_close(&resolved);
@@ -128,6 +168,10 @@ int main(void)
        unlink(env_ignore) != 0 ||
        unlink(env_malformed) != 0 ||
       unlink(recursive_a) != 0 || unlink(recursive_b) != 0 || unlink(missing) != 0 ||
-      unlink(nonexec) != 0 || unlink(fifo) != 0 || rmdir(work) != 0) return 13;
+      unlink(nonexec) != 0 || unlink(fifo) != 0 || unlink(proxy) != 0 ||
+      unlink(relative_proxy) != 0 || unlink(proxy_target) != 0 ||
+      unlink(proxy_directory_link) != 0 || unlink(parent_proxy) != 0 ||
+      unlink(proxy_loop) != 0 ||
+      rmdir(proxy_directory) != 0 || rmdir(work) != 0) return 13;
   return 0;
 }

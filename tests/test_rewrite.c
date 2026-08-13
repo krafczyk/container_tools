@@ -68,8 +68,12 @@ int main(void)
   char *payload[] = {"/entry", "argument", NULL};
   int descriptor = open("/bin/true", O_RDONLY | O_CLOEXEC);
   char stage_path[] = "/tmp/mkchad-v1/container-tools-c11/rewrite-stage.XXXXXX";
+  char script_path[] = "/tmp/mkchad-v1/container-tools-c11/rewrite-script.XXXXXX";
   int stage_descriptor = mkstemp(stage_path);
-  if (descriptor < 0 || stage_descriptor < 0 || fchmod(stage_descriptor, 0700) != 0) {
+  int script_descriptor = mkstemp(script_path);
+  if (descriptor < 0 || stage_descriptor < 0 || script_descriptor < 0 ||
+      fchmod(stage_descriptor, 0700) != 0 ||
+      fchmod(script_descriptor, 0700) != 0) {
     return 1;
   }
   memset(&profile, 0, sizeof(profile)); strcpy(profile.root, "/"); strcpy(profile.semantics, "rewrite");
@@ -85,15 +89,22 @@ int main(void)
       ct_backend_rewrite_arguments(&request, &command) != 0 ||
       strcmp(command.arguments[0], "/bin/true") != 0 || strcmp(command.arguments[1], "argument") != 0 || command.arguments[2] != NULL) return 3;
   ct_nested_command_destroy(&command);
+  strcpy(executable.stages[0].visible_path, "/bin/false");
+  if (ct_nested_command_init(&command, CT_NESTED_ARGUMENT_LIMIT) != 0 ||
+      ct_backend_rewrite_arguments(&request, &command) == 0) return 3;
+  ct_nested_command_destroy(&command);
+  strcpy(executable.stages[0].visible_path, "/bin/true");
+  if (close(executable.stages[0].descriptor) != 0) return 3;
   executable.stage_count = 2U; executable.stages[0].is_shebang = 1;
   strcpy(executable.stages[0].target_path, "/script"); strcpy(executable.stages[0].shebang.argument, "-e");
-  strcpy(executable.stages[0].visible_path, "/script");
+  strcpy(executable.stages[0].visible_path, script_path);
+  executable.stages[0].descriptor = script_descriptor;
   strcpy(executable.stages[1].target_path, "/bin/true"); strcpy(executable.stages[1].visible_path, "/bin/true");
   executable.stages[1].descriptor = stage_descriptor; executable.stages[1].elf.kind = CT_ELF_STATIC;
   if (ct_nested_command_init(&command, CT_NESTED_ARGUMENT_LIMIT) != 0 ||
       ct_backend_rewrite_arguments(&request, &command) != 0 ||
       strcmp(command.arguments[0], "/bin/true") != 0 || strcmp(command.arguments[1], "-e") != 0 ||
-      strcmp(command.arguments[2], "/script") != 0 || strcmp(command.arguments[3], "argument") != 0) return 4;
+      strcmp(command.arguments[2], script_path) != 0 || strcmp(command.arguments[3], "argument") != 0) return 4;
   ct_nested_command_destroy(&command);
   executable.stages[0].shebang.uses_env = 1; strcpy(executable.stages[0].shebang.argument, "-S python -O");
   executable.stages[0].env_argument_count = 1U; strcpy(executable.stages[0].env_arguments[0], "-O");
@@ -101,7 +112,7 @@ int main(void)
       ct_backend_rewrite_arguments(&request, &command) != 0 ||
       strcmp(command.arguments[0], "/bin/true") != 0 ||
       strcmp(command.arguments[1], "-O") != 0 ||
-      strcmp(command.arguments[2], "/script") != 0 ||
+      strcmp(command.arguments[2], script_path) != 0 ||
       strcmp(command.arguments[3], "argument") != 0) return 5;
   ct_nested_command_destroy(&command);
   if (fchmod(stage_descriptor, 0700 | S_ISUID) != 0 ||
@@ -142,5 +153,5 @@ int main(void)
   }
   if (warning_matches() != 0) return 11;
   ct_path_map_destroy(&map); ct_executable_close(&executable);
-  return unlink(stage_path) != 0 ? 12 : 0;
+  return unlink(stage_path) != 0 || unlink(script_path) != 0 ? 12 : 0;
 }

@@ -13,15 +13,140 @@
 #include <sys/syscall.h>
 #include <unistd.h>
 
+#define CT_EXECUTABLE_MAX_SYMLINKS 40U
+
+static int ct_executable_normalize(const char *path,
+                                   char normalized[CT_HOST_PATH_MAX])
+{
+  const char *cursor = path;
+  size_t used = 1U;
+  if (path == NULL || path[0] != '/') return 1;
+  normalized[0] = '/';
+  normalized[1] = '\0';
+  while (*cursor != '\0') {
+    const char *end;
+    size_t length;
+    while (*cursor == '/') ++cursor;
+    if (*cursor == '\0') break;
+    end = strchr(cursor, '/');
+    length = end == NULL ? strlen(cursor) : (size_t)(end - cursor);
+    if (length == 1U && cursor[0] == '.') {
+      cursor += length;
+      continue;
+    }
+    if (length == 2U && cursor[0] == '.' && cursor[1] == '.') {
+      if (used > 1U) {
+        while (used > 1U && normalized[used - 1U] != '/') --used;
+        if (used > 1U) --used;
+        normalized[used] = '\0';
+      }
+      cursor += length;
+      continue;
+    }
+    if (used > 1U) {
+      if (used + 1U >= CT_HOST_PATH_MAX) return 1;
+      normalized[used++] = '/';
+    }
+    if (length >= CT_HOST_PATH_MAX - used) return 1;
+    memcpy(normalized + used, cursor, length);
+    used += length;
+    normalized[used] = '\0';
+    cursor += length;
+  }
+  return 0;
+}
+
+static enum ct_executable_status ct_executable_visible(
+    const struct ct_path_map *map, const char *target,
+    char visible[CT_HOST_PATH_MAX])
+{
+  char current[CT_HOST_PATH_MAX];
+  size_t followed = 0U;
+  if (ct_host_copy_bounded(current, sizeof(current), target) != 0) {
+    return CT_EXECUTABLE_INCOMPATIBLE;
+  }
+  for (;;) {
+    const char *cursor = current + 1;
+    if (*cursor == '\0') {
+      return ct_path_map_visible(map, current, visible) == 0
+                 ? CT_EXECUTABLE_OK
+                 : CT_EXECUTABLE_INCOMPATIBLE;
+    }
+    while (*cursor != '\0') {
+      const char *end = strchr(cursor, '/');
+      const size_t prefix_length =
+          end == NULL ? strlen(current) : (size_t)(end - current);
+      char prefix[CT_HOST_PATH_MAX];
+      char component_visible[CT_HOST_PATH_MAX];
+      struct stat status;
+      if (prefix_length >= sizeof(prefix)) return CT_EXECUTABLE_INCOMPATIBLE;
+      memcpy(prefix, current, prefix_length);
+      prefix[prefix_length] = '\0';
+      if (ct_path_map_visible(map, prefix, component_visible) != 0) {
+        return CT_EXECUTABLE_INCOMPATIBLE;
+      }
+      if (lstat(component_visible, &status) != 0) {
+        if (errno == ENOENT || errno == ENOTDIR) return CT_EXECUTABLE_NOT_FOUND;
+        return errno == EACCES || errno == EPERM ? CT_EXECUTABLE_INACCESSIBLE
+                                                  : CT_EXECUTABLE_IO;
+      }
+      if (S_ISLNK(status.st_mode)) {
+        char link[CT_HOST_PATH_MAX + 1U];
+        char joined[CT_HOST_PATH_MAX * 2U];
+        char parent[CT_HOST_PATH_MAX];
+        const char *suffix = end == NULL ? "" : end;
+        ssize_t length;
+        int rendered;
+        if (++followed > CT_EXECUTABLE_MAX_SYMLINKS) {
+          return CT_EXECUTABLE_INCOMPATIBLE;
+        }
+        length = readlink(component_visible, link, CT_HOST_PATH_MAX);
+        if (length < 0) return CT_EXECUTABLE_IO;
+        if ((size_t)length >= CT_HOST_PATH_MAX) {
+          return CT_EXECUTABLE_INCOMPATIBLE;
+        }
+        link[length] = '\0';
+        if (link[0] == '/') {
+          rendered = snprintf(joined, sizeof(joined), "%s%s", link, suffix);
+        } else {
+          const char *slash = strrchr(prefix, '/');
+          const size_t parent_length = slash == prefix ? 1U : (size_t)(slash - prefix);
+          memcpy(parent, prefix, parent_length);
+          parent[parent_length] = '\0';
+          rendered = snprintf(joined, sizeof(joined), "%s%s%s%s", parent,
+                              strcmp(parent, "/") == 0 ? "" : "/", link,
+                              suffix);
+        }
+        if (rendered < 0 || (size_t)rendered >= sizeof(joined) ||
+            ct_executable_normalize(joined, current) != 0) {
+          return CT_EXECUTABLE_INCOMPATIBLE;
+        }
+        break;
+      }
+      if (end == NULL) {
+        return ct_host_copy_bounded(visible, CT_HOST_PATH_MAX,
+                                    component_visible) == 0
+                   ? CT_EXECUTABLE_OK
+                   : CT_EXECUTABLE_INCOMPATIBLE;
+      }
+      cursor = end + 1;
+    }
+  }
+}
+
 static enum ct_executable_status ct_executable_open(
     const struct ct_path_map *map, const char *target, int *descriptor,
     char visible[CT_HOST_PATH_MAX])
 {
+  enum ct_executable_status result;
+  char resolved_visible[CT_HOST_PATH_MAX];
   struct stat status;
+  result = ct_executable_visible(map, target, resolved_visible);
+  if (result != CT_EXECUTABLE_OK) return result;
   if (ct_path_map_visible(map, target, visible) != 0) {
     return CT_EXECUTABLE_INCOMPATIBLE;
   }
-  *descriptor = open(visible, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
+  *descriptor = open(resolved_visible, O_RDONLY | O_CLOEXEC | O_NONBLOCK);
   if (*descriptor < 0) {
     if (errno == ENOENT || errno == ENOTDIR) return CT_EXECUTABLE_NOT_FOUND;
     return errno == EACCES || errno == EPERM ? CT_EXECUTABLE_INACCESSIBLE
@@ -33,14 +158,14 @@ static enum ct_executable_status ct_executable_open(
     return CT_EXECUTABLE_INCOMPATIBLE;
   }
   if ((status.st_mode & (S_IXUSR | S_IXGRP | S_IXOTH)) == 0 ||
-      access(visible, X_OK) != 0) {
+      access(resolved_visible, X_OK) != 0) {
     (void)close(*descriptor);
     *descriptor = -1;
     return CT_EXECUTABLE_INACCESSIBLE;
   }
   {
     struct stat final;
-    if (stat(visible, &final) != 0 || final.st_dev != status.st_dev ||
+    if (stat(resolved_visible, &final) != 0 || final.st_dev != status.st_dev ||
         final.st_ino != status.st_ino) {
       (void)close(*descriptor);
       *descriptor = -1;
