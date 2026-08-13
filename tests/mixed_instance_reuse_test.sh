@@ -27,6 +27,7 @@ export CT_HOST_PROJECTION_SOURCE_ROOT="$work/projection root"
 export CT_HOST_PROJECTION_HOSTNAME=instance-test-host
 export CT_HOST_PROJECTION_EXECUTABLE="$work/fake-bin/apptainer"
 export CT_HOST_PROJECTION_BOOT_ID=instance-test-boot
+instance_root="$HOME/instance root"
 shopt -s nullglob
 selection_records=("$work/projection-cache"/[!.]*)
 selection_count=${#selection_records[@]}
@@ -60,21 +61,21 @@ done
 
 calls_before=$(<"$work/call-count")
 identity=$("$native" instance identity --apptainer \
-  --ct-instance-root "$work/instance root" \
+  --ct-instance-root "$instance_root" \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
   --ct-env 'TEST_VALUE=space value' \
   --ct-bootstrap "$work/bootstrap" \
   -- "$work/image.sif" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*' \
   2>"$work/native-identity.err")
 json=$("$native" instance identity --apptainer \
-  --ct-instance-root "$work/instance root" \
+  --ct-instance-root "$instance_root" \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
   --ct-env 'TEST_VALUE=space value' \
   --ct-bootstrap "$work/bootstrap" \
   -- "$work/image.sif" /bin/fake-command 'literal argument with spaces' '' '--leading-dash' '*' --json)
 ln -s "$work" "$work/root-alias"
 alias_identity=$("$native" instance identity --apptainer \
-  --ct-instance-root "$work/root-alias/instance root" \
+  --ct-instance-root "$work/root-alias/home/instance root" \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
   --ct-env 'TEST_VALUE=space value' \
   --ct-bootstrap "$work/bootstrap" \
@@ -101,7 +102,7 @@ set -e
 }
 
 set +e
-"$helper" --apptainer --ct-instance-root "$work/instance root" \
+"$helper" --apptainer --ct-instance-root "$instance_root" \
   --ct-bind "$work/projection root/bind source:$work/container bind" \
   --ct-env 'TEST_VALUE=space value' \
   --ct-bootstrap "$work/bootstrap" \

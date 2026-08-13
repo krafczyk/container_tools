@@ -877,7 +877,7 @@ static enum ct_instance_prepare_status ct_instance_prepare(
       snprintf(prepared->name, sizeof(prepared->name), "mkchad-%.32s",
                 prepared->digest) >= (int)sizeof(prepared->name)) goto done;
   if (publish_profile != 0) {
-    struct ct_instance_profile_manifest_mount *mounts = calloc(prepared->mount_count, sizeof(*mounts));
+    struct ct_instance_profile_manifest_mount *mounts;
     const char *manifest_groups[CT_INSTANCE_GROUP_MAX];
     struct ct_instance_profile_manifest profile;
     struct ct_mount_plan_metadata metadata;
@@ -885,9 +885,9 @@ static enum ct_instance_prepare_status ct_instance_prepare(
                                    request->root) != 0 ||
         ct_instance_add_state_mask(prepared, prepared->cwd_real,
                                    prepared->cwd, request->root) != 0) {
-      free(mounts);
       goto done;
     }
+    mounts = calloc(prepared->mount_count, sizeof(*mounts));
     if (mounts == NULL || ct_mount_plan_read(prepared->manifest, &metadata,
                                               ct_instance_mount_plan_entry,
                                               NULL) != 0) { free(mounts); goto done; }
