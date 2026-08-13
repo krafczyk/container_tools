@@ -331,21 +331,20 @@ for unsafe_root in "$work/unsafe:root" "$work/unsafe,root"; do
   }
 done
 
-state_setup_root="$work/invalid instance state"
+state_setup_root="$work/alternate mode instance state"
 mkdir "$state_setup_root"
 chmod 750 "$state_setup_root"
 set +e
-"$helper" --apptainer --ct-instance-root "$state_setup_root" \
+"$helper" --apptainer --ct-instance-root "$state_setup_root" --ct-env PORTABLE_MODE=1 \
   -- "$image_path" /bin/fake-command invalid-state \
   >"$work/invalid-state.out" 2>"$work/invalid-state.err"
 state_setup_status=$?
 set -e
-[[ $state_setup_status -eq 1 && ! -e $work/call-count \
-  && $(<"$work/invalid-state.err") == *'persistent instance state: setup:'* \
-  && $(<"$work/invalid-state.err") != *"$state_setup_root"* ]] || {
-  printf '%s\n' 'invalid persistent state was not distinguished from lock contention' >&2
+[[ $state_setup_status -eq 23 && $(stat -Lc '%a' -- "$state_setup_root") == 750 ]] || {
+  printf '%s\n' 'alternate instance state mode was rejected or rewritten' >&2
   exit 1
 }
+rm -f "$work/call-count"
 
 set +e
 invoke
@@ -354,7 +353,7 @@ set -e
 [[ $first_status -eq 23 ]] || { printf '%s\n' 'instance executor did not preserve payload status' >&2; exit 1; }
 [[ $(<"$work/call-count") -eq 4 ]] || { printf '%s\n' 'first invocation did not probe, start, verify, and execute' >&2; exit 1; }
 [[ -d $instance_root && ! -L $instance_root && $(stat -Lc '%a' -- "$instance_root") == 700 ]] || {
-  printf '%s\n' 'first invocation did not create a private instance root' >&2; exit 1;
+  printf '%s\n' 'first invocation did not create a real instance root' >&2; exit 1;
 }
 mapfile -t start_call < "$calls/2"
 [[ ${start_call[0]} == instance && ${start_call[1]} == start ]] || { printf '%s\n' 'instance start command is missing' >&2; exit 1; }
@@ -798,7 +797,7 @@ CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT
   printf '%s\n' 'persistent dry run mutated runtime state' >&2; exit 1;
 }
 
-# Interrupted creation leaves a mode-0600 nonce journal. A later caller adopts
+# Interrupted creation leaves a nonce journal. A later caller adopts
 # only a live instance carrying that exact nonce; a mismatched nonce is left
 # untouched and never triggers a stop operation.
 unset MKCHAD_TEST_HIDE_INSTANCE_LIST
@@ -821,7 +820,7 @@ pending_files=("$recovery_root"/*.pending)
 pending_file=${pending_files[0]:-}
 [[ $recovery_timeout_status -eq 1 && -n $pending_file && -e $pending_file \
   && $(stat -Lc '%a' -- "$pending_file") == 600 ]] || {
-  printf '%s\n' 'interrupted creation did not write a private pending journal' >&2; exit 1;
+  printf '%s\n' 'interrupted creation did not write a pending journal' >&2; exit 1;
 }
 mapfile -t pending_fields < "$pending_file"
 recovery_name=${pending_fields[0]}
@@ -1014,6 +1013,8 @@ absent_pending=${absent_pending_files[0]:-}
   printf '%s\n' 'absence-recovery fixture did not retain its pending journal' >&2; exit 1;
 }
 mapfile -t absent_pending_fields < "$absent_pending"
+chmod 0770 "$absent_recovery_root"
+chmod 0660 "$absent_pending"
 calls_before=$(<"$work/call-count")
 set +e
 absent_recovery_invoke >/dev/null 2>&1
@@ -1047,7 +1048,7 @@ malformed_pending=${malformed_pending_files[0]:-}
   printf '%s\n' 'malformed pending fixture did not create a journal' >&2
   exit 1
 }
-chmod 644 -- "$malformed_pending"
+printf '%s\n' 'malformed' > "$malformed_pending"
 calls_before=$(<"$work/call-count")
 set +e
 malformed_invoke >/dev/null 2> "$work/malformed-pending.err"

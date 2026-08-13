@@ -341,15 +341,15 @@ enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_read(
   { enum ct_instance_profile_manifest_read_status result = ct_ipm_decode(bytes, used, m); free(bytes); return result; }
 }
 
-static int ct_ipm_private_directory(const char *path)
+static int ct_ipm_real_directory(const char *path)
 {
   struct stat status;
-  return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 0777U) != 0700U;
+  return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode);
 }
-static int ct_ipm_private_file(const char *path)
+static int ct_ipm_real_file(const char *path)
 {
   struct stat status;
-  return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 0777U) != 0600U;
+  return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode);
 }
 static int ct_ipm_temporary_name(const char *name)
 {
@@ -375,8 +375,8 @@ enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_read_
   if (manifest == NULL) return CT_INSTANCE_PROFILE_MANIFEST_READ_IO;
   memset(manifest, 0, sizeof(*manifest));
   if (ct_ipm_cache_paths(root, digest, profiles, path) != 0 ||
-      ct_ipm_private_directory(root) != 0 || ct_ipm_private_directory(profiles) != 0 ||
-      ct_ipm_private_file(path) != 0) return CT_INSTANCE_PROFILE_MANIFEST_READ_IO;
+       ct_ipm_real_directory(root) != 0 || ct_ipm_real_directory(profiles) != 0 ||
+       ct_ipm_real_file(path) != 0) return CT_INSTANCE_PROFILE_MANIFEST_READ_IO;
   status = ct_instance_profile_manifest_read(path, manifest);
   if (status != CT_INSTANCE_PROFILE_MANIFEST_READ_OK || strcmp(manifest->profile_digest, digest) != 0) { ct_instance_profile_manifest_destroy(manifest); return status == CT_INSTANCE_PROFILE_MANIFEST_READ_OK ? CT_INSTANCE_PROFILE_MANIFEST_READ_DIGEST_MISMATCH : status; }
   return CT_INSTANCE_PROFILE_MANIFEST_READ_OK;
@@ -399,8 +399,8 @@ ct_instance_profile_manifest_resolve_private_prefix(const char *root,
       strspn(prefix, "0123456789abcdef") != prefix_length ||
       snprintf(profiles, sizeof(profiles), "%s/profiles", root) >=
           (int)sizeof(profiles) ||
-      ct_ipm_private_directory(root) != 0 ||
-      ct_ipm_private_directory(profiles) != 0 ||
+       ct_ipm_real_directory(root) != 0 ||
+       ct_ipm_real_directory(profiles) != 0 ||
       (directory = ct_storage_timeout_opendir(profiles)) == NULL) {
     return CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_IO;
   }
@@ -412,7 +412,7 @@ ct_instance_profile_manifest_resolve_private_prefix(const char *root,
     if (++entries > CT_INSTANCE_PROFILE_MANIFEST_CACHE_MAX_ENTRIES) goto done;
     length = strlen(entry->d_name);
     if (snprintf(path, sizeof(path), "%s/%s", profiles, entry->d_name) >=
-            (int)sizeof(path) || ct_ipm_private_file(path) != 0) goto done;
+            (int)sizeof(path) || ct_ipm_real_file(path) != 0) goto done;
     if (ct_ipm_temporary_name(entry->d_name)) continue;
     if (length != 73U || strcmp(entry->d_name + 64U, ".manifest") != 0) goto done;
     memcpy(candidate, entry->d_name, 64U);
@@ -444,7 +444,7 @@ int ct_instance_profile_manifest_publish(
   struct ct_instance_profile_manifest expected, existing;
   memset(&expected, 0, sizeof(expected));
   memset(&existing, 0, sizeof(existing));
-  if (path == NULL || manifest == NULL || ct_instance_profile_manifest_serialize(manifest, &bytes, &length) != 0 || ct_instance_profile_manifest_parse_read(bytes, length, &expected) != CT_INSTANCE_PROFILE_MANIFEST_READ_OK || ct_ipm_cache_paths(root, manifest->profile_digest, profiles, target) != 0 || ct_storage_ensure_private_directory(root) != 0 || ct_storage_ensure_private_directory(profiles) != 0 || ct_ipm_private_directory(root) != 0 || ct_ipm_private_directory(profiles) != 0 || snprintf(temporary, sizeof(temporary), "%s/.tmp.%s.XXXXXX", profiles, manifest->profile_digest) >= (int)sizeof(temporary)) goto done;
+  if (path == NULL || manifest == NULL || ct_instance_profile_manifest_serialize(manifest, &bytes, &length) != 0 || ct_instance_profile_manifest_parse_read(bytes, length, &expected) != CT_INSTANCE_PROFILE_MANIFEST_READ_OK || ct_ipm_cache_paths(root, manifest->profile_digest, profiles, target) != 0 || ct_storage_ensure_directory(root) != 0 || ct_storage_ensure_directory(profiles) != 0 || ct_ipm_real_directory(root) != 0 || ct_ipm_real_directory(profiles) != 0 || snprintf(temporary, sizeof(temporary), "%s/.tmp.%s.XXXXXX", profiles, manifest->profile_digest) >= (int)sizeof(temporary)) goto done;
   if (ct_instance_profile_manifest_read_private(
           root, manifest->profile_digest,
           &existing) == CT_INSTANCE_PROFILE_MANIFEST_READ_OK) {
@@ -454,7 +454,7 @@ int ct_instance_profile_manifest_publish(
     goto done;
   }
   fd = mkstemp(temporary);
-  if (fd < 0 || ct_storage_timeout_chmod(temporary, 0600) != 0 || ct_ipm_write_exact(fd, bytes, length) != 0 || ct_storage_timeout_fsync(fd) != 0 || ct_storage_timeout_close(fd) != 0) { if (fd >= 0) (void)ct_storage_timeout_close(fd); fd = -1; goto done; }
+  if (fd < 0 || ct_ipm_write_exact(fd, bytes, length) != 0 || ct_storage_timeout_fsync(fd) != 0 || ct_storage_timeout_close(fd) != 0) { if (fd >= 0) (void)ct_storage_timeout_close(fd); fd = -1; goto done; }
   fd = -1;
   if (ct_storage_timeout_link(temporary, target) != 0) {
     if (errno != EEXIST || ct_instance_profile_manifest_read_private(root, manifest->profile_digest, &existing) != CT_INSTANCE_PROFILE_MANIFEST_READ_OK || strcmp(existing.record_digest, expected.record_digest) != 0) { ct_instance_profile_manifest_destroy(&existing); goto done; }

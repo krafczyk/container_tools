@@ -11,12 +11,13 @@
 int main(void)
 {
   char work[] = "/tmp/mkchad-v1/container-tools-c11/native-host-projection.XXXXXX";
-  char root[4096], fallback_root[4096], empty_root[4096], blocked[4096], unresolved[4096], visible[4096], cache[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_temporary[4096], other_temporary[4096];
+  char root[4096], fallback_root[4096], empty_root[4096], blocked[4096], unresolved[4096], visible[4096], cache[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_locks[4096], cache_lock[4096], cache_lock_target[4096], cache_temporary[4096], other_temporary[4096];
   FILE *stream;
   DIR *directory;
   struct dirent *entry;
   struct ct_host_projection selection;
   char cache_key[65];
+  char selected_cache[4096];
   size_t bytes;
   if (setenv("CT_HOST_PROJECTION_HOSTNAME", "fixture-host", 1) != 0 ||
       setenv("CT_HOST_PROJECTION_EXECUTABLE", "/fixture/apptainer", 1) != 0 ||
@@ -47,7 +48,16 @@ int main(void)
        snprintf(log, sizeof(log), "%s/runtime.log", work) >= (int)sizeof(log) ||
        snprintf(config, sizeof(config), "%s/config.json", work) >= (int)sizeof(config) ||
        snprintf(path, sizeof(path), "%s:%s", fake, getenv("PATH") == NULL ? "" : getenv("PATH")) >= (int)sizeof(path) ||
-       snprintf(mountinfo, sizeof(mountinfo), "%s/mountinfo", work) >= (int)sizeof(mountinfo)) return 1;
+        snprintf(mountinfo, sizeof(mountinfo), "%s/mountinfo", work) >= (int)sizeof(mountinfo) ||
+        unsetenv("CT_HOST_PROJECTION_CACHE_ROOT") != 0 || unsetenv("XDG_RUNTIME_DIR") != 0 ||
+        setenv("XDG_CACHE_HOME", fake, 1) != 0 || setenv("HOME", root, 1) != 0 ||
+        ct_host_projection_test_cache_root(selected_cache) != 0 ||
+        snprintf(contents, sizeof(contents), "%s/container-tools/host-projection-v1", fake) >=
+            (int)sizeof(contents) || strcmp(selected_cache, contents) != 0 ||
+        unsetenv("XDG_CACHE_HOME") != 0 ||
+        ct_host_projection_test_cache_root(selected_cache) != 0 ||
+        snprintf(contents, sizeof(contents), "%s/.cache/container-tools/host-projection-v1", root) >=
+            (int)sizeof(contents) || strcmp(selected_cache, contents) != 0) return 1;
   stream = fopen(executable, "w");
   if (stream == NULL || fputs("#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$CT_NATIVE_PROJECTION_LOG\"\nif [ \"${CT_NATIVE_PROJECTION_FORCE_FALLBACK:-}\" = 1 ] && [ \"$1\" = create ]; then for arg; do case \"$arg\" in *\"source=$CT_HOST_PROJECTION_SOURCE_ROOT,target=/host$CT_HOST_PROJECTION_SOURCE_ROOT,\"*) exit 20;; esac; done; fi\nif [ \"$1\" = container ] && [ \"$2\" = inspect ]; then last=; for arg; do last=$arg; done; printf '%s\\n' \"$last\"; fi\nif [ \"${CT_NATIVE_PROJECTION_WEDGE:-}\" = \"$1\" ]; then trap '' TERM; (trap '' TERM; while :; do sleep 1; done) & wait; fi\n", stream) == EOF || fclose(stream) != 0 || chmod(executable, 0700) != 0) return 1;
   stream = fopen(mountinfo, "w");
@@ -63,16 +73,33 @@ int main(void)
   if (stream == NULL || (bytes = fread(contents, 1U, sizeof(contents) - 1U, stream)) == 0U || fclose(stream) != 0) return 1;
   contents[bytes] = '\0';
   if (strstr(contents, "create") == NULL || strstr(contents, "start") == NULL || strstr(contents, "rm") == NULL) return 1;
-  if (ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
-        ct_host_projection_prepare("docker", "fixture-image", "required", 1, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
-        ct_host_projection_prepare("docker", "fixture-image", "disabled", 0, &selection) != 0 || strcmp(selection.strategy, "none") != 0 ||
-        strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 0U) return 1;
   directory = opendir(cache);
   cache_record[0] = '\0';
   while (directory != NULL && (entry = readdir(directory)) != NULL) {
     if (entry->d_name[0] != '.' && snprintf(cache_record, sizeof(cache_record), "%s/%s", cache, entry->d_name) >= (int)sizeof(cache_record)) return 1;
   }
-  if (directory == NULL || closedir(directory) != 0 || cache_record[0] == '\0') return 1;
+  if (directory == NULL || closedir(directory) != 0 || cache_record[0] == '\0' ||
+      snprintf(cache_locks, sizeof(cache_locks), "%s/.locks", cache) >= (int)sizeof(cache_locks)) return 1;
+  directory = opendir(cache_locks);
+  cache_lock[0] = '\0';
+  while (directory != NULL && (entry = readdir(directory)) != NULL) {
+    if (entry->d_name[0] != '.' && snprintf(cache_lock, sizeof(cache_lock), "%s/%s", cache_locks, entry->d_name) >= (int)sizeof(cache_lock)) return 1;
+  }
+  if (directory == NULL || closedir(directory) != 0 || cache_lock[0] == '\0' ||
+      snprintf(cache_lock_target, sizeof(cache_lock_target), "%s/dangling-lock-target", work) >=
+          (int)sizeof(cache_lock_target) || unlink(cache_lock) != 0 ||
+      symlink(cache_lock_target, cache_lock) != 0 ||
+      ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) == 0 ||
+      access(cache_lock_target, F_OK) == 0 || unlink(cache_lock) != 0 ||
+      ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 ||
+      chmod(cache, 0777) != 0 || chmod(cache_locks, 0777) != 0 ||
+      chmod(cache_lock, 0666) != 0 || chmod(cache_record, 0666) != 0 ||
+      setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0) return 1;
+  if (ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
+        ct_host_projection_prepare("docker", "fixture-image", "required", 1, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
+        unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0 ||
+        ct_host_projection_prepare("docker", "fixture-image", "disabled", 0, &selection) != 0 || strcmp(selection.strategy, "none") != 0 ||
+        strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 0U) return 1;
   stream = fopen(cache_record, "w");
   if (stream == NULL || fputs("future-cache-record", stream) == EOF || fclose(stream) != 0 || chmod(cache_record, 0600) != 0 ||
        ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0) return 1;
@@ -84,9 +111,9 @@ int main(void)
   if (snprintf(cache_temporary, sizeof(cache_temporary), "%s.tmp.stale", cache_record) >= (int)sizeof(cache_temporary) ||
       snprintf(other_temporary, sizeof(other_temporary), "%s/other.tmp.active", cache) >= (int)sizeof(other_temporary)) return 1;
   stream = fopen(cache_temporary, "w");
-  if (stream == NULL || fputs("stale", stream) == EOF || fclose(stream) != 0 || chmod(cache_temporary, 0600) != 0) return 1;
+  if (stream == NULL || fputs("stale", stream) == EOF || fclose(stream) != 0 || chmod(cache_temporary, 0666) != 0) return 1;
   stream = fopen(other_temporary, "w");
-  if (stream == NULL || fputs("active", stream) == EOF || fclose(stream) != 0 || chmod(other_temporary, 0600) != 0 ||
+  if (stream == NULL || fputs("active", stream) == EOF || fclose(stream) != 0 || chmod(other_temporary, 0666) != 0 ||
       ct_host_projection_prepare("docker", "fixture-image", "required", 1, &selection) != 0 ||
       access(cache_temporary, F_OK) == 0 || access(other_temporary, F_OK) != 0) return 1;
   stream = fopen(log, "w");

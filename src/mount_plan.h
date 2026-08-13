@@ -35,7 +35,7 @@ enum ct_mount_plan_read_status {
   CT_MOUNT_PLAN_READ_CHANGED = 6,
   CT_MOUNT_PLAN_READ_IO = 7
 };
-/** Outcome of resolving a lowercase mount-plan digest prefix in private cache state. */
+/** Outcome of resolving a lowercase mount-plan digest prefix in managed cache state. */
 enum ct_mount_plan_selector_status {
   CT_MOUNT_PLAN_SELECTOR_OK = 0,
   CT_MOUNT_PLAN_SELECTOR_ABSENT,
@@ -85,7 +85,7 @@ enum ct_mount_plan_read_status ct_mount_plan_read_status(
 /**
  * Resolve exactly one cached mount-plan digest beginning with a valid prefix.
  *
- * @param state_root Existing private mount-plan cache root.
+ * @param state_root Existing managed mount-plan cache root.
  * @param prefix Nonempty lowercase hexadecimal prefix no longer than 64 bytes.
  * @param digest Receives the matched full 64-hex digest when unique.
  * @return A selector outcome; no path is returned for absent or ambiguous input.
@@ -93,17 +93,19 @@ enum ct_mount_plan_read_status ct_mount_plan_read_status(
 enum ct_mount_plan_selector_status ct_mount_plan_resolve_prefix(
     const char *state_root, const char *prefix, char digest[65]);
 /**
- * Publish one content-addressed mount plan to the private managed cache.
+ * Publish one content-addressed mount plan to the managed cache.
  *
- * Publication validates the plan, creates private protocol directories as
- * needed, and serializes with cache clearing and same-digest publishers.
+ * Publication validates the plan, creates real protocol directories as
+ * needed, and serializes with cache clearing and same-digest publishers. New
+ * directories and files request modes 0700 and 0600 respectively; reported
+ * ownership and permission bits are not admission criteria for managed state.
  *
  * @param plan Valid semantic mount plan to serialize.
- * @param state_root Absolute private cache root selected by the caller.
+ * @param state_root Absolute cache root selected by the caller.
  * @param path Receives the immutable manifest path on success.
  * @return Zero on success, otherwise nonzero for invalid input, unsafe cache
  *         state, storage timeout, or another publication failure.
- * @sideeffect Creates private cache directories, lock files, and a manifest.
+ * @sideeffect Creates cache directories, lock files, and a manifest.
  */
 int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_root, char path[4096]);
 /**
@@ -115,11 +117,11 @@ int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_ro
  */
 int ct_mount_plan_state_root(char output[4096]);
 /**
- * Remove only validated private ct-mount-plan-v1 cache protocol entries.
+ * Remove only validated ct-mount-plan-v1 cache protocol entries.
  *
  * An absent cache succeeds. The operation serializes with publishers and fails
  * without deleting entries when the state root contains unexpected, symlinked,
- * non-private, or over-limit entries.
+ * wrong-type, or over-limit entries.
  *
  * @param state_root Absolute protocol state-root path.
  * @return Zero on a fully cleared or absent cache, otherwise nonzero.
@@ -127,7 +129,7 @@ int ct_mount_plan_state_root(char output[4096]);
  *             temporary entries while retaining synchronization metadata.
  */
 int ct_mount_plan_clear(const char *state_root);
-/** Return nonzero when a writable source would expose private manifest state. */
+/** Return nonzero when a writable source would expose managed manifest state. */
 int ct_mount_plan_source_exposes_state(const char *source, const char *state_root);
 
 #endif

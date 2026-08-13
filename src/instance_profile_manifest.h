@@ -60,7 +60,7 @@ enum ct_instance_profile_manifest_read_status {
   CT_INSTANCE_PROFILE_MANIFEST_READ_CHANGED,
   CT_INSTANCE_PROFILE_MANIFEST_READ_IO
 };
-/** Outcome of resolving a lowercase profile digest prefix in private instance state. */
+/** Outcome of resolving a lowercase profile digest prefix in managed instance state. */
 enum ct_instance_profile_manifest_selector_status {
   CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_OK = 0,
   CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_ABSENT,
@@ -114,7 +114,7 @@ enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_parse
     const unsigned char *bytes, size_t length,
     struct ct_instance_profile_manifest *manifest);
 /**
- * Normalize a private absolute instance-root scalar without accessing or creating it.
+ * Normalize a managed absolute instance-root scalar without accessing or creating it.
  *
  * @param value Raw absolute root with no colon, comma, or newline.
  * @param output Receives the normalized root.
@@ -133,35 +133,37 @@ enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_read(
 /**
  * Publish one profile record under ROOT/profiles/DIGEST.manifest atomically.
  *
- * The profile root, profiles directory, and final record must be current-user
- * private state. Existing content is accepted only when byte-identical and
- * valid; competing identical publishers therefore succeed without adopting
- * conflicting state.
+ * The profile root and profiles directory must be real directories, and the
+ * final record must be a regular file rather than a symlink. Existing content
+ * is accepted only when byte-identical and valid; competing identical
+ * publishers therefore succeed without adopting conflicting state. New
+ * directories and records request modes 0700 and 0600 respectively; reported
+ * ownership and permission bits are not admission criteria for managed state.
  *
- * @param root Canonical private instance root.
+ * @param root Canonical managed instance root.
  * @param manifest Complete validated profile manifest.
- * @param path Receives the immutable private manifest path.
+ * @param path Receives the immutable managed manifest path.
  * @return Zero on publication or identical reuse, otherwise nonzero.
- * @sideeffect May create ROOT, ROOT/profiles, and one mode-0600 manifest.
+ * @sideeffect May create ROOT, ROOT/profiles, and one manifest.
  */
 int ct_instance_profile_manifest_publish(
     const char *root, const struct ct_instance_profile_manifest *manifest,
     char path[4096]);
 /**
- * Read one private content-addressed profile manifest from an instance root.
+ * Read one content-addressed profile manifest from an instance root.
  *
- * @param root Canonical private instance root.
+ * @param root Canonical managed instance root.
  * @param digest Exact full profile digest selecting the record.
  * @param manifest Receives owned fields released with destroy.
- * @return A typed private-state, stability, or record-validation status.
+ * @return A typed state, stability, or record-validation status.
  */
 enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_read_private(
     const char *root, const char *digest,
     struct ct_instance_profile_manifest *manifest);
 /**
- * Resolve exactly one private profile manifest digest beginning with a prefix.
+ * Resolve exactly one profile manifest digest beginning with a prefix.
  *
- * @param root Canonical private instance root.
+ * @param root Canonical managed instance root.
  * @param prefix Nonempty lowercase hexadecimal prefix no longer than 64 bytes.
  * @param digest Receives the matched full 64-hex profile digest when unique.
  * @return A selector outcome; no path is returned for absent or ambiguous input.

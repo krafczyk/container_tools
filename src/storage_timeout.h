@@ -41,7 +41,6 @@ int ct_storage_timeout_flock_lock(int descriptor);
 int ct_storage_timeout_flock_shared(int descriptor);
 int ct_storage_timeout_flock_unlock(int descriptor);
 int ct_storage_timeout_mkdir(const char *path, mode_t mode);
-int ct_storage_timeout_chmod(const char *path, mode_t mode);
 int ct_storage_timeout_access(const char *path, int mode);
 DIR *ct_storage_timeout_opendir(const char *path);
 struct dirent *ct_storage_timeout_readdir(DIR *directory);

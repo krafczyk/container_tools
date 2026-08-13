@@ -94,13 +94,9 @@ int ct_state_prepare_root(const char *root)
 
   if (!ct_state_root_valid(root)) return 1;
   if (ct_storage_timeout_lstat(root, &status) == 0) {
-    return S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode) &&
-                   status.st_uid == geteuid() &&
-                   (status.st_mode & 0777U) == 0700U
-               ? 0
-               : 1;
+    return S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode) ? 0 : 1;
   }
-  return errno == ENOENT ? ct_storage_ensure_private_directory(root) : 1;
+  return errno == ENOENT ? ct_storage_ensure_directory(root) : 1;
 }
 
 int ct_state_pending_write(const char *path, const char *name, const char *profile,
@@ -118,7 +114,7 @@ int ct_state_pending_write(const char *path, const char *name, const char *profi
                     nonce);
   if (length < 0 || (size_t)length >= sizeof(contents)) return 1;
   descriptor = mkstemp(temporary);
-  if (descriptor < 0 || ct_storage_timeout_chmod(temporary, 0600) != 0) {
+  if (descriptor < 0) {
     if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
     (void)ct_storage_timeout_unlink(temporary);
     return 1;
@@ -147,8 +143,7 @@ int ct_state_pending_read(const char *path, const char *name, const char *profil
   if (path == NULL || !ct_state_name(name) || !ct_state_hex(profile, 64U) ||
        record == NULL || (descriptor = ct_storage_timeout_open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0)) < 0 ||
        ct_storage_timeout_fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
-       S_ISLNK(status.st_mode) || status.st_uid != geteuid() ||
-       (status.st_mode & 0777U) != 0600U || status.st_size <= 0 ||
+       S_ISLNK(status.st_mode) || status.st_size <= 0 ||
        status.st_size >= (off_t)sizeof(contents)) {
     if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
     return 1;
@@ -198,8 +193,7 @@ int ct_state_identity_write(const char *root, const char *name, const char *imag
                     image_identity, profile);
   if (length < 0 || (size_t)length >= sizeof(contents)) return 1;
   descriptor = mkstemp(temporary);
-  if (descriptor < 0 || ct_storage_timeout_chmod(temporary, 0600) != 0 ||
-      ct_state_write_exact(descriptor, contents, (size_t)length) != 0 ||
+  if (descriptor < 0 || ct_state_write_exact(descriptor, contents, (size_t)length) != 0 ||
       ct_storage_timeout_fsync(descriptor) != 0 ||
       ct_storage_timeout_close(descriptor) != 0) {
     if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
@@ -223,12 +217,10 @@ int ct_state_identity_read(const char *root, const char *name, char profile[65])
   const char *values[4];
   if (!ct_state_root_valid(root) || !ct_state_name(name) || profile == NULL ||
       ct_storage_timeout_lstat(root, &root_status) != 0 ||
-      !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
-      root_status.st_uid != geteuid() || (root_status.st_mode & 0777U) != 0700U ||
+       !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
       snprintf(path, sizeof(path), "%s/%s.identity", root, name) >= (int)sizeof(path) ||
       (descriptor = ct_storage_timeout_open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0)) < 0 ||
-      ct_storage_timeout_fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
-      status.st_uid != geteuid() || (status.st_mode & 0777U) != 0600U ||
+       ct_storage_timeout_fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
       status.st_size < 1 || status.st_size >= (off_t)sizeof(contents)) goto bad;
   if (ct_state_read_exact(descriptor, contents, (size_t)status.st_size) != 0)
     goto bad;
@@ -268,8 +260,7 @@ enum ct_state_identity_selector_status ct_state_identity_resolve_prefix(
       (prefix_length = strlen(prefix)) == 0U || prefix_length > 32U ||
       !ct_state_hex(prefix, prefix_length) ||
       ct_storage_timeout_lstat(root, &root_status) != 0 ||
-      !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
-      root_status.st_uid != geteuid() || (root_status.st_mode & 0777U) != 0700U ||
+       !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
       (directory = ct_storage_timeout_opendir(root)) == NULL) {
     return CT_STATE_IDENTITY_SELECTOR_IO;
   }
@@ -287,9 +278,8 @@ enum ct_state_identity_selector_status ct_state_identity_resolve_prefix(
     if (!ct_state_name(candidate) ||
         snprintf(path, sizeof(path), "%s/%s", root, entry->d_name) >=
             (int)sizeof(path) ||
-        ct_storage_timeout_lstat(path, &status) != 0 ||
-        !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) ||
-        status.st_uid != geteuid() || (status.st_mode & 0777U) != 0600U) {
+         ct_storage_timeout_lstat(path, &status) != 0 ||
+         !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode)) {
       goto done;
     }
     if (strncmp(candidate + 7U, prefix, prefix_length) == 0) {
@@ -312,13 +302,24 @@ enum ct_state_lock_status ct_state_lock(const char *root, const char *name,
                                         int *descriptor)
 {
   char path[CT_STATE_PATH_MAX];
+  struct stat path_status, descriptor_status;
   struct timespec deadline;
   int lock_error = 0;
   if (descriptor == NULL || ct_state_prepare_root(root) != 0 || !ct_state_name(name) ||
        snprintf(path, sizeof(path), "%s/%s.lock", root, name) >= (int)sizeof(path) ||
        ct_state_deadline(&deadline) != 0) return CT_STATE_LOCK_SETUP;
-  *descriptor = ct_storage_timeout_open(path, O_WRONLY | O_CREAT | O_CLOEXEC, 0600);
-  if (*descriptor < 0) return CT_STATE_LOCK_SETUP;
+  *descriptor = ct_storage_timeout_open(
+      path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (*descriptor < 0 || ct_storage_timeout_lstat(path, &path_status) != 0 ||
+      ct_storage_timeout_fstat(*descriptor, &descriptor_status) != 0 ||
+      !S_ISREG(path_status.st_mode) || S_ISLNK(path_status.st_mode) ||
+      !S_ISREG(descriptor_status.st_mode) ||
+      descriptor_status.st_dev != path_status.st_dev ||
+      descriptor_status.st_ino != path_status.st_ino) {
+    if (*descriptor >= 0) (void)ct_storage_timeout_close(*descriptor);
+    *descriptor = -1;
+    return CT_STATE_LOCK_SETUP;
+  }
   for (;;) {
     struct timespec now = {0, 0}, pause = {0, 10000000L};
     if (flock(*descriptor, LOCK_EX | LOCK_NB) == 0) return CT_STATE_LOCK_OK;

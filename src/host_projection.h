@@ -40,6 +40,15 @@ int ct_host_projection_cache_key(const char *backend, const char *image,
  */
 int ct_host_projection_set_none(const char *backend,
                                 struct ct_host_projection *selection);
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+/**
+ * Resolve the managed cache root for deterministic test verification.
+ *
+ * @param output Receives the normalized selected cache root.
+ * @return Zero on success; nonzero when no supported root fits.
+ */
+int ct_host_projection_test_cache_root(char output[4096]);
+#endif
 /**
  * Select and revalidate a bounded local host projection.
  *
@@ -47,8 +56,21 @@ int ct_host_projection_set_none(const char *backend,
  * record.  The function never dispatches a payload.  It returns zero for an
  * available local selection (including `none`), and nonzero for unavailable
  * endpoints or failed selection. Malformed cache state is treated as a cold
- * miss and replaced only after a complete current selection is proven. The caller applies the
+ * miss and replaced only after a complete current selection is proven. Cache
+ * directories and files request modes 0700 and 0600 when created; reported
+ * ownership and permission bits are not admission criteria for managed cache
+ * state. The caller applies the
  * required-mode complete-selection policy before constructing payload argv.
+ *
+ * @param backend Selected supported backend.
+ * @param image Image selector included in the cache identity.
+ * @param mode Projection policy: auto, required, or disabled.
+ * @param refresh Nonzero to bypass a warm cache record for this selection.
+ * @param selection Receives the complete bounded projection selection.
+ * @return Zero for an available selection; nonzero for invalid input,
+ *         unavailable endpoint, or failed selection.
+ * @sideeffect May probe a local runtime and create, lock, read, recover, or
+ *             atomically replace managed projection-cache state.
  */
 int ct_host_projection_prepare(const char *backend, const char *image, const char *mode, int refresh, struct ct_host_projection *selection);
 

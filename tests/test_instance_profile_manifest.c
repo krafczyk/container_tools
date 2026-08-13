@@ -53,14 +53,20 @@ int main(void)
   {
     char root[] = "/tmp/mkchad-v1/profile-manifest-publish.XXXXXX";
     char manifest_path[4096];
+    char profiles_path[4096];
     struct stat status;
     struct ct_instance_profile_manifest readback;
     if (mkdtemp(root) == NULL || chmod(root, 0700) != 0 ||
         ct_instance_profile_manifest_publish(root, &profile, manifest_path) != 0 ||
-        ct_instance_profile_manifest_publish(root, &profile, manifest_path) != 0 ||
         stat(manifest_path, &status) != 0 || (status.st_mode & 0777U) != 0600U ||
+        snprintf(profiles_path, sizeof(profiles_path), "%s/profiles", root) >=
+            (int)sizeof(profiles_path) || chmod(root, 0750) != 0 ||
+        chmod(profiles_path, 0770) != 0 || chmod(manifest_path, 0660) != 0 ||
+        setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0 ||
+        ct_instance_profile_manifest_publish(root, &profile, manifest_path) != 0 ||
         ct_instance_profile_manifest_read_private(root, profile.profile_digest,
-                                                  &readback) != CT_INSTANCE_PROFILE_MANIFEST_READ_OK) return 1;
+                                                  &readback) != CT_INSTANCE_PROFILE_MANIFEST_READ_OK ||
+        unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0) return 1;
     ct_instance_profile_manifest_destroy(&readback);
   }
   {

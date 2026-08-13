@@ -204,6 +204,7 @@ if(BUILD_TESTING)
     container_tools_enable_warnings(test_${test_name})
     add_test(NAME container_tools_${test_name} COMMAND test_${test_name})
   endforeach()
+  target_compile_definitions(test_host_projection PRIVATE CT_STORAGE_TIMEOUT_TEST_SEAM=1)
   target_include_directories(test_doctor PRIVATE vendor/yyjson)
   target_compile_definitions(test_backend_nested PRIVATE
     CT_NESTED_INFRASTRUCTURE_TEST_SEAM=1 CT_TRAMPOLINE_TEST_SEAM=1)

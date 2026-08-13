@@ -63,35 +63,23 @@ int ct_mount_plan_state_root(char output[4096])
          strchr(output, '\n') != NULL;
 }
 
-static int ct_plan_private_directory(const char *path)
+static int ct_plan_real_directory(const char *path)
 {
   struct stat status;
 
   return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISDIR(status.st_mode) ||
-         S_ISLNK(status.st_mode) || status.st_uid != geteuid() ||
-         (status.st_mode & 0777U) != 0700U;
+         S_ISLNK(status.st_mode);
 }
 
-static int ct_plan_private_file(const char *path)
+static int ct_plan_real_file(const char *path)
 {
   struct stat status;
 
   return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
-         S_ISLNK(status.st_mode) || status.st_uid != geteuid() ||
-         (status.st_mode & 0777U) != 0600U;
+         S_ISLNK(status.st_mode);
 }
 
-static int ct_plan_legacy_lock_file(const char *path)
-{
-  struct stat status;
-
-  return ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) ||
-         S_ISLNK(status.st_mode) || status.st_uid != geteuid() ||
-         ((status.st_mode & 0777U) != 0600U &&
-          (status.st_mode & 0777U) != 0644U);
-}
-
-static int ct_plan_lock_open(const char *path, int shared, int legacy)
+static int ct_plan_lock_open(const char *path, int shared)
 {
   struct stat path_status, descriptor_status;
   int descriptor = ct_storage_timeout_open(
@@ -100,10 +88,6 @@ static int ct_plan_lock_open(const char *path, int shared, int legacy)
   if (descriptor < 0 || ct_storage_timeout_lstat(path, &path_status) != 0 ||
       ct_storage_timeout_fstat(descriptor, &descriptor_status) != 0 ||
       !S_ISREG(path_status.st_mode) || S_ISLNK(path_status.st_mode) ||
-      path_status.st_uid != geteuid() ||
-      (legacy != 0 ? (path_status.st_mode & 0777U) != 0600U &&
-                         (path_status.st_mode & 0777U) != 0644U
-                   : (path_status.st_mode & 0777U) != 0600U) ||
       descriptor_status.st_dev != path_status.st_dev ||
       descriptor_status.st_ino != path_status.st_ino ||
       (shared != 0 ? ct_storage_timeout_flock_shared(descriptor)
@@ -506,7 +490,7 @@ enum ct_mount_plan_selector_status ct_mount_plan_resolve_prefix(
   if (state_root == NULL || prefix == NULL || digest == NULL ||
       (prefix_length = strlen(prefix)) == 0U || prefix_length > 64U ||
       strspn(prefix, "0123456789abcdef") != prefix_length ||
-      ct_plan_private_directory(state_root) != 0 ||
+      ct_plan_real_directory(state_root) != 0 ||
       (directory = ct_storage_timeout_opendir(state_root)) == NULL) {
     return CT_MOUNT_PLAN_SELECTOR_IO;
   }
@@ -518,11 +502,11 @@ enum ct_mount_plan_selector_status ct_mount_plan_resolve_prefix(
     if (strcmp(entry->d_name, ".work") == 0 || strcmp(entry->d_name, ".locks") == 0) {
       if (snprintf(path, sizeof(path), "%s/%s", state_root, entry->d_name) >=
               (int)sizeof(path) ||
-          ct_plan_private_directory(path) != 0) goto done;
+          ct_plan_real_directory(path) != 0) goto done;
       continue;
     }
     if (snprintf(path, sizeof(path), "%s/%s", state_root, entry->d_name) >=
-            (int)sizeof(path) || ct_plan_private_file(path) != 0) goto done;
+            (int)sizeof(path) || ct_plan_real_file(path) != 0) goto done;
     if (ct_plan_manifest_name(entry->d_name, candidate) != 0) {
       if (ct_plan_legacy_root_temporary_name(entry->d_name, candidate) != 0)
         goto done;
@@ -568,16 +552,16 @@ static int ct_plan_existing(const char *path, const unsigned char *expected, siz
   struct stat status, descriptor_status, final_status;
   unsigned char *actual;
   int descriptor, result;
-  if (ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 077U) != 0U || (size_t)status.st_size != length) return 1;
+  if (ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) || (size_t)status.st_size != length) return 1;
   descriptor = ct_storage_timeout_open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0);
   actual = malloc(length);
   if (descriptor < 0 || actual == NULL) { if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor); free(actual); return 1; }
   result = ct_storage_timeout_fstat(descriptor, &descriptor_status) != 0 || !S_ISREG(descriptor_status.st_mode) ||
-           descriptor_status.st_uid != status.st_uid || descriptor_status.st_dev != status.st_dev ||
+           descriptor_status.st_dev != status.st_dev ||
            descriptor_status.st_ino != status.st_ino || descriptor_status.st_size != status.st_size ||
            ct_plan_read_exact(descriptor, actual, length) != 0 || ct_storage_timeout_close(descriptor) != 0 ||
            ct_storage_timeout_lstat(path, &final_status) != 0 || !S_ISREG(final_status.st_mode) ||
-           S_ISLNK(final_status.st_mode) || final_status.st_uid != status.st_uid ||
+           S_ISLNK(final_status.st_mode) ||
            final_status.st_dev != status.st_dev || final_status.st_ino != status.st_ino ||
            final_status.st_size != status.st_size ||
            ct_mount_plan_parse(actual, length) != 0 || memcmp(actual, expected, length) != 0;
@@ -603,7 +587,7 @@ static int ct_plan_recover_temporary_files(const char *work, const char *digest)
     written = snprintf(path, sizeof(path), "%s/%s", work, entry->d_name);
     if (written < 0 || (size_t)written >= sizeof(path) ||
         ct_storage_timeout_lstat(path, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) ||
-        status.st_uid != geteuid() || (status.st_mode & 077U) != 0U || ct_storage_timeout_unlink(path) != 0) {
+        ct_storage_timeout_unlink(path) != 0) {
       (void)ct_storage_timeout_closedir(directory);
       return 1;
     }
@@ -687,7 +671,7 @@ static int ct_plan_cache_collect_directory(
   size_t entries = 0U;
   int result = 1;
 
-  if (directory == NULL || count == NULL || ct_plan_private_directory(directory) != 0) {
+  if (directory == NULL || count == NULL || ct_plan_real_directory(directory) != 0) {
     return 1;
   }
   stream = ct_storage_timeout_opendir(directory);
@@ -702,7 +686,7 @@ static int ct_plan_cache_collect_directory(
     if (kind == 1 && strcmp(entry->d_name, CT_PLAN_CACHE_LOCK) == 0) continue;
     if (kind == 2 && strcmp(entry->d_name, CT_PLAN_LEGACY_WORK_LOCK) == 0) {
       if (ct_plan_cache_path(path, directory, entry->d_name) != 0 ||
-          ct_plan_legacy_lock_file(path) != 0) goto done;
+          ct_plan_real_file(path) != 0) goto done;
       continue;
     }
     {
@@ -717,7 +701,7 @@ static int ct_plan_cache_collect_directory(
     }
     if (++entries > CT_MOUNT_PLAN_CACHE_MAX_ENTRIES || valid != 0 ||
         ct_plan_cache_path(path, directory, entry->d_name) != 0 ||
-        (kind == 1 ? ct_plan_legacy_lock_file(path) : ct_plan_private_file(path)) != 0 ||
+        ct_plan_real_file(path) != 0 ||
         (has_digest != 0 && ct_plan_cache_add_digest(digests, count, digest) != 0)) {
       goto done;
     }
@@ -735,7 +719,7 @@ static int ct_plan_cache_remove_directory(const char *directory, int kind)
   size_t entries = 0U;
   int result = 1;
 
-  if (ct_plan_private_directory(directory) != 0 ||
+  if (ct_plan_real_directory(directory) != 0 ||
       (stream = ct_storage_timeout_opendir(directory)) == NULL) return 1;
   errno = 0;
   while ((entry = ct_storage_timeout_readdir(stream)) != NULL) {
@@ -756,7 +740,7 @@ static int ct_plan_cache_remove_directory(const char *directory, int kind)
     }
     if (++entries > CT_MOUNT_PLAN_CACHE_MAX_ENTRIES || valid != 0 ||
         ct_plan_cache_path(path, directory, entry->d_name) != 0 ||
-        (kind == 1 ? ct_plan_legacy_lock_file(path) : ct_plan_private_file(path)) != 0 ||
+        ct_plan_real_file(path) != 0 ||
         ct_storage_timeout_unlink(path) != 0) {
       goto done;
     }
@@ -774,7 +758,7 @@ static int ct_plan_cache_validate_root(const char *state_root)
   size_t entries = 0U;
   int result = 1;
 
-  if (ct_plan_private_directory(state_root) != 0 ||
+  if (ct_plan_real_directory(state_root) != 0 ||
       (stream = ct_storage_timeout_opendir(state_root)) == NULL) return 1;
   errno = 0;
   while ((entry = ct_storage_timeout_readdir(stream)) != NULL) {
@@ -789,8 +773,8 @@ static int ct_plan_cache_validate_root(const char *state_root)
         !valid_root_entry ||
         ct_plan_cache_path(path, state_root, entry->d_name) != 0 ||
         (strcmp(entry->d_name, ".work") == 0 || strcmp(entry->d_name, ".locks") == 0
-             ? ct_plan_private_directory(path)
-             : ct_plan_private_file(path)) != 0) {
+             ? ct_plan_real_directory(path)
+             : ct_plan_real_file(path)) != 0) {
       goto done;
     }
   }
@@ -826,7 +810,7 @@ int ct_mount_plan_clear(const char *state_root)
   if (ct_storage_timeout_lstat(state_root, &status) != 0) {
     return errno == ENOENT ? 0 : 1;
   }
-  if (ct_plan_private_directory(state_root) != 0) return 1;
+  if (ct_plan_real_directory(state_root) != 0) return 1;
   if (ct_plan_cache_validate_root(state_root) != 0) return 1;
   if (ct_storage_timeout_lstat(work, &status) != 0 && errno != ENOENT) return 1;
   if (ct_storage_timeout_lstat(locks, &status) != 0 && errno != ENOENT) return 1;
@@ -836,12 +820,12 @@ int ct_mount_plan_clear(const char *state_root)
       (ct_storage_timeout_lstat(locks, &status) == 0 &&
        ct_plan_cache_collect_directory(locks, 1, digests, &count) != 0)) return 1;
   if (ct_storage_timeout_lstat(locks, &status) != 0 &&
-      (errno != ENOENT || ct_storage_ensure_private_directory(locks) != 0)) return 1;
+      (errno != ENOENT || ct_storage_ensure_directory(locks) != 0)) return 1;
   if (ct_storage_timeout_lstat(work, &status) != 0 &&
-      (errno != ENOENT || ct_storage_ensure_private_directory(work) != 0)) return 1;
-  lock_descriptor = ct_plan_lock_open(cache_lock, 0, 0);
+      (errno != ENOENT || ct_storage_ensure_directory(work) != 0)) return 1;
+  lock_descriptor = ct_plan_lock_open(cache_lock, 0);
   if (lock_descriptor < 0) return 1;
-  legacy_lock_descriptor = ct_plan_lock_open(legacy_lock, 0, 1);
+  legacy_lock_descriptor = ct_plan_lock_open(legacy_lock, 0);
   if (legacy_lock_descriptor < 0) goto done;
   count = 0U;
   if (ct_plan_cache_validate_root(state_root) != 0 ||
@@ -874,26 +858,27 @@ int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_ro
   struct stat lock_status, lock_descriptor_status;
   int written;
   if (state_root == NULL || path == NULL || strchr(state_root, ':') != NULL || strchr(state_root, ',') != NULL || strchr(state_root, '\n') != NULL ||
-      ct_storage_ensure_private_directory(state_root) != 0 || ct_mount_plan_serialize(plan, &bytes, &length, digest) != 0) goto done;
+      ct_storage_ensure_directory(state_root) != 0 || ct_mount_plan_serialize(plan, &bytes, &length, digest) != 0) goto done;
   written = snprintf(path, 4096U, "%s/%s.manifest", state_root, digest);
   if (written < 0 || (size_t)written >= 4096U) goto done;
   written = snprintf(work, sizeof(work), "%s/.work", state_root);
   if (written < 0 || (size_t)written >= sizeof(work)) goto done;
   written = snprintf(locks, sizeof(locks), "%s/.locks", state_root);
   if (written < 0 || (size_t)written >= sizeof(locks) ||
-      ct_storage_ensure_private_directory(locks) != 0) goto done;
+      ct_storage_ensure_directory(locks) != 0) goto done;
   written = snprintf(cache_lock, sizeof(cache_lock), "%s/%s", locks,
                      CT_PLAN_CACHE_LOCK);
   if (written < 0 || (size_t)written >= sizeof(cache_lock) ||
-      (cache_lock_descriptor = ct_plan_lock_open(cache_lock, 1, 0)) < 0) goto done;
-  if (ct_storage_ensure_private_directory(work) != 0) goto done;
+      (cache_lock_descriptor = ct_plan_lock_open(cache_lock, 1)) < 0) goto done;
+  if (ct_storage_ensure_directory(work) != 0) goto done;
   if (ct_plan_existing(path, bytes, length) == 0) { result = 0; goto done; }
   written = snprintf(lock_path, sizeof(lock_path), "%s/%s.lock", locks, digest);
   if (written < 0 || (size_t)written >= sizeof(lock_path)) goto done;
-  lock_descriptor = ct_storage_timeout_open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  lock_descriptor = ct_storage_timeout_open(
+      lock_path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (lock_descriptor < 0 || ct_storage_timeout_lstat(lock_path, &lock_status) != 0 ||
-      ct_storage_timeout_fstat(lock_descriptor, &lock_descriptor_status) != 0 || !S_ISREG(lock_status.st_mode) ||
-      S_ISLNK(lock_status.st_mode) || lock_status.st_uid != geteuid() || (lock_status.st_mode & 077U) != 0U ||
+       ct_storage_timeout_fstat(lock_descriptor, &lock_descriptor_status) != 0 || !S_ISREG(lock_status.st_mode) ||
+       S_ISLNK(lock_status.st_mode) ||
       lock_descriptor_status.st_dev != lock_status.st_dev || lock_descriptor_status.st_ino != lock_status.st_ino ||
       ct_storage_timeout_flock_lock(lock_descriptor) != 0) goto done;
   if (ct_plan_existing(path, bytes, length) == 0) { result = 0; goto done; }
@@ -903,7 +888,7 @@ int ct_mount_plan_publish(const struct ct_mount_plan *plan, const char *state_ro
   descriptor = ct_storage_timeout_open(temporary, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
   if (descriptor < 0 || ct_plan_write_exact(descriptor, bytes, length) != 0 || ct_storage_timeout_fsync(descriptor) != 0 || ct_storage_timeout_close(descriptor) != 0) goto done;
   descriptor = -1;
-  /* link(2) is atomic no-replace within this private filesystem. */
+  /* link(2) is atomic no-replace within this managed filesystem. */
   if (ct_storage_timeout_link(temporary, path) != 0 && errno != EEXIST) goto done;
   if (ct_storage_timeout_unlink(temporary) != 0) goto done;
   if (ct_plan_existing(path, bytes, length) != 0) goto done;

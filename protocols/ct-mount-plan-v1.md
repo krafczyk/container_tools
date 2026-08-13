@@ -10,7 +10,7 @@ NUL-delimited bytes.
 
 `container-tools mount plan inspect [--json] [--] [PATH|DIGEST]` treats a bare
 nonempty lowercase hexadecimal value up to 64 characters as a digest prefix. It
-inspects the private managed cache and selects only when exactly one
+inspects the managed cache and selects only when exactly one
 `DIGEST.manifest` filename matches; a 64-character digest retains exact
 selection. Zero matches are ordinary selection failures and multiple matches
 produce an ambiguity diagnostic without exposing cache paths. Inputs outside
@@ -25,17 +25,16 @@ are identical to publishers and managed cache clearing.
 `container-tools mount plan clear [--help]` is the sole host-side cache cleanup
 grammar. It selects the producer state root, including the narrow
 `CT_MOUNT_PLAN_STATE_ROOT` test override, and accepts no deletion path. A clear
-requires a current-user-owned mode-0700 root and protocol directories and
-current-user-owned mode-0600 regular entries. It deletes only digest-named
-manifests, per-digest lock files, and digest-named temporary files after locking
+requires real protocol directories and regular, non-symlink entries. New
+directories and files request modes `0700` and `0600`, but filesystem-reported
+ownership and permission bits are not protocol admission criteria. It deletes
+only digest-named manifests, per-digest lock files, and digest-named temporary files after locking
 the cache-wide `.locks/.cache.lock` exclusively; publishers hold that lock shared.
-Persisted legacy publisher state is also protocol-owned: clear accepts
-mode-0600 or mode-0644 per-digest lock files, locks and retains a mode-0600 or
-mode-0644 `.work/.lock`, and deletes only `.work/.body.*`, `.work/.candidate.*`,
-and root `.<64-lowercase-hex>.tmp.*` regular files. These legacy lock-mode
-exceptions apply only beneath their current-user-owned mode-0700 directories.
-Any symlink, unexpected entry, ownership or mode failure, entry overflow, or
-timeout fails closed with exit 125. The private root, `.locks`, and cache-wide
+Persisted legacy publisher state is also protocol-owned: clear accepts regular
+per-digest lock files, locks and retains `.work/.lock`, and deletes only
+`.work/.body.*`, `.work/.candidate.*`, and root
+`.<64-lowercase-hex>.tmp.*` regular files. Any symlink, unexpected entry or
+type, entry overflow, or timeout fails closed with exit 125. The root, `.locks`, and cache-wide
 lock plus `.work` and its legacy lock remain as synchronization metadata after
 managed entries are cleared.
 

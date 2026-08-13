@@ -108,9 +108,12 @@ static int ct_runtime_cache_root(char output[CT_RUNTIME_PATH_MAX])
 {
   const char *override = getenv("CT_HOST_PROJECTION_CACHE_ROOT");
   const char *runtime = getenv("XDG_RUNTIME_DIR");
+  const char *cache = getenv("XDG_CACHE_HOME");
+  const char *home = getenv("HOME");
   if (override != NULL && override[0] != '\0') return ct_runtime_path_valid(override) ? snprintf(output, CT_RUNTIME_PATH_MAX, "%s", override) < (int)CT_RUNTIME_PATH_MAX ? 0 : 1 : 1;
   if (runtime != NULL && runtime[0] == '/') return snprintf(output, CT_RUNTIME_PATH_MAX, "%s/container-tools/host-projection-v1", runtime) >= (int)CT_RUNTIME_PATH_MAX;
-  return snprintf(output, CT_RUNTIME_PATH_MAX, "/tmp/container-tools-%lu/host-projection-v1", (unsigned long)geteuid()) >= (int)CT_RUNTIME_PATH_MAX;
+  if (cache != NULL && cache[0] == '/') return snprintf(output, CT_RUNTIME_PATH_MAX, "%s/container-tools/host-projection-v1", cache) >= (int)CT_RUNTIME_PATH_MAX;
+  return home == NULL || home[0] != '/' || snprintf(output, CT_RUNTIME_PATH_MAX, "%s/.cache/container-tools/host-projection-v1", home) >= (int)CT_RUNTIME_PATH_MAX;
 }
 
 static int ct_runtime_target_taken(const struct ct_runtime_bind binds[], size_t bind_count, const char *target)
@@ -273,7 +276,7 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
     for (index = 0U; index < bind_count; ++index) entries[entry_count++] = (struct ct_mount_plan_entry){"explicit", binds[index].target, binds[index].target, binds[index].read_only ? "read-only" : "inherit", "runtime-default"};
     if (bootstrap != NULL) entries[entry_count++] = (struct ct_mount_plan_entry){"bootstrap-internal", "/.container-tools-bootstrap", "/.container-tools-bootstrap", "read-only", "runtime-default"};
     plan.backend = backend; plan.strategy = projection.strategy; plan.completeness = projection.completeness; plan.group_mode = projection.group_mode; plan.entries = entries; plan.entry_count = entry_count;
-    if (ct_mount_plan_publish(&plan, state_root, manifest_path) != 0) return ct_runtime_failure(1, operation, "mount-plan", "fix the launcher state directory ownership and mode, then retry");
+    if (ct_mount_plan_publish(&plan, state_root, manifest_path) != 0) return ct_runtime_failure(1, operation, "mount-plan", "make the launcher state path an accessible real directory, then retry");
     for (index = 0U; index < projection.entry_count; ++index) {
       if (ct_runtime_add_mask(projection.entries[index].target, projection.entries[index].destination, state_root, binds, bind_count, bootstrap, masks, &mask_count) != 0 ||
            ct_runtime_add_mask(projection.entries[index].target, projection.entries[index].destination, cache_root, binds, bind_count, bootstrap, masks, &mask_count) != 0) return ct_runtime_failure(1, operation, "state-isolation", "remove conflicting mounts and retry");

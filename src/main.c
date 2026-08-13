@@ -790,7 +790,7 @@ static int ct_mount_plan_clear_command(int argument_count, char **arguments)
       ct_mount_plan_clear(state_root) != 0) {
     (void)ct_mount_plan_diagnostic(
         "mount plan clear", "cleanup",
-        "repair the private mount-plan cache and retry");
+        "repair the managed mount-plan cache layout and retry");
     goto complete;
   }
   result = 0;

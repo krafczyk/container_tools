@@ -495,9 +495,9 @@ int main(void)
       run_command(clear_invalid, &closed_stderr, &result) != 125 ||
       unlink(unexpected) != 0 || symlink(left, cache_manifest) != 0 ||
       run_command(clear, NULL, &result) != 125 || access(cache_manifest, F_OK) != 0 ||
-      unlink(cache_manifest) != 0 || write_plan(cache_manifest, &plan) != 0 ||
-      chmod(cache_manifest, 0644) != 0 || run_command(clear, NULL, &result) != 125 ||
-      access(cache_manifest, F_OK) != 0 || unlink(cache_manifest) != 0 ||
+       unlink(cache_manifest) != 0 || write_plan(cache_manifest, &plan) != 0 ||
+       chmod(cache_manifest, 0644) != 0 || run_command(clear, NULL, &result) != 0 ||
+       access(cache_manifest, F_OK) == 0 ||
       unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
     (void)fprintf(stderr, "clear command failed\n");
     return 1;

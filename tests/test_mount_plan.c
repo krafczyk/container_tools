@@ -69,9 +69,14 @@ int main(void)
       setenv("CT_MOUNT_PLAN_STATE_ROOT", state_override, 1) != 0 ||
       ct_mount_plan_state_root(resolved_state) != 0 ||
       strcmp(resolved_state, state) != 0 ||
-      unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0 ||
-      ct_mount_plan_publish(&plan, state, first) != 0 || ct_mount_plan_publish(&plan, state, second) != 0 ||
-      strcmp(first, second) != 0 || lstat(first, &(struct stat){0}) != 0 ||
+       unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0 ||
+       ct_mount_plan_publish(&plan, state, first) != 0 || ct_mount_plan_publish(&plan, state, second) != 0 ||
+       strcmp(first, second) != 0 || lstat(first, &(struct stat){0}) != 0 ||
+       chmod(state, 0777) != 0 ||
+       setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0 ||
+       ct_mount_plan_publish(&plan, state, second) != 0 ||
+       unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0 ||
+       strcmp(first, second) != 0 ||
        snprintf(stale, sizeof(stale), "%s/.work/.tmp.%s.interrupted", state, alternate_digest) >= (int)sizeof(stale) ||
        snprintf(other_stale, sizeof(other_stale), "%s/.work/.tmp.%s.active", state, digest) >= (int)sizeof(other_stale) ||
        snprintf(lock, sizeof(lock), "%s/.locks/%s.lock", state, alternate_digest) >= (int)sizeof(lock) ||
@@ -136,8 +141,9 @@ int main(void)
   if (snprintf(second, sizeof(second), "%s/%s.manifest", state, alternate_digest) >= (int)sizeof(second) || unlink(second) != 0) return 1;
   stream = fopen(stale, "w");
   if (stream == NULL || fputs("bad", stream) == EOF || fclose(stream) != 0 || chmod(stale, 0644) != 0 ||
-      ct_mount_plan_publish(&alternate, state, second) == 0 || access(lock, F_OK) != 0) return 1;
-  if (unlink(stale) != 0 || unlink(keep) != 0 || chmod(other_stale, 0600) != 0 ||
+      ct_mount_plan_publish(&alternate, state, second) != 0 || access(stale, F_OK) == 0 ||
+      access(lock, F_OK) != 0) return 1;
+  if (unlink(keep) != 0 || chmod(other_stale, 0600) != 0 ||
       ct_mount_plan_clear(state) != 0 || access(state, F_OK) != 0 ||
       ct_mount_plan_clear(state) != 0 ||
       snprintf(malformed_cache, sizeof(malformed_cache), "%s/malformed-cache", work) >=
@@ -228,6 +234,13 @@ int main(void)
   if (snprintf(keep, sizeof(keep), "%s/.work/.lock", state) >=
           (int)sizeof(keep) ||
       chmod(keep, 0644) != 0 || ct_mount_plan_publish(&plan, state, first) != 0) return 1;
+  if (ct_mount_plan_clear(state) != 0 ||
+      snprintf(lock, sizeof(lock), "%s/.locks/%s.lock", state, digest) >=
+          (int)sizeof(lock) ||
+      snprintf(link, sizeof(link), "%s/dangling-lock-target", work) >=
+          (int)sizeof(link) || symlink(link, lock) != 0 ||
+      ct_mount_plan_publish(&plan, state, first) == 0 || access(link, F_OK) == 0 ||
+      unlink(lock) != 0 || ct_mount_plan_publish(&plan, state, first) != 0) return 1;
   {
     int ready[2], release[2], child_status;
     pid_t child;

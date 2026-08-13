@@ -179,16 +179,18 @@ int main(void)
     (void)fprintf(stderr, "instance prefix %s\n", output); return 1;
   }
   if (run(instance_inspect, 1, output) != 125) return 1;
-  if (chmod(root, 0755) != 0 || run(instance_inspect, 0, output) != 125 ||
-      chmod(root, 0700) != 0) return 1;
-  if (chmod(profiles, 0755) != 0 || run(instance_inspect, 0, output) != 125 ||
-      chmod(profiles, 0700) != 0) return 1;
+  if (setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0 ||
+      chmod(root, 0755) != 0 || run(instance_inspect, 0, output) != 0 ||
+       chmod(root, 0700) != 0) return 1;
+  if (chmod(profiles, 0755) != 0 || run(instance_inspect, 0, output) != 0 ||
+       chmod(profiles, 0700) != 0) return 1;
   {
     char identity[4096];
     if (snprintf(identity, sizeof(identity), "%s/%s.identity", root, instance_name) >= (int)sizeof(identity) ||
-        chmod(identity, 0644) != 0 || run(instance_inspect, 0, output) != 125 ||
+        chmod(identity, 0644) != 0 || run(instance_inspect, 0, output) != 0 ||
         chmod(identity, 0600) != 0 || chmod(digest_path, 0644) != 0 ||
-        run(instance_inspect, 0, output) != 125 || chmod(digest_path, 0600) != 0) return 1;
+        run(instance_inspect, 0, output) != 0 || chmod(digest_path, 0600) != 0 ||
+        unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0) return 1;
   }
   if (run(no_root, 0, output) != 64) { (void)fprintf(stderr, "no-root\n"); return 1; }
   if (run(bad_root, 0, output) != 64) { (void)fprintf(stderr, "bad-root\n"); return 1; }

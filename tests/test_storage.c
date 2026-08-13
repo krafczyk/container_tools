@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int main(void)
@@ -11,11 +12,35 @@ int main(void)
   struct ct_runtime_config config = {{0}, {0}};
   char diagnostics[512];
   FILE *diagnostic_stream;
+  char writable_root[] = "/tmp/mkchad-v1/container-tools-storage.XXXXXX";
+  char adopted[512];
+  char regular[512];
+  char linked[512];
+  FILE *stream;
   int saved_stderr;
   size_t diagnostic_size;
-  if (ct_storage_ensure_private_directory("/tmp/container-tools-storage/..") == 0 ||
-      ct_storage_ensure_private_directory("/tmp/container-tools-storage/.") == 0) {
+  if (ct_storage_ensure_directory("/tmp/container-tools-storage/..") == 0 ||
+      ct_storage_ensure_directory("/tmp/container-tools-storage/.") == 0) {
     (void)fputs("terminal dot path component was accepted\n", stderr);
+    return 1;
+  }
+  if (mkdtemp(writable_root) == NULL || chmod(writable_root, 0777) != 0 ||
+      snprintf(adopted, sizeof(adopted), "%s/adopted", writable_root) >=
+          (int)sizeof(adopted) ||
+      snprintf(regular, sizeof(regular), "%s/regular", writable_root) >=
+          (int)sizeof(regular) ||
+      snprintf(linked, sizeof(linked), "%s/linked", writable_root) >=
+          (int)sizeof(linked) || mkdir(adopted, 0777) != 0 ||
+      setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0 ||
+      ct_storage_ensure_directory(adopted) != 0 ||
+      unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0 ||
+      (stream = fopen(regular, "w")) == NULL || fclose(stream) != 0 ||
+      ct_storage_ensure_directory(regular) == 0 ||
+      symlink(adopted, linked) != 0 || ct_storage_ensure_directory(linked) == 0 ||
+      unlink(linked) != 0 || unlink(regular) != 0 ||
+      chmod(writable_root, 0700) != 0 || chmod(adopted, 0700) != 0 ||
+      rmdir(adopted) != 0 || rmdir(writable_root) != 0) {
+    (void)fputs("writable real directory was not adopted portably\n", stderr);
     return 1;
   }
   diagnostic_stream = tmpfile();

@@ -82,7 +82,7 @@ does not build, verify, or install archives.
 `ct-instance-profile-v1` manifest. With no path it reads
 `/.container-tools-instance-profile`. A bare nonempty lowercase hexadecimal
 prefix up to the 64-hex digest width requires `--ct-instance-root` and resolves
-only when exactly one private `ROOT/profiles/DIGEST.manifest` matches. A full
+only when exactly one managed `ROOT/profiles/DIGEST.manifest` matches. A full
 digest retains exact selection; no match is an ordinary selection failure and
 multiple matches report a redacted ambiguity diagnostic. Prefix it with `./` to
 select an explicit same-named path. Inspection does not create the root. JSON uses the closed `container-tools.instance-profile-inspect/v1` schema
@@ -96,7 +96,7 @@ record grammar and the identity inputs it records.
 `NAME_OR_HASH` accepts `mkchad-` plus a nonempty lowercase hexadecimal prefix up
 to the 32-hex managed-name width, or the bare prefix. A prefix selects only when
 one managed instance name matches; multiple matches report a redacted ambiguity
-diagnostic. Root mode resolves through private `NAME.identity` indexes and then
+diagnostic. Root mode resolves through managed `NAME.identity` indexes and then
 reads the exact profile record without contacting a backend. Backend mode lists
 managed runtime names only for shortened selectors, then contacts only the
 unique resolved name and reads `/.container-tools-instance-profile`; exact
@@ -118,7 +118,7 @@ finalization prints no digest.
 `SINGULARITYENV_CONTAINER_TOOLS_PROFILE` environment value from that same
 digest. Callers cannot supply that reserved environment variable (or the legacy
 `CT_INSTANCE_PROFILE` spelling), and cannot bind either internal identity or
-mount-plan selector. Pending creation journals remain the established private
+mount-plan selector. Pending creation journals remain the established
 three-line `name`, `profile`, `nonce` records; malformed, legacy, or future
 content fails closed without reuse or mutation.
 
@@ -151,7 +151,7 @@ manifest bind; required host projection already rejects those endpoints.
 `container-tools mount plan inspect [--json] [--] [PATH|DIGEST]` validates and reports one
 manifest, defaulting to `/.container-tools-mount-plan`. A bare nonempty lowercase
 hexadecimal prefix up to the 64-hex digest width selects only when exactly one
-private `<resolved-cache-root>/<DIGEST>.manifest` matches. A full digest retains
+managed `<resolved-cache-root>/<DIGEST>.manifest` matches. A full digest retains
 exact selection; no match is an ordinary selection failure and multiple matches
 report a redacted ambiguity diagnostic. Prefix it with `./` to select a
 same-named path instead. `container-tools mount
@@ -189,15 +189,17 @@ The default host record path is
 `CT_MOUNT_PLAN_STATE_ROOT` is a narrow test-state override. The state directory
 must be absolute and cannot contain a colon, comma, or newline because every
 supported backend must represent the resulting bind path without ambiguity.
-The directory and every record are current-user-owned and private; records are
-mode `0600` and published with a temporary file plus atomic rename. A matching
-validated content-addressed record is reused. Malformed, mismatched, symlinked,
-wrong-owner, or insecure records fail the launch rather than being replaced.
+Existing path components must be real directories, and records must be regular
+files rather than symlinks. New directories and records request modes `0700`
+and `0600`, but operation does not depend on filesystem-reported ownership or
+permission bits. Records are published with a temporary file plus atomic rename.
+A matching validated content-addressed record is reused. Malformed, mismatched,
+symlinked, or conflicting records fail the launch rather than being replaced.
 State creation, stale-temporary cleanup, locking, publication, and final
 validation share one bounded process-group operation. Stale content-addressed
 records may remain after an instance exits. A timed-out operation receives one
 separate one-second bounded recovery attempt after its process group is dead;
-later publishers also recover any private temporary that remains.
+later publishers also recover any protocol-named temporary that remains.
 
 `container-tools mount plan location [--help]` prints the resolved absolute
 cache root for that invocation without creating, inspecting, or modifying it.
@@ -206,17 +208,16 @@ publishers and `mount plan clear`.
 
 `container-tools mount plan clear [--help]` clears only that managed cache root;
 it accepts no path argument. An absent cache is successful. Clear validates the
-private protocol layout before mutation, serializes against active publishers by
+protocol layout before mutation, serializes against active publishers by
 the cache-wide protocol lock, and deletes only `<64-lowercase-hex>.manifest`, matching
 `.locks/<64-lowercase-hex>.lock`, and `.work/.tmp.<64-lowercase-hex>.*` files.
 It also recognizes the persisted legacy `.work/.lock`, `.work/.body.*`,
 `.work/.candidate.*`, and `.<64-lowercase-hex>.tmp.*` publisher layout. Clear
-accepts historical per-digest and work lock modes `0600` or `0644` only inside
-their private mode-0700 protocol directories. It retains the private root,
-`.work`, `.work/.lock`, `.locks`, and
+accepts historical per-digest and work lock files. It retains the root, `.work`,
+`.work/.lock`, `.locks`, and
 `.locks/.cache.lock` as synchronization metadata. Symlinks, unexpected entries
-or types, wrong ownership or mode, entry-limit overflow, and bounded storage
-timeout failures leave unrecognized entries in place and return 125; usage
+or types, entry-limit overflow, and bounded storage timeout failures leave
+unrecognized entries in place and return 125; usage
 returns 64. Diagnostics never include the state path.
 
 The closed NUL-delimited `ct-mount-plan-v1` grammar is:
@@ -252,7 +253,7 @@ identities, unrelated host-source presentation, its own stable bind, and the
 read-only masks that prevent writable mount aliases from reaching its backing
 directory. Those masks cover generated, detected, explicit, persistent-CWD, and
 native runtime implicit HOME/CWD aliases. A conflicting destination or a caller
-source inside private manifest state fails before backend dispatch.
+source inside managed manifest state fails before backend dispatch.
 
 The manifest bind is added only after the complete semantic plan is hashed and
 published. Dry runs create no mount-plan state and add no manifest bind.
@@ -300,6 +301,13 @@ Persisted Docker and Podman selectors are read from their bounded client config
 when the corresponding environment selector is unset. Cold Docker/Podman proof
 also binds and verifies a private client nonce, so reaching a Unix socket alone
 does not establish that its daemon sees this host filesystem.
+
+Host-projection cache directories and files request modes `0700` and `0600`
+when created. Existing cache objects are admitted by normalized path, real
+directory or regular-file type, stable identity, bounded validated content, and
+locking; reported ownership and permission bits are not admission criteria.
+The default cache root uses `XDG_RUNTIME_DIR`, then `XDG_CACHE_HOME`, then
+`$HOME/.cache`; `CT_HOST_PROJECTION_CACHE_ROOT` remains the explicit override.
 
 Docker and Podman use primary-only groups unless aggregate proof conclusively
 reports a supported broader realization. SingularityCE and Apptainer retain
@@ -381,7 +389,7 @@ and an unavailable runtime reports `unavailable` without making a parity claim.
 
 `ct_instance_exec.sh` is the persistent SingularityCE/Apptainer variant for a
 service that must retain its image mount after the launching command exits. It
-requires a private absolute `--ct-instance-root` without colon, comma, or
+requires a managed absolute `--ct-instance-root` without colon, comma, or
 newline, serializes first use, and keys the instance name to the runtime, host,
 active image and bootstrap identities, and fixed bind profile:
 
@@ -408,8 +416,8 @@ liveness exec followed by its payload; it never reruns a capability probe or
 adds a bind to an already-running instance. Profile mismatch refuses before the
 payload and never stops an existing instance.
 
-Instance creation records a private mode-`0600` pending name/profile/nonce
-journal and binds it read-only at a fixed internal identity path. After the
+Instance creation records a pending name/profile/nonce journal, requesting mode
+`0600`, and binds it read-only at a fixed internal identity path. After the
 instance verifies the pinned record, the host path is unlinked while the
 instance mount retains the original bytes. Recovery adopts only an instance
 that exposes the exact pending nonce; ambiguous liveness or list results retain
@@ -422,10 +430,16 @@ creating an instance root, projection cache, or pending journal.
 `/.container-tools-instance-profile` are reserved for internal read-only
 records and cannot be explicit bind destinations (including descendants). The
 v4 profile grammar hashes the runtime argument only as `absent` or its SHA-256
-digest and publishes an immutable private profile manifest before instance
+digest and publishes an immutable managed profile manifest before instance
 contact. Identity-transport version
 changes select a new instance profile rather than attempting to adopt an
 instance created under an older verification contract.
+
+Managed instance roots and profile directories request mode `0700`; journals,
+identity indexes, locks, and profile manifests request mode `0600`. Existing
+managed state is admitted by normalized path, real directory or regular-file
+type, protocol content, and locking rather than reported ownership or
+permission bits.
 
 The cumulative runtime runner includes `HP-HOST-006`. Docker and Podman report
 that persistent case as an explicit backend-inapplicable skip. SingularityCE
@@ -504,11 +518,9 @@ CT_SINGULARITY_CACHE_DIR=/data/container-cache/singularity
 CT_SINGULARITY_TMP_DIR=/data/container-tmp/singularity
 ```
 
-Configured directories are created on first use. Existing plain directories
-must be current-user-owned and must not be group- or world-writable; safe
-directories are tightened to mode `0700`, while symlinks and previously writable
-directories fail closed. Ancestors must also be plain directories and cannot be
-group- or world-writable unless they are sticky shared roots such as `/tmp`.
+Configured directories are created on first use with requested mode `0700`.
+Existing path components must be real accessible directories rather than
+symlinks; ownership and permission-bit presentation are not admission criteria.
 An explicit `SINGULARITY_CACHEDIR`,
 `SINGULARITY_TMPDIR`, `APPTAINER_CACHEDIR`, or `APPTAINER_TMPDIR`
 environment value takes precedence and is not created or permission-modified.

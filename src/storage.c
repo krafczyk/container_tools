@@ -36,16 +36,14 @@ static int ct_storage_check_ancestors(const char *path)
     struct stat status;
     if (ct_storage_timeout_lstat(ancestor, &status) != 0) {
       if (errno != ENOENT) return 1;
-    } else if (!S_ISDIR(status.st_mode) ||
-        S_ISLNK(status.st_mode) || ((status.st_mode & 0022) != 0 &&
-                                    (status.st_mode & 01000) == 0)) return 1;
+    } else if (!S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode)) return 1;
     if (strcmp(ancestor, "/") == 0) return 0;
     slash = strrchr(ancestor, '/');
     if (slash == ancestor) ancestor[1] = '\0'; else *slash = '\0';
   }
 }
 
-static int ct_storage_ensure_private_directory_inner(const char *path)
+static int ct_storage_ensure_directory_inner(const char *path)
 {
   struct stat status;
 
@@ -59,19 +57,17 @@ static int ct_storage_ensure_private_directory_inner(const char *path)
     if (slash == NULL) return 1;
     if (slash == parent) parent[1] = '\0'; else *slash = '\0';
     if ((ct_storage_timeout_lstat(parent, &status) != 0 && (errno != ENOENT ||
-                                            ct_storage_ensure_private_directory_inner(parent) != 0)) ||
+                                             ct_storage_ensure_directory_inner(parent) != 0)) ||
         (ct_storage_timeout_mkdir(path, 0700) != 0 && errno != EEXIST) ||
         ct_storage_timeout_lstat(path, &status) != 0 ||
         ct_storage_check_ancestors(path) != 0) return 1;
   }
-  if (!S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode) || status.st_uid != geteuid() ||
-      (status.st_mode & 0022) != 0) return 1;
-  return (status.st_mode & 0777) == 0700 || ct_storage_timeout_chmod(path, 0700) == 0 ? 0 : 1;
+  return !S_ISDIR(status.st_mode) || S_ISLNK(status.st_mode) ? 1 : 0;
 }
 
-int ct_storage_ensure_private_directory(const char *path)
+int ct_storage_ensure_directory(const char *path)
 {
-  return ct_storage_ensure_private_directory_inner(path);
+  return ct_storage_ensure_directory_inner(path);
 }
 
 static int ct_storage_select_directory(const char *variable, const char *fallback)
@@ -79,7 +75,7 @@ static int ct_storage_select_directory(const char *variable, const char *fallbac
   const char *existing = getenv(variable);
   if (existing != NULL && existing[0] != '\0') return 0;
   if (fallback == NULL || fallback[0] == '\0') return 0;
-  if (ct_storage_ensure_private_directory_inner(fallback) != 0) return 1;
+  if (ct_storage_ensure_directory_inner(fallback) != 0) return 1;
   return setenv(variable, fallback, 1) == 0 ? 0 : 1;
 }
 
@@ -118,8 +114,8 @@ int ct_storage_select_runtime(const char *backend, const struct ct_runtime_confi
     return 1;
   }
   if (result != 0) {
-    ct_cli_diagnostic("runtime storage", "ownership-or-mode",
-                      "make configured storage directories current-user owned with mode 0700, then retry");
+    ct_cli_diagnostic("runtime storage", "directory",
+                      "make configured storage paths real accessible directories, then retry");
   }
   return result;
 }

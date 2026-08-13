@@ -198,14 +198,27 @@ int ct_storage_timeout_call(int (*operation)(void *), void *context)
     return result; \
   } while (0)
 
+static void ct_storage_timeout_present_stat(struct stat *status)
+{
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+  if (status != NULL && getenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != NULL) {
+    status->st_uid = geteuid() == 0 ? 1 : 0;
+  }
+#else
+  (void)status;
+#endif
+}
+
 int ct_storage_timeout_lstat(const char *path, struct stat *status)
 {
-  CT_STORAGE_TIMEOUT_INT_CALL(lstat(path, status));
+  CT_STORAGE_TIMEOUT_INT_CALL(
+      lstat(path, status) == 0 ? (ct_storage_timeout_present_stat(status), 0) : -1);
 }
 
 int ct_storage_timeout_stat(const char *path, struct stat *status)
 {
-  CT_STORAGE_TIMEOUT_INT_CALL(stat(path, status));
+  CT_STORAGE_TIMEOUT_INT_CALL(
+      stat(path, status) == 0 ? (ct_storage_timeout_present_stat(status), 0) : -1);
 }
 
 int ct_storage_timeout_open(const char *path, int flags, mode_t mode)
@@ -215,7 +228,8 @@ int ct_storage_timeout_open(const char *path, int flags, mode_t mode)
 
 int ct_storage_timeout_fstat(int descriptor, struct stat *status)
 {
-  CT_STORAGE_TIMEOUT_INT_CALL(fstat(descriptor, status));
+  CT_STORAGE_TIMEOUT_INT_CALL(
+      fstat(descriptor, status) == 0 ? (ct_storage_timeout_present_stat(status), 0) : -1);
 }
 
 ssize_t ct_storage_timeout_read(int descriptor, void *buffer, size_t count)
@@ -272,11 +286,6 @@ int ct_storage_timeout_flock_unlock(int descriptor)
 int ct_storage_timeout_mkdir(const char *path, mode_t mode)
 {
   CT_STORAGE_TIMEOUT_INT_CALL(mkdir(path, mode));
-}
-
-int ct_storage_timeout_chmod(const char *path, mode_t mode)
-{
-  CT_STORAGE_TIMEOUT_INT_CALL(chmod(path, mode));
 }
 
 int ct_storage_timeout_access(const char *path, int mode)

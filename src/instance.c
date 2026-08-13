@@ -1025,7 +1025,7 @@ static void ct_instance_prepare_diagnostic(
       ct_instance_diagnostic("bind-source", "make every requested or detected bind source accessible, then retry");
       return;
     case CT_INSTANCE_PREPARE_MOUNT_PLAN:
-      ct_instance_diagnostic("mount-plan", "make persistent mount-plan state privately writable, then retry");
+      ct_instance_diagnostic("mount-plan", "make persistent mount-plan state an accessible real directory, then retry");
       return;
     case CT_INSTANCE_PREPARE_ASSETS:
       ct_instance_diagnostic("assets", "restore stable image and bootstrap assets, then retry");
@@ -1389,7 +1389,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
   }
   if (identity_only == 0 && ct_state_prepare_root(request.root) != 0) {
     ct_cli_diagnostic("persistent instance state", "setup",
-                      "make the persistent instance state directory privately writable, then retry");
+                      "make the persistent instance state path an accessible real directory, then retry");
     return 1;
   }
   prepare_status = ct_instance_prepare(&request, &prepared,
@@ -1423,7 +1423,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
                         "wait for the concurrent instance creation to finish, then retry");
     } else {
       ct_cli_diagnostic("persistent instance state", "setup",
-                        "make the persistent instance state directory privately writable, then retry");
+                        "make the persistent instance state path an accessible real directory, then retry");
     }
     goto done;
   }
@@ -1437,7 +1437,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     if (ct_state_pending_read(pending_path, prepared.name, prepared.digest,
                               &pending) != 0) {
       ct_instance_recovery_diagnostic("pending-journal",
-                                      "repair or remove the malformed private pending journal, then retry");
+                                      "repair or remove the malformed pending journal, then retry");
       goto done;
     }
     memcpy(nonce, pending.nonce, sizeof(nonce));
@@ -1449,7 +1449,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     if (probe == 0) {
       if (ct_state_pending_clear(pending_path) != 0) {
         ct_instance_recovery_diagnostic("pending-journal-update",
-                                        "repair private instance state storage and retry");
+                                         "repair managed instance state storage and retry");
         goto done;
       }
       ready = 1;
@@ -1477,7 +1477,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     }
   } else if (errno != ENOENT) {
     ct_instance_recovery_diagnostic("pending-journal-recovery",
-                                    "repair access to the private pending journal and retry");
+                                     "repair access to the pending journal and retry");
     goto done;
   }
   if (!ready && !pending_restart) {
@@ -1509,7 +1509,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
           ct_state_pending_write(pending_path, prepared.name, prepared.digest,
                                  nonce) != 0) {
         ct_instance_recovery_diagnostic("pending-journal-update",
-                                        "repair private instance state storage and retry");
+                                         "repair managed instance state storage and retry");
         goto done;
       }
     }
@@ -1544,7 +1544,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
     }
     if (ct_state_pending_clear(pending_path) != 0) {
       ct_instance_recovery_diagnostic("pending-journal-update",
-                                      "repair private instance state storage and retry");
+                                       "repair managed instance state storage and retry");
       goto done;
     }
   }
@@ -1558,7 +1558,7 @@ int ct_instance_command(int argument_count, char *const arguments[], int identit
                               prepared.image_identity, prepared.digest) != 0) {
     ct_instance_recovery_diagnostic(
         "identity-index-update",
-        "repair private instance state storage and retry");
+        "repair managed instance state storage and retry");
     goto done;
   }
   ct_state_unlock(lock);

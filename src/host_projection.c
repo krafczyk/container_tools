@@ -499,10 +499,20 @@ static int ct_cache_root(char output[CT_HOST_PATH_MAX])
 {
   const char *root = getenv("CT_HOST_PROJECTION_CACHE_ROOT");
   const char *runtime = getenv("XDG_RUNTIME_DIR");
+  const char *cache = getenv("XDG_CACHE_HOME");
+  const char *home = getenv("HOME");
   if (root != NULL && root[0] != '\0') return ct_copy(output, root);
   if (runtime != NULL && runtime[0] == '/') return snprintf(output, CT_HOST_PATH_MAX, "%s/container-tools/host-projection-v1", runtime) >= (int)CT_HOST_PATH_MAX;
-  return snprintf(output, CT_HOST_PATH_MAX, "/tmp/container-tools-%lu/host-projection-v1", (unsigned long)geteuid()) >= (int)CT_HOST_PATH_MAX;
+  if (cache != NULL && cache[0] == '/') return snprintf(output, CT_HOST_PATH_MAX, "%s/container-tools/host-projection-v1", cache) >= (int)CT_HOST_PATH_MAX;
+  return home == NULL || home[0] != '/' || snprintf(output, CT_HOST_PATH_MAX, "%s/.cache/container-tools/host-projection-v1", home) >= (int)CT_HOST_PATH_MAX;
 }
+
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+int ct_host_projection_test_cache_root(char output[CT_HOST_PATH_MAX])
+{
+  return output == NULL ? 1 : ct_cache_root(output);
+}
+#endif
 
 struct ct_projection_group {
   unsigned long number;
@@ -684,21 +694,22 @@ int ct_host_projection_cache_key(const char *backend, const char *image,
 static int ct_cache_path(const char *key, char output[CT_HOST_PATH_MAX])
 {
   char root[CT_HOST_PATH_MAX];
-  return ct_cache_root(root) != 0 || ct_storage_ensure_private_directory(root) != 0 || snprintf(output, CT_HOST_PATH_MAX, "%s/%s", root, key) >= (int)CT_HOST_PATH_MAX;
+  return ct_cache_root(root) != 0 || ct_storage_ensure_directory(root) != 0 || snprintf(output, CT_HOST_PATH_MAX, "%s/%s", root, key) >= (int)CT_HOST_PATH_MAX;
 }
 
 static int ct_cache_lock(const char *key, int *descriptor)
 {
   char root[CT_HOST_PATH_MAX], locks[CT_HOST_PATH_MAX], path[CT_HOST_PATH_MAX];
   struct stat path_status, descriptor_status;
-  if (descriptor == NULL || ct_cache_root(root) != 0 || ct_storage_ensure_private_directory(root) != 0 ||
+  if (descriptor == NULL || ct_cache_root(root) != 0 || ct_storage_ensure_directory(root) != 0 ||
       snprintf(locks, sizeof(locks), "%s/.locks", root) >= (int)sizeof(locks) ||
-      ct_storage_ensure_private_directory(locks) != 0 ||
+      ct_storage_ensure_directory(locks) != 0 ||
       snprintf(path, sizeof(path), "%s/%s.lock", locks, key) >= (int)sizeof(path)) return 1;
-  *descriptor = ct_storage_timeout_open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+  *descriptor = ct_storage_timeout_open(
+      path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
   if (*descriptor < 0 || ct_storage_timeout_lstat(path, &path_status) != 0 ||
       ct_storage_timeout_fstat(*descriptor, &descriptor_status) != 0 || !S_ISREG(path_status.st_mode) ||
-      S_ISLNK(path_status.st_mode) || path_status.st_uid != geteuid() || (path_status.st_mode & 077U) != 0U ||
+      S_ISLNK(path_status.st_mode) ||
       descriptor_status.st_dev != path_status.st_dev || descriptor_status.st_ino != path_status.st_ino ||
       ct_storage_timeout_flock_lock(*descriptor) != 0) {
     (void)ct_storage_timeout_close(*descriptor);
@@ -712,10 +723,9 @@ static int ct_cache_file_identity(const struct stat *path_status, const struct s
                                   size_t expected_size)
 {
   return path_status != NULL && descriptor_status != NULL && S_ISREG(path_status->st_mode) &&
-         !S_ISLNK(path_status->st_mode) && path_status->st_uid == geteuid() &&
-         (path_status->st_mode & 077U) == 0U && path_status->st_size >= 0 &&
+         !S_ISLNK(path_status->st_mode) && path_status->st_size >= 0 &&
          (size_t)path_status->st_size == expected_size && S_ISREG(descriptor_status->st_mode) &&
-         descriptor_status->st_uid == path_status->st_uid && descriptor_status->st_dev == path_status->st_dev &&
+         descriptor_status->st_dev == path_status->st_dev &&
          descriptor_status->st_ino == path_status->st_ino && descriptor_status->st_size == path_status->st_size;
 }
 
@@ -753,7 +763,7 @@ static int ct_cache_recover_temporary_files(const char *key)
     if (strncmp(entry->d_name, prefix, strlen(prefix)) != 0) continue;
     if (snprintf(stale, sizeof(stale), "%s/%s", root, entry->d_name) < 0 || strlen(stale) >= sizeof(stale) ||
         ct_storage_timeout_lstat(stale, &status) != 0 || !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) ||
-        status.st_uid != geteuid() || (status.st_mode & 077U) != 0U || ct_storage_timeout_unlink(stale) != 0) {
+        ct_storage_timeout_unlink(stale) != 0) {
       (void)ct_storage_timeout_closedir(directory);
       return 1;
     }
@@ -779,8 +789,8 @@ static int ct_cache_write(const char *key, const struct ct_host_projection *sele
     if (descriptor >= 0 || errno != EEXIST) break;
   }
   if (descriptor < 0 || ct_cache_write_exact(descriptor, data, used) != 0 ||
-      ct_storage_timeout_fsync(descriptor) != 0 || ct_storage_timeout_fstat(descriptor, &status) != 0 ||
-      !S_ISREG(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 077U) != 0U ||
+       ct_storage_timeout_fsync(descriptor) != 0 || ct_storage_timeout_fstat(descriptor, &status) != 0 ||
+       !S_ISREG(status.st_mode) ||
       status.st_size < 0 || (size_t)status.st_size != used || ct_storage_timeout_close(descriptor) != 0) {
     if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
     (void)ct_storage_timeout_unlink(temporary);
@@ -810,7 +820,7 @@ static int ct_cache_read(const char *key, struct ct_host_projection *selection)
   size_t used = 0U, count = 0U, pairs, index, offset = 0U;
   if (ct_cache_path(key, path) != 0) return 2;
   if (ct_storage_timeout_lstat(path, &status) != 0) return errno == ENOENT ? 1 : 2;
-  if (!S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) || status.st_uid != geteuid() || (status.st_mode & 077U) != 0U || status.st_size <= 0 || (size_t)status.st_size > CT_HOST_CACHE_MAX_BYTES) return 2;
+  if (!S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) || status.st_size <= 0 || (size_t)status.st_size > CT_HOST_CACHE_MAX_BYTES) return 2;
   descriptor = ct_storage_timeout_open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0);
   if (descriptor < 0 || ct_storage_timeout_fstat(descriptor, &descriptor_status) != 0 ||
       !ct_cache_file_identity(&status, &descriptor_status, (size_t)status.st_size)) { if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor); return 2; }

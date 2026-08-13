@@ -18,7 +18,9 @@ int main(void)
   char mount_config[4096];
   char mount_plan_root[4096];
   char untouched[4096];
-  char wrong_mode[4096];
+  char alternate_mode[4096];
+  char lock_path[4096];
+  char lock_target[4096];
   struct ct_state_pending record;
   struct stat status;
   int lock = -1;
@@ -30,6 +32,8 @@ int main(void)
       ct_state_pending_path(root, name, pending) != 0 ||
       ct_state_pending_write(pending, name, profile, nonce) != 0 ||
       stat(pending, &status) != 0 || (status.st_mode & 0777U) != 0600U ||
+      chmod(pending, 0660) != 0 ||
+      setenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID", "1", 1) != 0 ||
       ct_state_pending_read(pending, name, profile, &record) != 0 ||
       strcmp(record.name, name) != 0 || strcmp(record.profile, profile) != 0 ||
       strcmp(record.nonce, nonce) != 0 || ct_state_pending_clear(pending) != 0 ||
@@ -38,11 +42,12 @@ int main(void)
        snprintf(mount_config, sizeof(mount_config), "%s/missing-mount.conf", root) >= (int)sizeof(mount_config) ||
        snprintf(mount_plan_root, sizeof(mount_plan_root), "%s/mount-plans", root) >= (int)sizeof(mount_plan_root) ||
        snprintf(untouched, sizeof(untouched), "%s/identity-root", root) >= (int)sizeof(untouched) ||
-       snprintf(wrong_mode, sizeof(wrong_mode), "%s/wrong-mode", root) >=
-           (int)sizeof(wrong_mode) ||
-       mkdir(wrong_mode, 0750) != 0 || chmod(wrong_mode, 0750) != 0 ||
-       ct_state_prepare_root(wrong_mode) == 0 || stat(wrong_mode, &status) != 0 ||
-       (status.st_mode & 0777U) != 0750U) {
+        snprintf(alternate_mode, sizeof(alternate_mode), "%s/alternate-mode", root) >=
+            (int)sizeof(alternate_mode) ||
+        mkdir(alternate_mode, 0750) != 0 || chmod(alternate_mode, 0750) != 0 ||
+        ct_state_prepare_root(alternate_mode) != 0 || stat(alternate_mode, &status) != 0 ||
+        (status.st_mode & 0777U) != 0750U ||
+        unsetenv("CT_TEST_STORAGE_PRESENT_FOREIGN_UID") != 0) {
     return 1;
   }
   {
@@ -63,7 +68,25 @@ int main(void)
       return 1;
     }
     ct_state_unlock(lock);
+    if (snprintf(lock_path, sizeof(lock_path), "%s/%s.lock", root, name) >=
+            (int)sizeof(lock_path) || chmod(lock_path, 0660) != 0 ||
+        ct_state_lock(root, name, &lock) != CT_STATE_LOCK_OK) return 1;
+    ct_state_unlock(lock);
     if (unlink(pending) != 0) return 1;
+  }
+  {
+    const char *other = "mkchad-fedcba9876543210fedcba9876543210";
+    FILE *stream;
+    if (snprintf(lock_path, sizeof(lock_path), "%s/%s.lock", root, other) >=
+            (int)sizeof(lock_path) ||
+        snprintf(lock_target, sizeof(lock_target), "%s/lock-target", root) >=
+            (int)sizeof(lock_target) ||
+        (stream = fopen(lock_target, "w")) == NULL || fclose(stream) != 0 ||
+        symlink(lock_target, lock_path) != 0 ||
+        ct_state_lock(root, other, &lock) != CT_STATE_LOCK_SETUP || lock != -1 ||
+        unlink(lock_path) != 0 || mkdir(lock_path, 0700) != 0 ||
+        ct_state_lock(root, other, &lock) != CT_STATE_LOCK_SETUP || lock != -1 ||
+        rmdir(lock_path) != 0 || unlink(lock_target) != 0) return 1;
   }
   {
     FILE *stream = fopen(image, "w");
