@@ -1103,6 +1103,73 @@ static int ct_instance_absent(const struct ct_instance_request *request,
   return empty;
 }
 
+enum ct_instance_runtime_selector_status ct_instance_resolve_runtime_prefix(
+    const char *backend, const char *runtime_argument, const char *prefix,
+    char name[40])
+{
+  char output[65536], *command[8];
+  size_t command_count = 0U, index, count, matches = 0U, prefix_length;
+  yyjson_doc *document;
+  yyjson_val *root, *instances, *instance;
+  int status;
+
+  if (backend == NULL || prefix == NULL || name == NULL ||
+      (strcmp(backend, "apptainer") != 0 && strcmp(backend, "singularity") != 0) ||
+      (prefix_length = strlen(prefix)) == 0U || prefix_length > 32U ||
+      strspn(prefix, "0123456789abcdef") != prefix_length)
+    return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+  command[command_count++] = (char *)backend;
+  if (runtime_argument != NULL && runtime_argument[0] != '\0')
+    command[command_count++] = (char *)runtime_argument;
+  command[command_count++] = "instance";
+  command[command_count++] = "list";
+  command[command_count++] = "--json";
+  command[command_count] = NULL;
+  status = ct_process_run_operation_capture_quiet(command, "instance-probe", output,
+                                                   sizeof(output));
+  if (status == 128 + SIGINT) return CT_INSTANCE_RUNTIME_SELECTOR_INTERRUPTED;
+  if (status == 128 + SIGTERM) return CT_INSTANCE_RUNTIME_SELECTOR_TERMINATED;
+  if (status != 0 || (document = yyjson_read(output, strlen(output), 0)) == NULL)
+    return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+  root = yyjson_doc_get_root(document);
+  instances = yyjson_is_arr(root) ? root : yyjson_obj_get(root, "instances");
+  if (!yyjson_is_arr(instances)) {
+    yyjson_doc_free(document);
+    return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+  }
+  yyjson_arr_foreach(instances, index, count, instance) {
+    yyjson_val *value;
+    const char *candidate;
+    if (!yyjson_is_str(instance) && !yyjson_is_obj(instance)) {
+      yyjson_doc_free(document);
+      return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+    }
+    value = yyjson_is_str(instance) ? instance : yyjson_obj_get(instance, "instance");
+    candidate = yyjson_get_str(value);
+    if (candidate == NULL) {
+      yyjson_doc_free(document);
+      return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+    }
+    if (strncmp(candidate, "mkchad-", 7U) != 0) continue;
+    if (strlen(candidate) != 39U ||
+        strspn(candidate + 7U, "0123456789abcdef") != 32U) {
+      yyjson_doc_free(document);
+      return CT_INSTANCE_RUNTIME_SELECTOR_IO;
+    }
+    if (strncmp(candidate + 7U, prefix, prefix_length) == 0) {
+      if (matches != 0U && strcmp(name, candidate) == 0) continue;
+      if (++matches > 1U) {
+        yyjson_doc_free(document);
+        return CT_INSTANCE_RUNTIME_SELECTOR_AMBIGUOUS;
+      }
+      memcpy(name, candidate, 40U);
+    }
+  }
+  yyjson_doc_free(document);
+  return matches == 1U ? CT_INSTANCE_RUNTIME_SELECTOR_OK
+                       : CT_INSTANCE_RUNTIME_SELECTOR_ABSENT;
+}
+
 static int ct_instance_nonce(char output[33])
 {
   const char *configured = getenv("CT_INSTANCE_CREATION_NONCE");

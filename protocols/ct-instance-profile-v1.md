@@ -38,11 +38,14 @@ Linux bytes; reports use the documented lossless escaped-byte representation.
 `container-tools instance profile inspect [--json] [--ct-instance-root ROOT]
 [--] [PATH|DIGEST]` reads one existing record without creating the root. No
 argument reads `/.container-tools-instance-profile`. An explicit path is always
-a path, including `./<64-hex>`. A bare lowercase 64-hex digest requires
-`--ct-instance-root ROOT` and selects `ROOT/profiles/DIGEST.manifest`; the root
-is normalized with the private absolute instance-root scalar rules and must not
-contain colon, comma, or newline. Digest lookup verifies the filename selector,
-the record `profile_digest`, and the internal `record_digest`.
+a path, including `./<hex-prefix>`. A bare nonempty lowercase hexadecimal prefix
+up to 64 characters requires `--ct-instance-root ROOT` and selects only when
+exactly one `ROOT/profiles/DIGEST.manifest` matches; a full digest retains exact
+selection. Zero matches are ordinary selection failures and multiple matches
+report ambiguity without revealing private paths. The root is normalized with
+the private absolute instance-root scalar rules and must not contain colon,
+comma, or newline. Digest lookup verifies the filename selector, the record
+`profile_digest`, and the internal `record_digest`.
 
 Human output and the closed JSON schema
 `container-tools.instance-profile-inspect/v1` use
@@ -54,12 +57,17 @@ failures also exit 125 but may leave bytes already accepted by that destination.
 
 `container-tools instance inspect [--json] (--ct-instance-root ROOT |
 --apptainer | --singularity) NAME_OR_HASH` is the lifecycle lookup command.
-Root mode first strictly validates `ROOT/NAME.identity`, then reads the exact
-private `ROOT/profiles/DIGEST.manifest`; it does not access a backend. Backend
-mode executes only against the exact normalized `instance://NAME` and parses
-the bounded bytes from `/.container-tools-instance-profile`. It never lists or
-scans instances. Both forms require the profile digest prefix to agree with the
-managed name and return the identical report schema.
+`NAME_OR_HASH` is `mkchad-` plus a nonempty lowercase hexadecimal prefix up to
+32 characters, or the bare prefix. Root mode uniquely resolves shortened input
+among strict private `ROOT/NAME.identity` indexes, then reads the exact private
+`ROOT/profiles/DIGEST.manifest`; it does not access a backend. Backend mode
+lists managed runtime names only to uniquely resolve shortened input, then
+executes against the exact normalized `instance://NAME` and parses the bounded
+bytes from `/.container-tools-instance-profile`. Exact 32-hex selectors bypass
+enumeration in both modes. Zero matches fail selection and multiple matches
+report ambiguity without exposing private paths. Both forms require the profile
+digest prefix to agree with the resolved managed name and return the identical
+report schema.
 
 Publication occurs after the existing full profile digest has been finalized.
 `ROOT/profiles` and its manifests are current-user-owned mode `0700` and `0600`

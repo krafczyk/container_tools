@@ -285,9 +285,12 @@ int main(void)
   const struct ct_mount_plan changed = {
     "docker", "none", "complete", "primary-only", changed_entries, 1U};
   char work[] = "/tmp/mkchad-v1/container-tools-c11/mount-plan-cli.XXXXXX";
-  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], digest_manifest[4096], mismatched_manifest[4096], explicit_digest_path[4096], unexpected[4096];
+  char left[4096], right[4096], option_path[4096], malformed[4096], missing[4096], cache[4096], cache_locks[4096], cache_manifest[4096], digest_manifest[4096], legacy_temporary[4096], mismatched_manifest[4096], explicit_digest_path[4096], explicit_prefix_path[4096], ambiguous_first[4096], ambiguous_second[4096], unexpected[4096];
   char xdg_state[4096], home[4096], expected_location[4096];
-  char digest[65], missing_digest[65], mismatched_digest[65];
+  char digest[65], missing_digest[65], mismatched_digest[65], unique_prefix[65];
+  char ambiguous_prefix[] = "fed", absent_prefix[] = "123";
+  const char *const ambiguous_first_digest = "fed0000000000000000000000000000000000000000000000000000000000000";
+  const char *const ambiguous_second_digest = "fed1111111111111111111111111111111111111111111111111111111111111";
   char *inspect_default[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", NULL};
   char *inspect_human[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", left, NULL};
   char *inspect_json[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", left, NULL};
@@ -303,6 +306,10 @@ int main(void)
   char *inspect_missing_digest[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", missing_digest, NULL};
   char *inspect_mismatched_digest[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", mismatched_digest, NULL};
   char *inspect_explicit_digest_path[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", explicit_digest_path, NULL};
+  char *inspect_explicit_prefix_path[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", explicit_prefix_path, NULL};
+  char *inspect_unique_prefix[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", unique_prefix, NULL};
+  char *inspect_ambiguous_prefix[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", ambiguous_prefix, NULL};
+  char *inspect_absent_prefix[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--json", absent_prefix, NULL};
   char *compare_malformed[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "compare", "--json", malformed, left, NULL};
   char *usage[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "inspect", "--help", NULL};
   char *clear[] = {CT_MOUNT_PLAN_CLI, "mount", "plan", "clear", NULL};
@@ -347,13 +354,23 @@ int main(void)
     return 1;
   }
   (void)snprintf(digest, sizeof(digest), "%s", report.metadata.digest);
+  memcpy(unique_prefix, digest, 3U);
+  unique_prefix[3] = '\0';
   ct_mount_plan_report_destroy(&report);
   if (snprintf(digest_manifest, sizeof(digest_manifest), "%s/%s.manifest", cache,
-               digest) >= (int)sizeof(digest_manifest) ||
+                digest) >= (int)sizeof(digest_manifest) ||
       snprintf(mismatched_manifest, sizeof(mismatched_manifest), "%s/%s.manifest",
                cache, mismatched_digest) >= (int)sizeof(mismatched_manifest) ||
-      snprintf(explicit_digest_path, sizeof(explicit_digest_path), "./%s",
-               digest) >= (int)sizeof(explicit_digest_path)) return 1;
+       snprintf(explicit_digest_path, sizeof(explicit_digest_path), "./%s",
+                digest) >= (int)sizeof(explicit_digest_path) ||
+      snprintf(explicit_prefix_path, sizeof(explicit_prefix_path), "./fed") >=
+          (int)sizeof(explicit_prefix_path) ||
+      snprintf(ambiguous_first, sizeof(ambiguous_first), "%s/%s.manifest", cache,
+               ambiguous_first_digest) >= (int)sizeof(ambiguous_first) ||
+      snprintf(ambiguous_second, sizeof(ambiguous_second), "%s/%s.manifest", cache,
+               ambiguous_second_digest) >= (int)sizeof(ambiguous_second) ||
+      snprintf(legacy_temporary, sizeof(legacy_temporary), "%s/.%s.tmp.stale",
+               cache, digest) >= (int)sizeof(legacy_temporary)) return 1;
 
   if (run_command(inspect_default, &default_right, &result) != 0 ||
       result.stderr_length != 0U || validate_inspect_json(&result, escaped_path, 2U) != 0) {
@@ -486,21 +503,39 @@ int main(void)
     return 1;
   }
   if (setenv("CT_MOUNT_PLAN_STATE_ROOT", cache, 1) != 0 ||
-      write_plan(digest_manifest, &plan) != 0 ||
-      write_plan(explicit_digest_path, &changed) != 0 ||
-      run_command(inspect_digest, NULL, &result) != 0 || result.stderr_length != 0U ||
-      validate_inspect_json(&result, escaped_path, 2U) != 0 ||
-      run_command(inspect_missing_digest, NULL, &result) != 125 ||
+       write_plan(digest_manifest, &plan) != 0 ||
+       link(digest_manifest, legacy_temporary) != 0 ||
+       write_plan(explicit_digest_path, &changed) != 0 ||
+       write_plan(explicit_prefix_path, &changed) != 0 ||
+       run_command(inspect_digest, NULL, &result) != 0 || result.stderr_length != 0U ||
+       validate_inspect_json(&result, escaped_path, 2U) != 0 ||
+       run_command(inspect_unique_prefix, NULL, &result) != 0 ||
+       result.stderr_length != 0U || validate_inspect_json(&result, escaped_path, 2U) != 0 ||
+       write_plan(ambiguous_first, &plan) != 0 || write_plan(ambiguous_second, &changed) != 0 ||
+       run_command(inspect_ambiguous_prefix, NULL, &result) != 125 ||
+       result.stdout_length != 0U || result.stderr_length == 0U ||
+       strstr(result.stderr_text, "ambiguous") == NULL ||
+       strstr(result.stderr_text, cache) != NULL ||
+       run_command(inspect_absent_prefix, NULL, &result) != 125 ||
+       result.stdout_length != 0U || result.stderr_length == 0U ||
+       strstr(result.stderr_text, cache) != NULL ||
+       run_command(inspect_missing_digest, NULL, &result) != 125 ||
       result.stdout_length != 0U || result.stderr_length == 0U ||
       strstr(result.stderr_text, cache) != NULL ||
       write_plan(mismatched_manifest, &changed) != 0 ||
       run_command(inspect_mismatched_digest, NULL, &result) != 125 ||
       result.stdout_length != 0U || result.stderr_length == 0U ||
       strstr(result.stderr_text, cache) != NULL || unlink(mismatched_manifest) != 0 ||
-      run_command(inspect_explicit_digest_path, NULL, &result) != 0 ||
-      result.stderr_length != 0U ||
-      validate_inspect_json(&result, "/other", 1U) != 0 ||
-      unlink(digest_manifest) != 0 || unlink(explicit_digest_path) != 0 ||
+       run_command(inspect_explicit_digest_path, NULL, &result) != 0 ||
+       result.stderr_length != 0U ||
+       validate_inspect_json(&result, "/other", 1U) != 0 ||
+       run_command(inspect_explicit_prefix_path, NULL, &result) != 0 ||
+       result.stderr_length != 0U ||
+       validate_inspect_json(&result, "/other", 1U) != 0 ||
+       unlink(ambiguous_first) != 0 || unlink(ambiguous_second) != 0 ||
+       unlink(legacy_temporary) != 0 || unlink(digest_manifest) != 0 ||
+       unlink(explicit_digest_path) != 0 ||
+       unlink(explicit_prefix_path) != 0 ||
       unsetenv("CT_MOUNT_PLAN_STATE_ROOT") != 0) {
     (void)fprintf(stderr, "digest inspect failed\n");
     return 1;

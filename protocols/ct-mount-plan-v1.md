@@ -6,6 +6,16 @@ before selected-root execution or public read-only inspection reports consume
 its metadata and ordered entries. Public reports never render the raw
 NUL-delimited bytes.
 
+## Inspection Selection
+
+`container-tools mount plan inspect [--json] [--] [PATH|DIGEST]` treats a bare
+nonempty lowercase hexadecimal value up to 64 characters as a digest prefix. It
+inspects the private managed cache and selects only when exactly one
+`DIGEST.manifest` filename matches; a 64-character digest retains exact
+selection. Zero matches are ordinary selection failures and multiple matches
+produce an ambiguity diagnostic without exposing cache paths. Inputs outside
+that grammar remain paths, as does an explicit `./<hex-prefix>` path.
+
 ## Managed Cache Clear
 
 `container-tools mount plan location [--help]` prints the resolved absolute

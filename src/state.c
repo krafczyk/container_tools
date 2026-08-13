@@ -255,6 +255,59 @@ bad:
   return 1;
 }
 
+enum ct_state_identity_selector_status ct_state_identity_resolve_prefix(
+    const char *root, const char *prefix, char name[40])
+{
+  DIR *directory;
+  struct dirent *entry;
+  struct stat root_status;
+  size_t prefix_length, entries = 0U, matches = 0U;
+  enum ct_state_identity_selector_status result = CT_STATE_IDENTITY_SELECTOR_IO;
+
+  if (!ct_state_root_valid(root) || prefix == NULL || name == NULL ||
+      (prefix_length = strlen(prefix)) == 0U || prefix_length > 32U ||
+      !ct_state_hex(prefix, prefix_length) ||
+      ct_storage_timeout_lstat(root, &root_status) != 0 ||
+      !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
+      root_status.st_uid != geteuid() || (root_status.st_mode & 0777U) != 0700U ||
+      (directory = ct_storage_timeout_opendir(root)) == NULL) {
+    return CT_STATE_IDENTITY_SELECTOR_IO;
+  }
+  errno = 0;
+  while ((entry = ct_storage_timeout_readdir(directory)) != NULL) {
+    char candidate[40], path[CT_STATE_PATH_MAX];
+    struct stat status;
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+      continue;
+    if (++entries > 16384U) goto done;
+    if (strlen(entry->d_name) != 48U ||
+        strcmp(entry->d_name + 39U, ".identity") != 0) continue;
+    memcpy(candidate, entry->d_name, 39U);
+    candidate[39] = '\0';
+    if (!ct_state_name(candidate) ||
+        snprintf(path, sizeof(path), "%s/%s", root, entry->d_name) >=
+            (int)sizeof(path) ||
+        ct_storage_timeout_lstat(path, &status) != 0 ||
+        !S_ISREG(status.st_mode) || S_ISLNK(status.st_mode) ||
+        status.st_uid != geteuid() || (status.st_mode & 0777U) != 0600U) {
+      goto done;
+    }
+    if (strncmp(candidate + 7U, prefix, prefix_length) == 0) {
+      if (++matches > 1U) {
+        result = CT_STATE_IDENTITY_SELECTOR_AMBIGUOUS;
+        goto done;
+      }
+      memcpy(name, candidate, sizeof(candidate));
+    }
+  }
+  if (errno != 0) goto done;
+  result = matches == 1U ? CT_STATE_IDENTITY_SELECTOR_OK
+                         : CT_STATE_IDENTITY_SELECTOR_ABSENT;
+done:
+  return ct_storage_timeout_closedir(directory) == 0
+             ? result : CT_STATE_IDENTITY_SELECTOR_IO;
+}
+
 enum ct_state_lock_status ct_state_lock(const char *root, const char *name,
                                         int *descriptor)
 {

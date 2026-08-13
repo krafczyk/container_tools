@@ -7,6 +7,7 @@
 #define CT_INSTANCE_PROFILE_MANIFEST_MAX_MOUNTS 4096U
 #define CT_INSTANCE_PROFILE_MANIFEST_MAX_GROUPS 1024U
 #define CT_INSTANCE_PROFILE_MANIFEST_MAX_BYTES 1048576U
+#define CT_INSTANCE_PROFILE_MANIFEST_CACHE_MAX_ENTRIES 4096U
 
 /** One finalized persistent-instance mount identity in creation order. */
 struct ct_instance_profile_manifest_mount {
@@ -58,6 +59,13 @@ enum ct_instance_profile_manifest_read_status {
   CT_INSTANCE_PROFILE_MANIFEST_READ_SEMANTIC_INVALID,
   CT_INSTANCE_PROFILE_MANIFEST_READ_CHANGED,
   CT_INSTANCE_PROFILE_MANIFEST_READ_IO
+};
+/** Outcome of resolving a lowercase profile digest prefix in private instance state. */
+enum ct_instance_profile_manifest_selector_status {
+  CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_OK = 0,
+  CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_ABSENT,
+  CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_AMBIGUOUS,
+  CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_IO
 };
 
 /**
@@ -150,6 +158,18 @@ int ct_instance_profile_manifest_publish(
 enum ct_instance_profile_manifest_read_status ct_instance_profile_manifest_read_private(
     const char *root, const char *digest,
     struct ct_instance_profile_manifest *manifest);
+/**
+ * Resolve exactly one private profile manifest digest beginning with a prefix.
+ *
+ * @param root Canonical private instance root.
+ * @param prefix Nonempty lowercase hexadecimal prefix no longer than 64 bytes.
+ * @param digest Receives the matched full 64-hex profile digest when unique.
+ * @return A selector outcome; no path is returned for absent or ambiguous input.
+ */
+enum ct_instance_profile_manifest_selector_status
+ct_instance_profile_manifest_resolve_private_prefix(const char *root,
+                                                    const char *prefix,
+                                                    char digest[65]);
 /**
  * Release every allocation made by ct_instance_profile_manifest_read.
  *

@@ -19,6 +19,13 @@ enum ct_state_lock_status {
   CT_STATE_LOCK_SETUP = 1,
   CT_STATE_LOCK_TIMEOUT = 2,
 };
+/** Outcome of resolving a managed instance-name prefix in private state. */
+enum ct_state_identity_selector_status {
+  CT_STATE_IDENTITY_SELECTOR_OK = 0,
+  CT_STATE_IDENTITY_SELECTOR_ABSENT,
+  CT_STATE_IDENTITY_SELECTOR_AMBIGUOUS,
+  CT_STATE_IDENTITY_SELECTOR_IO,
+};
 
 /** Construct the pending-record path for a validated root and instance name. */
 int ct_state_pending_path(const char *root, const char *name,
@@ -58,6 +65,16 @@ int ct_state_identity_write(const char *root, const char *name, const char *imag
  * @return Zero only for a complete compatible matching record.
  */
 int ct_state_identity_read(const char *root, const char *name, char profile[65]);
+/**
+ * Resolve exactly one private identity index beginning with a hash prefix.
+ *
+ * @param root Existing private instance root.
+ * @param prefix Nonempty lowercase hexadecimal prefix no longer than 32 bytes.
+ * @param name Receives the matched full managed instance name when unique.
+ * @return A selector outcome; no name is returned for absent or ambiguous input.
+ */
+enum ct_state_identity_selector_status ct_state_identity_resolve_prefix(
+    const char *root, const char *prefix, char name[40]);
 /** Validate or create the current-user-owned mode-0700 instance root. */
 int ct_state_prepare_root(const char *root);
 /**

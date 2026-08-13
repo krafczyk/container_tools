@@ -35,6 +35,13 @@ enum ct_mount_plan_read_status {
   CT_MOUNT_PLAN_READ_CHANGED = 6,
   CT_MOUNT_PLAN_READ_IO = 7
 };
+/** Outcome of resolving a lowercase mount-plan digest prefix in private cache state. */
+enum ct_mount_plan_selector_status {
+  CT_MOUNT_PLAN_SELECTOR_OK = 0,
+  CT_MOUNT_PLAN_SELECTOR_ABSENT,
+  CT_MOUNT_PLAN_SELECTOR_AMBIGUOUS,
+  CT_MOUNT_PLAN_SELECTOR_IO
+};
 
 /** Validate the frozen ct-mount-plan-v1 semantic grammar and bounds. */
 int ct_mount_plan_validate(const struct ct_mount_plan *plan);
@@ -75,6 +82,16 @@ int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata
 enum ct_mount_plan_read_status ct_mount_plan_read_status(
     const char *path, struct ct_mount_plan_metadata *metadata,
     ct_mount_plan_entry_visitor visitor, void *context);
+/**
+ * Resolve exactly one cached mount-plan digest beginning with a valid prefix.
+ *
+ * @param state_root Existing private mount-plan cache root.
+ * @param prefix Nonempty lowercase hexadecimal prefix no longer than 64 bytes.
+ * @param digest Receives the matched full 64-hex digest when unique.
+ * @return A selector outcome; no path is returned for absent or ambiguous input.
+ */
+enum ct_mount_plan_selector_status ct_mount_plan_resolve_prefix(
+    const char *state_root, const char *prefix, char digest[65]);
 /**
  * Publish one content-addressed mount plan to the private managed cache.
  *

@@ -739,25 +739,14 @@ static const char *ct_mount_plan_default_path(void)
 
 static int ct_mount_plan_is_digest(const char *value)
 {
-  size_t index;
+  size_t index, length;
 
-  if (value == NULL || strnlen(value, 65U) != 64U) return 0;
-  for (index = 0U; index < 64U; ++index) {
+  if (value == NULL || (length = strnlen(value, 65U)) == 0U || length > 64U) return 0;
+  for (index = 0U; index < length; ++index) {
     if (!((value[index] >= '0' && value[index] <= '9') ||
           (value[index] >= 'a' && value[index] <= 'f'))) return 0;
   }
   return 1;
-}
-
-/* Resolve only a bare content digest; prefixed values remain explicit paths. */
-static int ct_mount_plan_digest_path(const char *digest, char path[4096])
-{
-  char state_root[4096];
-  int written;
-
-  if (ct_mount_plan_state_root(state_root) != 0) return 1;
-  written = snprintf(path, 4096U, "%s/%s.manifest", state_root, digest);
-  return written < 0 || written >= 4096;
 }
 
 static int ct_mount_plan_read_diagnostic(const char *operation,
@@ -856,7 +845,7 @@ static int ct_mount_plan_inspect(int argument_count, char **arguments)
   struct ct_mount_plan_command_output output = {0};
   const char *path = ct_mount_plan_default_path();
   const char *requested_digest = NULL;
-  char digest_path[4096];
+  char digest_path[4096], resolved_digest[65], state_root[4096];
   int json = 0;
   int path_separator = 0;
   int result = 125;
@@ -894,10 +883,31 @@ static int ct_mount_plan_inspect(int argument_count, char **arguments)
     path = arguments[0];
     if (ct_mount_plan_is_digest(path) != 0) {
       requested_digest = path;
-      if (ct_mount_plan_digest_path(path, digest_path) != 0) {
+      if (ct_mount_plan_state_root(state_root) != 0) {
         ct_mount_plan_diagnostic(
             "mount plan inspect", "configuration",
             "set CT_MOUNT_PLAN_STATE_ROOT, XDG_STATE_HOME, or HOME to a safe absolute path and retry");
+        goto complete;
+      }
+      if (strlen(path) < 64U) {
+        enum ct_mount_plan_selector_status selected;
+        selected = ct_mount_plan_resolve_prefix(state_root, path, resolved_digest);
+        if (selected == CT_MOUNT_PLAN_SELECTOR_AMBIGUOUS) {
+          ct_mount_plan_diagnostic("mount plan inspect", "mount-plan",
+                                   "digest prefix is ambiguous; provide more lowercase hexadecimal characters and retry");
+          goto complete;
+        }
+        if (selected != CT_MOUNT_PLAN_SELECTOR_OK) {
+          (void)ct_mount_plan_read_diagnostic("mount plan inspect",
+                                              CT_MOUNT_PLAN_READ_ABSENT);
+          goto complete;
+        }
+        requested_digest = resolved_digest;
+      }
+      if (snprintf(digest_path, sizeof(digest_path), "%s/%s.manifest",
+                   state_root, requested_digest) >= (int)sizeof(digest_path)) {
+        ct_mount_plan_diagnostic("mount plan inspect", "configuration",
+                                 "use a shorter mount-plan state root and retry");
         goto complete;
       }
       path = digest_path;
@@ -934,7 +944,7 @@ static int ct_instance_profile_inspect(int argument_count, char **arguments)
   struct ct_instance_profile_manifest manifest;
   const char *path = "/.container-tools-instance-profile";
   const char *requested = NULL;
-  char root[4096] = "", manifest_path[4096];
+  char root[4096] = "", resolved_digest[65];
   int json = 0, separator = 0, result = 125;
   enum ct_instance_profile_manifest_read_status status;
 
@@ -961,11 +971,26 @@ static int ct_instance_profile_inspect(int argument_count, char **arguments)
     path = arguments[0];
     if (ct_mount_plan_is_digest(path)) {
       requested = path;
-      if (root[0] == '\0' || snprintf(manifest_path, sizeof(manifest_path), "%s/profiles/%s.manifest", root, path) >= (int)sizeof(manifest_path)) {
+      if (root[0] == '\0') {
         ct_cli_diagnostic("instance profile inspect", "configuration", "provide a safe absolute instance root for digest lookup, then retry");
-        return root[0] == '\0' ? CT_EXIT_USAGE : 125;
+        return CT_EXIT_USAGE;
       }
-      path = manifest_path;
+      if (strlen(path) < 64U) {
+        enum ct_instance_profile_manifest_selector_status selected =
+            ct_instance_profile_manifest_resolve_private_prefix(root, path,
+                                                                resolved_digest);
+        if (selected == CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_AMBIGUOUS) {
+          ct_cli_diagnostic("instance profile inspect", "profile-manifest",
+                            "digest prefix is ambiguous; provide more lowercase hexadecimal characters and retry");
+          return 125;
+        }
+        if (selected != CT_INSTANCE_PROFILE_MANIFEST_SELECTOR_OK) {
+          ct_cli_diagnostic("instance profile inspect", "profile-manifest",
+                            "select a valid stable profile manifest and retry");
+          return 125;
+        }
+        requested = resolved_digest;
+      }
     }
   }
   status = requested != NULL
@@ -987,18 +1012,22 @@ static int ct_instance_profile_inspect(int argument_count, char **arguments)
   return result;
 }
 
-static int ct_instance_inspect_name(const char *value, char name[40])
+static int ct_instance_inspect_selector(const char *value, const char **prefix,
+                                        char name[40])
 {
-  size_t index;
-  if (value == NULL) return 1;
-  if (strlen(value) == 32U) {
-    for (index = 0U; index < 32U; ++index) if (!((value[index] >= '0' && value[index] <= '9') || (value[index] >= 'a' && value[index] <= 'f'))) return 1;
-    return snprintf(name, 40U, "mkchad-%s", value) >= 40;
+  const char *hash = value;
+  size_t length;
+  if (value == NULL || prefix == NULL || name == NULL) return 1;
+  if (strncmp(value, "mkchad-", 7U) == 0) hash = value + 7U;
+  length = strlen(hash);
+  if (length == 0U || length > 32U ||
+      strspn(hash, "0123456789abcdef") != length) return 1;
+  if (length < 32U) {
+    *prefix = hash;
+    return 0;
   }
-  if (strlen(value) != 39U || strncmp(value, "mkchad-", 7U) != 0) return 1;
-  for (index = 7U; index < 39U; ++index) if (!((value[index] >= '0' && value[index] <= '9') || (value[index] >= 'a' && value[index] <= 'f'))) return 1;
-  memcpy(name, value, 40U);
-  return 0;
+  *prefix = NULL;
+  return snprintf(name, 40U, "mkchad-%s", hash) >= 40;
 }
 
 static int ct_instance_report_atomic(const struct ct_instance_profile_manifest *manifest, int json)
@@ -1031,7 +1060,7 @@ static int ct_instance_inspect(int argument_count, char **arguments)
   unsigned char *output = NULL;
   size_t output_length = 0U;
   const char *backend = NULL;
-  const char *selector;
+  const char *selector, *prefix = NULL;
   int json = 0, root_mode = 0, result = 125;
   enum ct_instance_profile_manifest_read_status status;
 
@@ -1052,7 +1081,25 @@ static int ct_instance_inspect(int argument_count, char **arguments)
               strcmp(arguments[0], "--singularity") == 0)) {
     backend = arguments[0] + 2; selector = arguments[1];
   } else goto usage;
-  if (ct_instance_inspect_name(selector, name) != 0) goto usage;
+  if (ct_instance_inspect_selector(selector, &prefix, name) != 0) goto usage;
+  if (prefix != NULL) {
+    if (root_mode) {
+      enum ct_state_identity_selector_status selected =
+          ct_state_identity_resolve_prefix(root, prefix, name);
+      if (selected == CT_STATE_IDENTITY_SELECTOR_AMBIGUOUS) goto ambiguous;
+      if (selected != CT_STATE_IDENTITY_SELECTOR_OK) goto failed;
+    } else {
+      enum ct_instance_runtime_selector_status selected =
+          ct_instance_resolve_runtime_prefix(
+              backend, getenv("CT_SINGULARITY_ARGS"), prefix, name);
+      if (selected == CT_INSTANCE_RUNTIME_SELECTOR_INTERRUPTED)
+        return 128 + SIGINT;
+      if (selected == CT_INSTANCE_RUNTIME_SELECTOR_TERMINATED)
+        return 128 + SIGTERM;
+      if (selected == CT_INSTANCE_RUNTIME_SELECTOR_AMBIGUOUS) goto ambiguous;
+      if (selected != CT_INSTANCE_RUNTIME_SELECTOR_OK) goto failed;
+    }
+  }
   if (root_mode) {
     if (ct_state_identity_read(root, name, profile) != 0 || strncmp(name + 7U, profile, 32U) != 0) goto failed;
     status = ct_instance_profile_manifest_read_private(root, profile, &manifest);
@@ -1100,6 +1147,11 @@ usage:
 failed:
   free(output);
   ct_cli_diagnostic("instance inspect", "profile-manifest", "select a valid stable managed instance profile and retry");
+  return 125;
+ambiguous:
+  free(output);
+  ct_cli_diagnostic("instance inspect", "profile-manifest",
+                    "hash prefix is ambiguous; provide more lowercase hexadecimal characters and retry");
   return 125;
 }
 

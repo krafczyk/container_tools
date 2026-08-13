@@ -80,23 +80,28 @@ does not build, verify, or install archives.
 `container-tools instance profile inspect [--json] [--ct-instance-root ROOT]
 [--] [PATH|DIGEST]` validates and reports a bounded, hash-verifiable
 `ct-instance-profile-v1` manifest. With no path it reads
-`/.container-tools-instance-profile`. A bare lowercase 64-hex digest requires
-`--ct-instance-root` and resolves to `ROOT/profiles/DIGEST.manifest`; prefix it
-with `./` to select an explicit same-named path. Inspection does not create the
-root. JSON uses the closed `container-tools.instance-profile-inspect/v1` schema
+`/.container-tools-instance-profile`. A bare nonempty lowercase hexadecimal
+prefix up to the 64-hex digest width requires `--ct-instance-root` and resolves
+only when exactly one private `ROOT/profiles/DIGEST.manifest` matches. A full
+digest retains exact selection; no match is an ordinary selection failure and
+multiple matches report a redacted ambiguity diagnostic. Prefix it with `./` to
+select an explicit same-named path. Inspection does not create the root. JSON uses the closed `container-tools.instance-profile-inspect/v1` schema
 and the mount-plan report's lossless `backslash-escaped-bytes` path encoding.
 Valid records exit 0, usage failures exit 64, and read, validation, or output
 failures exit 125. See `protocols/ct-instance-profile-v1.md` for the canonical
 record grammar and the identity inputs it records.
 
 `container-tools instance inspect [--json] (--ct-instance-root ROOT |
---apptainer | --singularity) NAME_OR_HASH` reports the same manifest. Root mode
-is offline: it strictly reads the private `NAME.identity` index and its exact
-profile record without contacting a backend. Backend mode contacts only the
-requested managed name and reads `/.container-tools-instance-profile`; it never
-lists or scans runtime instances. `NAME_OR_HASH` accepts `mkchad-` plus 32
-lowercase hex characters or the bare 32-hex shorthand. Usage failures exit 64;
-unavailable, malformed, or mismatched records exit 125 without output.
+--apptainer | --singularity) NAME_OR_HASH` reports the same manifest.
+`NAME_OR_HASH` accepts `mkchad-` plus a nonempty lowercase hexadecimal prefix up
+to the 32-hex managed-name width, or the bare prefix. A prefix selects only when
+one managed instance name matches; multiple matches report a redacted ambiguity
+diagnostic. Root mode resolves through private `NAME.identity` indexes and then
+reads the exact profile record without contacting a backend. Backend mode lists
+managed runtime names only for shortened selectors, then contacts only the
+unique resolved name and reads `/.container-tools-instance-profile`; exact
+32-hex names retain direct no-list lookup. Usage failures exit 64; unavailable,
+malformed, ambiguous, or mismatched records exit 125 without a report.
 Output-destination failures also exit 125 but may leave bytes already accepted
 by that destination.
 
@@ -144,9 +149,12 @@ Docker/Podman endpoint retain the existing remote launch without a local-only
 manifest bind; required host projection already rejects those endpoints.
 
 `container-tools mount plan inspect [--json] [--] [PATH|DIGEST]` validates and reports one
-manifest, defaulting to `/.container-tools-mount-plan`. A bare lowercase 64-hex
-`DIGEST` selects `<resolved-cache-root>/<DIGEST>.manifest`; prefix it with `./`
-to select a same-named path instead. `container-tools mount
+manifest, defaulting to `/.container-tools-mount-plan`. A bare nonempty lowercase
+hexadecimal prefix up to the 64-hex digest width selects only when exactly one
+private `<resolved-cache-root>/<DIGEST>.manifest` matches. A full digest retains
+exact selection; no match is an ordinary selection failure and multiple matches
+report a redacted ambiguity diagnostic. Prefix it with `./` to select a
+same-named path instead. `container-tools mount
 plan compare [--json] [--] LEFT [RIGHT]` validates both and compares their canonical
 validated content; `RIGHT` has the same default. Inspection reports the grammar,
 digest, backend, strategy, completeness, group mode, entry count, and every

@@ -23,6 +23,7 @@
 static unsigned long ct_plan_temporary_sequence;
 
 static int ct_plan_read_exact(int descriptor, unsigned char *bytes, size_t length);
+static int ct_plan_legacy_root_temporary_name(const char *name, char digest[65]);
 
 int ct_mount_plan_state_root(char output[4096])
 {
@@ -492,6 +493,52 @@ int ct_mount_plan_read(const char *path, struct ct_mount_plan_metadata *metadata
                  CT_MOUNT_PLAN_READ_OK
              ? 0
              : 1;
+}
+
+enum ct_mount_plan_selector_status ct_mount_plan_resolve_prefix(
+    const char *state_root, const char *prefix, char digest[65])
+{
+  DIR *directory;
+  struct dirent *entry;
+  size_t prefix_length, entries = 0U, matches = 0U;
+  enum ct_mount_plan_selector_status result = CT_MOUNT_PLAN_SELECTOR_IO;
+
+  if (state_root == NULL || prefix == NULL || digest == NULL ||
+      (prefix_length = strlen(prefix)) == 0U || prefix_length > 64U ||
+      strspn(prefix, "0123456789abcdef") != prefix_length ||
+      ct_plan_private_directory(state_root) != 0 ||
+      (directory = ct_storage_timeout_opendir(state_root)) == NULL) {
+    return CT_MOUNT_PLAN_SELECTOR_IO;
+  }
+  errno = 0;
+  while ((entry = ct_storage_timeout_readdir(directory)) != NULL) {
+    char path[4096], candidate[65];
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    if (++entries > CT_MOUNT_PLAN_CACHE_MAX_ENTRIES + 2U) goto done;
+    if (strcmp(entry->d_name, ".work") == 0 || strcmp(entry->d_name, ".locks") == 0) {
+      if (snprintf(path, sizeof(path), "%s/%s", state_root, entry->d_name) >=
+              (int)sizeof(path) ||
+          ct_plan_private_directory(path) != 0) goto done;
+      continue;
+    }
+    if (snprintf(path, sizeof(path), "%s/%s", state_root, entry->d_name) >=
+            (int)sizeof(path) || ct_plan_private_file(path) != 0) goto done;
+    if (ct_plan_manifest_name(entry->d_name, candidate) != 0) {
+      if (ct_plan_legacy_root_temporary_name(entry->d_name, candidate) != 0)
+        goto done;
+      continue;
+    }
+    if (strncmp(candidate, prefix, prefix_length) == 0) {
+      if (++matches > 1U) { result = CT_MOUNT_PLAN_SELECTOR_AMBIGUOUS; goto done; }
+      memcpy(digest, candidate, sizeof(candidate));
+    }
+  }
+  if (errno != 0) goto done;
+  result = matches == 1U ? CT_MOUNT_PLAN_SELECTOR_OK
+                         : CT_MOUNT_PLAN_SELECTOR_ABSENT;
+done:
+  return ct_storage_timeout_closedir(directory) == 0 ? result
+                                                     : CT_MOUNT_PLAN_SELECTOR_IO;
 }
 
 static int ct_plan_read_exact(int descriptor, unsigned char *bytes, size_t length)
