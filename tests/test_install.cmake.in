@@ -172,7 +172,8 @@ execute_process(
   RESULT_VARIABLE missing_host_result
   ERROR_VARIABLE missing_host_error
 )
-if(NOT missing_host_result EQUAL 127 OR NOT missing_host_error MATCHES "command not found")
+if(NOT missing_host_result EQUAL 127 OR
+   NOT missing_host_error MATCHES "executable-not-found")
   message(FATAL_ERROR "installed host command did not preserve not-found phase")
 endif()
 execute_process(
@@ -250,9 +251,13 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --bind|--ro-bind)
       printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$CT_U7_ARGUMENT_LOG"
-      if [ "$3" = / ]; then root=$2; root_mode=$1; fi
+      if [ "$3" = /usr ]; then root=${2%/usr}; root_mode=$1; fi
       if [ "$3" = /workspace ]; then workspace=$2; fi
       shift 3 ;;
+    --remount-ro)
+      printf '%s:%s\n' "$1" "$2" >> "$CT_U7_ARGUMENT_LOG"
+      root_mode=$1
+      shift 2 ;;
     --chdir) expected_cwd=$2; shift 2 ;;
     /proc/self/fd/*) trampoline=$1; shift; break ;;
     *) shift ;;
@@ -264,7 +269,7 @@ done
 internal=$1; control=$2; control_fd=$3; shift 3
 descriptor= no_descriptor=
 if [ "$1" = --descriptor-fd ]; then descriptor=$1; inherited_fd=$2; shift 2; else no_descriptor=1; fi
-if [ "$root_mode" = --ro-bind ] && [ "$CT_U7_REFUSE_READ_ONLY" = 1 ]; then
+if [ "$root_mode" = --remount-ro ] && [ "$CT_U7_REFUSE_READ_ONLY" = 1 ]; then
   printf 'read-only-refused\n' >> "$CT_U7_BACKEND_LOG"
   exit 125
 fi
@@ -308,12 +313,18 @@ function(run_u7_host command payload_argument expected_result expected_output)
   endif()
   file(READ "${u7_backend_log}" u7_backend_events)
   file(READ "${u7_argument_log}" u7_arguments)
-  if(NOT u7_result EQUAL expected_result OR NOT u7_output STREQUAL expected_output OR
+  set(u7_result_matches FALSE)
+  if(u7_result MATCHES "^[0-9]+$" AND u7_result EQUAL expected_result)
+    set(u7_result_matches TRUE)
+  elseif(expected_result EQUAL 143 AND u7_error MATCHES "terminated")
+    set(u7_result_matches TRUE)
+  endif()
+  if(NOT u7_result_matches OR NOT u7_output STREQUAL expected_output OR
      NOT u7_backend_events STREQUAL "probe\nlaunch\n" OR
      NOT u7_arguments MATCHES "--bind:${u7_workspace}:/workspace" OR
      NOT u7_arguments MATCHES "--ro-bind:${u7_slurm}:/etc/slurm" OR
      NOT u7_arguments MATCHES "--bind:${u7_run}:/run/slurm")
-    message(FATAL_ERROR "U7 selected-root ${command} workload was not one traced dispatch: ${u7_error}")
+    message(FATAL_ERROR "U7 selected-root ${command} workload was not one traced dispatch: result=${u7_result}; output=${u7_output}; events=${u7_backend_events}; error=${u7_error}")
   endif()
   if(command STREQUAL "cargo")
     file(READ "${u7_repair}" u7_repair_contents)
@@ -339,7 +350,7 @@ execute_process(
 file(READ "${u7_backend_log}" u7_read_only_events)
 file(READ "${u7_argument_log}" u7_read_only_arguments)
 if(NOT u7_read_only_result EQUAL 125 OR NOT u7_read_only_events STREQUAL "read-only-refused\n" OR
-   NOT u7_read_only_arguments MATCHES "--ro-bind:${u7_root}:/")
+   NOT u7_read_only_arguments MATCHES "--remount-ro:/")
   message(FATAL_ERROR "U7 alternate selected root did not preserve the read-only launch contract")
 endif()
 
@@ -456,6 +467,6 @@ execute_process(
   ERROR_VARIABLE io_doctor_error
 )
 if(NOT io_doctor_result EQUAL 125 OR NOT io_doctor_output STREQUAL "" OR
-   NOT io_doctor_error MATCHES "unable to produce complete report")
+   NOT io_doctor_error MATCHES "make the selected profile mount plan readable")
   message(FATAL_ERROR "mount-plan I/O failure emitted a doctor report")
 endif()

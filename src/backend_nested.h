@@ -6,8 +6,21 @@
 #include "path_map.h"
 #include "process.h"
 
-#define CT_NESTED_ARGUMENT_LIMIT (CT_PATH_MAP_MAX_ENTRIES * 3U + 32U)
+/** Maximum selected-root top-level entries assembled by Bubblewrap. */
+#define CT_NESTED_ROOT_ENTRY_LIMIT 256U
+/** Maximum user payload arguments retained in one nested command. */
+#define CT_NESTED_PAYLOAD_LIMIT 4096U
+#define CT_NESTED_ARGUMENT_LIMIT \
+  (CT_PATH_MAP_MAX_ENTRIES * 5U + CT_NESTED_ROOT_ENTRY_LIMIT * 3U + \
+   CT_NESTED_PAYLOAD_LIMIT + 64U)
 #define CT_NESTED_DETAIL_MAX 8193U
+
+/** Internal result of constructing one bounded nested-backend command. */
+enum ct_nested_build_result {
+  CT_NESTED_BUILD_OK = 0,
+  CT_NESTED_BUILD_INTERNAL_FAILURE = 1,
+  CT_NESTED_BUILD_UNSUPPORTED = 2
+};
 
 /** Closed nested-backend selection order. */
 enum ct_nested_backend {

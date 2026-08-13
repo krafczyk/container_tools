@@ -4,16 +4,10 @@
 #include <string.h>
 #include <sys/stat.h>
 
-static int ct_proot_proc_target(const struct ct_nested_request *request)
+static int ct_proot_proc_target(void)
 {
-  char target[CT_HOST_PATH_MAX];
   struct stat source;
-  struct stat destination;
-  return ct_path_map_root_path(request->profile->root, "/proc", target) != 0 ||
-                 stat("/proc", &source) != 0 || stat(target, &destination) != 0 ||
-                 !S_ISDIR(source.st_mode) || !S_ISDIR(destination.st_mode)
-             ? 1
-             : 0;
+  return stat("/proc", &source) != 0 || !S_ISDIR(source.st_mode) ? 1 : 0;
 }
 
 int ct_backend_proot_arguments(const struct ct_nested_request *request,
@@ -25,7 +19,7 @@ int ct_backend_proot_arguments(const struct ct_nested_request *request,
       request->cwd == NULL || command == NULL || command->arguments == NULL ||
       request->trampoline_descriptor < 0 || request->control_descriptor < 0 ||
       ct_backend_nested_requires_read_only(request) != 0 ||
-      ct_proot_proc_target(request) != 0) {
+      ct_proot_proc_target() != 0) {
     return 1;
   }
   tool = request->proot_path == NULL ? "proot" : request->proot_path;

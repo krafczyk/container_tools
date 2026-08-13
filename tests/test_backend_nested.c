@@ -102,6 +102,20 @@ static int line_count(const char *path)
   return fclose(stream) != 0 ? -1 : lines;
 }
 
+#ifdef CT_NESTED_INFRASTRUCTURE_TEST_SEAM
+static int log_equals(const char *path, const char *expected)
+{
+  char contents[128];
+  FILE *stream = fopen(path, "r");
+  size_t length;
+  if (stream == NULL) return 0;
+  length = fread(contents, 1U, sizeof(contents) - 1U, stream);
+  if (ferror(stream) != 0 || fclose(stream) != 0) return 0;
+  contents[length] = '\0';
+  return strcmp(contents, expected) == 0;
+}
+#endif
+
 static int clear_log(const char *path)
 {
   const int descriptor = open(path, O_WRONLY | O_TRUNC | O_CREAT, 0600);
@@ -129,7 +143,8 @@ static int ct_test_nested_execute(const struct ct_nested_request *request,
 int main(int argument_count, char **arguments)
 {
   char work[] = "/tmp/mkchad-v1/container-tools-c11/nested.XXXXXX";
-  char root[4096], proc[4096], bwrap[4096], proot[4096], log[4096], self[64];
+  char root[4096], proc[4096], workspace[4096], unsupported[4096];
+  char bwrap[4096], proot[4096], log[4096], self[64];
   char *payload[] = {self, "--nested-payload", NULL};
   int trampoline, control, inherited, temporary, bad;
   struct ct_host_profile profile;
@@ -153,10 +168,15 @@ int main(int argument_count, char **arguments)
   if (snprintf(self, sizeof(self), "/proc/self/exe") >= (int)sizeof(self) ||
       mkdtemp(work) == NULL || snprintf(root, sizeof(root), "%s/root", work) >= (int)sizeof(root) ||
       snprintf(proc, sizeof(proc), "%s/proc", root) >= (int)sizeof(proc) ||
+      snprintf(workspace, sizeof(workspace), "%s/workspace", root) >=
+          (int)sizeof(workspace) ||
+      snprintf(unsupported, sizeof(unsupported), "%s/unsupported", root) >=
+          (int)sizeof(unsupported) ||
       snprintf(bwrap, sizeof(bwrap), "%s/bwrap", work) >= (int)sizeof(bwrap) ||
       snprintf(proot, sizeof(proot), "%s/proot", work) >= (int)sizeof(proot) ||
       snprintf(log, sizeof(log), "%s/log", work) >= (int)sizeof(log) ||
       mkdir(root, 0700) != 0 || mkdir(proc, 0700) != 0 ||
+      mkdir(workspace, 0700) != 0 ||
       symlink("/proc/self/exe", bwrap) != 0 || symlink("/proc/self/exe", proot) != 0) return 1;
   memset(&profile, 0, sizeof(profile));
   strcpy(profile.root, "/"); strcpy(profile.root_access, "inherit");
@@ -211,6 +231,24 @@ int main(int argument_count, char **arguments)
           125 ||
       failure != CT_NESTED_PRE_DISPATCH_TOOL_MISSING) return 7;
   request.bubblewrap_path = bwrap;
+  if (mkfifo(unsupported, 0600) != 0 || clear_log(log) != 0 ||
+      setenv("CT_TEST_BUBBLEWRAP_ASSEMBLY_ROOT", root, 1) != 0) return 8;
+  if (ct_test_nested_execute(&request, NULL, 0) != 41 || line_count(log) != 2) {
+    return 8;
+  }
+#ifdef CT_NESTED_INFRASTRUCTURE_TEST_SEAM
+  if (!log_equals(log, "proot probe\nproot launch\n")) return 8;
+#endif
+  if (unsetenv("CT_TEST_BUBBLEWRAP_ASSEMBLY_ROOT") != 0 ||
+      unlink(unsupported) != 0) return 8;
+#ifdef CT_NESTED_INFRASTRUCTURE_TEST_SEAM
+  if (clear_log(log) != 0 ||
+      setenv("CT_TEST_NESTED_INFRASTRUCTURE_FAILURE", "1", 1) != 0 ||
+      ct_backend_nested_execute_detailed(&request, NULL, 0, &failure) != 125 ||
+      failure != CT_NESTED_PRE_DISPATCH_CLEANUP_UNCERTAIN ||
+      line_count(log) != 0 ||
+      unsetenv("CT_TEST_NESTED_INFRASTRUCTURE_FAILURE") != 0) return 8;
+#endif
   bad = open("/dev/null", O_RDONLY);
   if (bad < 0) return 8;
   request.trampoline_descriptor = bad;
@@ -233,8 +271,9 @@ int main(int argument_count, char **arguments)
       ct_test_nested_execute(&request, "proot", 0) != 125) return 10;
   ct_path_map_destroy(&map);
   return close(inherited) != 0 || close(control) != 0 || close(trampoline) != 0 ||
-                 unlink(log) != 0 || unlink(bwrap) != 0 || unlink(proot) != 0 ||
-                 rmdir(proc) != 0 || rmdir(root) != 0 || rmdir(work) != 0
+                  unlink(log) != 0 || unlink(bwrap) != 0 || unlink(proot) != 0 ||
+                  rmdir(workspace) != 0 || rmdir(proc) != 0 ||
+                  rmdir(root) != 0 || rmdir(work) != 0
              ? 11
              : 0;
 }

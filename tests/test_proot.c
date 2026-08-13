@@ -42,7 +42,6 @@ static int has_probe(const struct ct_nested_command *command,
 int main(void)
 {
   char root[] = "/tmp/mkchad-v1/container-tools-c11/proot.XXXXXX";
-  char proc[4096];
   char *payload[] = {"/bin/true", NULL};
   int trampoline;
   int control;
@@ -52,7 +51,7 @@ int main(void)
   struct ct_path_map map;
   struct ct_nested_request request;
   struct ct_nested_command command;
-  if (mkdtemp(root) == NULL || snprintf(proc, sizeof(proc), "%s/proc", root) >= (int)sizeof(proc) || mkdir(proc, 0700) != 0) return 1;
+  if (mkdtemp(root) == NULL) return 1;
   memset(&profile, 0, sizeof(profile)); strcpy(profile.root, root); strcpy(profile.root_access, "inherit");
   ct_path_map_init(&map); if (ct_path_map_set_root(&map, root) != 0) return 2;
   temporary = open("/dev/null", O_RDONLY);
@@ -75,5 +74,5 @@ int main(void)
   strcpy(profile.root_access, "read-only");
   if (ct_nested_command_init(&command, CT_NESTED_ARGUMENT_LIMIT) != 0 || ct_backend_proot_arguments(&request, 1, &command) == 0) return 4;
   ct_nested_command_destroy(&command); ct_path_map_destroy(&map);
-  return close(control) != 0 || close(trampoline) != 0 || rmdir(proc) != 0 || rmdir(root) != 0 ? 5 : 0;
+  return close(control) != 0 || close(trampoline) != 0 || rmdir(root) != 0 ? 5 : 0;
 }

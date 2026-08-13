@@ -168,6 +168,23 @@ static int ct_storage_timeout_end(struct ct_storage_timeout *timeout)
   return 0;
 }
 
+int ct_storage_timeout_call(int (*operation)(void *), void *context)
+{
+  struct ct_storage_timeout timeout;
+  int result;
+  int operation_errno;
+  if (operation == NULL) {
+    errno = EINVAL;
+    return -1;
+  }
+  if (ct_storage_timeout_begin(&timeout) != 0) return -1;
+  result = operation(context);
+  operation_errno = errno;
+  if (ct_storage_timeout_end(&timeout) != 0) return -1;
+  errno = operation_errno;
+  return result;
+}
+
 #define CT_STORAGE_TIMEOUT_INT_CALL(call) \
   do { \
     struct ct_storage_timeout timeout; \

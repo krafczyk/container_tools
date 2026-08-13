@@ -9,6 +9,17 @@
 
 /** Return whether CT_RUNTIME_STORAGE_TIMEOUT is an accepted positive decimal deadline. */
 int ct_storage_timeout_is_valid(void);
+/**
+ * Run one bounded compound storage operation under a single deadline.
+ *
+ * The callback must return promptly after an interrupted filesystem call and
+ * must not invoke another `ct_storage_timeout_*` operation.
+ *
+ * @param operation Compound operation to invoke exactly once.
+ * @param context Opaque callback context.
+ * @return The callback result, or -1 with errno set on timeout/setup failure.
+ */
+int ct_storage_timeout_call(int (*operation)(void *), void *context);
 
 /** Run one filesystem metadata or mutation operation under the storage deadline. */
 int ct_storage_timeout_lstat(const char *path, struct stat *status);

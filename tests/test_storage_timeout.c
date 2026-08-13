@@ -7,6 +7,12 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+static int timeout_compound(void *context)
+{
+  (void)context;
+  return 42;
+}
+
 int main(void)
 {
   struct stat status;
@@ -41,6 +47,9 @@ int main(void)
     (void)fputs("forced storage timeout was not reported\n", stderr);
     return 1;
   }
+  if (ct_storage_timeout_call(timeout_compound, NULL) >= 0 ||
+      errno != ETIMEDOUT) return 1;
   (void)unsetenv("CT_TEST_STORAGE_TIMEOUT_FORCE");
+  if (ct_storage_timeout_call(timeout_compound, NULL) != 42) return 1;
   return 0;
 }

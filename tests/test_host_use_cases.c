@@ -121,7 +121,9 @@ int main(void)
   strcpy(profile.root_access, "read-only");
   if (ct_nested_command_init(&command, CT_NESTED_ARGUMENT_LIMIT) != 0 ||
       ct_backend_bubblewrap_arguments(&request, 0, &command) != 0 ||
-      !has_sequence(&command, (const char *const[]){"--ro-bind", root, "/"}, 3U)) return 3;
+      !has_sequence(&command,
+                    (const char *const[]){"--remount-ro", "/", "--chdir"},
+                    3U)) return 3;
   ct_nested_command_destroy(&command); ct_path_map_destroy(&map);
   return close(socket_descriptor) != 0 || close(inherited) != 0 || close(control) != 0 ||
                  close(trampoline) != 0 || unlink(socket_path) != 0 ||

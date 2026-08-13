@@ -23,10 +23,16 @@ status before configuration, manifest, allocation, or backend access.
 `--verbose` writes one bounded backend-selection diagnostic to stderr
 before dispatch.
 
-Bubblewrap receives only the selected root, ordered requested overlays, a
-read-only caller `/proc` mapping, and the selected cwd. Every target leaf must
-already exist with a compatible type beneath the lower root, so probing cannot
-materialize or mutate it. Bubblewrap uses its supported default non-CLOEXEC
+Bubblewrap assembles a private tmpfs root from bounded selected-root entries,
+preserves symlinks, and splits only branches needed by ordered requested
+overlays. It recursively maps the current container's `/proc`, `/sys`, and
+`/dev` rather than projected host kernel filesystems. Missing overlay target
+ancestors and leaves are created only in private tmpfs branches; nested targets
+under an earlier overlay must already exist in that overlay source. Existing
+leaves must have a compatible type. Probing therefore cannot materialize paths
+in the selected root or overlay sources. A root that cannot be represented
+safely is a clean capability failure eligible for automatic PRoot fallback.
+Bubblewrap uses its supported default non-CLOEXEC
 descriptor inheritance through the trampoline and otherwise adds no namespaces
 or isolation. When the caller supplies a high non-CLOEXEC descriptor, the
 semantic probe verifies it before Bubblewrap becomes ready. PRoot

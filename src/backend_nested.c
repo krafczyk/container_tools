@@ -305,23 +305,26 @@ static int ct_nested_resolve_tool(const char *tool,
   }
 }
 
-static int ct_nested_build(enum ct_nested_backend backend,
-                           const struct ct_nested_request *request, int probe,
-                           struct ct_nested_command *command)
+static enum ct_nested_build_result ct_nested_build(
+    enum ct_nested_backend backend, const struct ct_nested_request *request,
+    int probe, struct ct_nested_command *command)
 {
   size_t payload_count = 0U;
   size_t capacity;
-  if (command == NULL) return 1;
+  if (command == NULL) return CT_NESTED_BUILD_INTERNAL_FAILURE;
   memset(command, 0, sizeof(*command));
   if (probe == 0 && request->payload != NULL) {
     while (request->payload[payload_count] != NULL &&
-           payload_count < CT_NESTED_ARGUMENT_LIMIT) {
+           payload_count < CT_NESTED_PAYLOAD_LIMIT) {
       ++payload_count;
     }
-    if (payload_count == CT_NESTED_ARGUMENT_LIMIT) return 1;
+    if (payload_count == CT_NESTED_PAYLOAD_LIMIT) {
+      return CT_NESTED_BUILD_INTERNAL_FAILURE;
+    }
   }
   capacity = backend == CT_NESTED_BACKEND_BUBBLEWRAP
-                   ? 28U + request->map->count * 3U + payload_count
+                   ? 64U + CT_NESTED_ROOT_ENTRY_LIMIT * 3U +
+                         request->map->count * 5U + payload_count
                   : backend == CT_NESTED_BACKEND_PROOT
                          ? 22U + request->map->count * 2U + payload_count
                         : 16U + request->executable->stage_count *
@@ -329,15 +332,19 @@ static int ct_nested_build(enum ct_nested_backend backend,
                               payload_count;
   if (capacity > CT_NESTED_ARGUMENT_LIMIT ||
       ct_nested_command_init(command, capacity) != 0) {
-    return 1;
+    return CT_NESTED_BUILD_INTERNAL_FAILURE;
   }
   if (backend == CT_NESTED_BACKEND_BUBBLEWRAP) {
     return ct_backend_bubblewrap_arguments(request, probe, command);
   }
   if (backend == CT_NESTED_BACKEND_PROOT) {
-    return ct_backend_proot_arguments(request, probe, command);
+    return ct_backend_proot_arguments(request, probe, command) == 0
+               ? CT_NESTED_BUILD_OK
+               : CT_NESTED_BUILD_INTERNAL_FAILURE;
   }
-  return probe != 0 ? 1 : ct_backend_rewrite_arguments(request, command);
+  return probe == 0 && ct_backend_rewrite_arguments(request, command) == 0
+             ? CT_NESTED_BUILD_OK
+             : CT_NESTED_BUILD_INTERNAL_FAILURE;
 }
 
 static int ct_nested_probe(enum ct_nested_backend backend,
@@ -350,10 +357,22 @@ static int ct_nested_probe(enum ct_nested_backend backend,
   if (trustworthy == NULL || fallback_allowed == NULL) return 125;
   *trustworthy = 0;
   *fallback_allowed = 0;
-  if (ct_nested_build(backend, request, 1, &command) != 0) {
+  {
+    const enum ct_nested_build_result build_result =
+        ct_nested_build(backend, request, 1, &command);
+    if (build_result != CT_NESTED_BUILD_OK) {
+      *trustworthy = build_result == CT_NESTED_BUILD_UNSUPPORTED;
+      *fallback_allowed = build_result == CT_NESTED_BUILD_UNSUPPORTED;
+      ct_nested_command_destroy(&command);
+      return 125;
+    }
+  }
+#ifdef CT_SUPERVISOR_TEST_SEAM
+  if (getenv("CT_TEST_NESTED_INFRASTRUCTURE_FAILURE") != NULL) {
     ct_nested_command_destroy(&command);
     return 125;
   }
+#endif
   completion = ct_supervisor_probe_environment_detailed(
       command.arguments, 5000U, request->environment, request->environment_count,
       &result);
