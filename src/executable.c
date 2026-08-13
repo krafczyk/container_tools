@@ -539,6 +539,42 @@ void ct_executable_close(struct ct_executable *executable)
   }
 }
 
+int ct_executable_trampoline_open(void)
+{
+  char path[CT_HOST_PATH_MAX];
+  struct stat running;
+  struct stat selected;
+  struct stat final;
+  int running_descriptor = -1;
+  int selected_descriptor = -1;
+  int descriptor_flags;
+  const ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1U);
+
+  if (length <= 0 || (size_t)length >= sizeof(path) - 1U) return -1;
+  path[length] = '\0';
+  if (path[0] != '/') return -1;
+  running_descriptor = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
+  selected_descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+  if (running_descriptor < 0 || selected_descriptor < 0 ||
+      fstat(running_descriptor, &running) != 0 ||
+      fstat(selected_descriptor, &selected) != 0 ||
+      stat(path, &final) != 0 || !S_ISREG(running.st_mode) ||
+      !S_ISREG(selected.st_mode) || !S_ISREG(final.st_mode) ||
+      running.st_dev != selected.st_dev || running.st_ino != selected.st_ino ||
+      selected.st_dev != final.st_dev || selected.st_ino != final.st_ino ||
+      (descriptor_flags = fcntl(selected_descriptor, F_GETFD)) < 0 ||
+      fcntl(selected_descriptor, F_SETFD, descriptor_flags & ~FD_CLOEXEC) != 0) {
+    if (running_descriptor >= 0) (void)close(running_descriptor);
+    if (selected_descriptor >= 0) (void)close(selected_descriptor);
+    return -1;
+  }
+  if (close(running_descriptor) != 0) {
+    (void)close(selected_descriptor);
+    return -1;
+  }
+  return selected_descriptor;
+}
+
 static int ct_executable_stable(int descriptor, struct stat *before)
 {
   struct stat after;

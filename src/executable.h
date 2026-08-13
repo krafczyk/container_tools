@@ -68,6 +68,17 @@ enum ct_executable_status ct_executable_resolve(
 /** Close all owned entry-stage and loader descriptors, if any, and mark them closed. */
 void ct_executable_close(struct ct_executable *executable);
 /**
+ * Open the running executable through its stable absolute file path.
+ *
+ * The returned non-close-on-exec descriptor must identify the same regular file
+ * as `/proc/self/exe`. This avoids transporting a procfs-origin descriptor into
+ * nested path translators while retaining executable identity verification.
+ *
+ * @return Open descriptor on success, otherwise -1. The caller owns the
+ *         descriptor and must close it.
+ */
+int ct_executable_trampoline_open(void);
+/**
  * Admit the current static executable and a bounded internal control record.
  *
  * The control descriptor must contain `container-tools-control-v1\n` followed

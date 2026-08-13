@@ -44,8 +44,11 @@ provide descendant selected-root semantics. It emits a degradation warning
 before dispatch that names the requested semantics, Bubblewrap and PRoot
 selection outcomes, and the entry-point-only descendant limitation.
 
-The parent preserves its verified static executable descriptor and a bounded
-build-identity control record through nested launch. The child enters the
+The parent resolves the running executable to a stable absolute regular-file
+path, opens a descriptor that must still identify `/proc/self/exe`, and preserves
+that verified static executable descriptor with a bounded build-identity control
+record through nested launch. This avoids transporting procfs-origin descriptor
+provenance through nested path translators. The child enters the
 internal trampoline through `/proc/self/fd/N`, re-admits both descriptors with
 `ct_executable_admit_trampoline`, verifies the planned cwd, one projection's
 parent-captured device/inode/type identity, and one descendant

@@ -32,6 +32,7 @@ int main(void)
   const char identity[] = "unit-build-identity";
   int descriptor;
   int generated_control;
+  int trampoline;
   int executable = open("/proc/self/exe", O_RDONLY | O_CLOEXEC);
   struct ct_elf_info elf;
   static struct ct_host_profile profile;
@@ -76,6 +77,23 @@ int main(void)
       (elf.kind == CT_ELF_STATIC &&
        ct_executable_admit_trampoline(executable, generated_control, identity) != 0) ||
       close(generated_control) != 0) return 5;
+  trampoline = ct_executable_trampoline_open();
+  if (trampoline < 0) return 5;
+  {
+    char descriptor_path[64];
+    char target[4096];
+    ssize_t target_length;
+    if (snprintf(descriptor_path, sizeof(descriptor_path), "/proc/self/fd/%d",
+                 trampoline) >= (int)sizeof(descriptor_path) ||
+        (target_length = readlink(descriptor_path, target, sizeof(target) - 1U)) < 0 ||
+        (size_t)target_length >= sizeof(target) - 1U) return 5;
+    target[target_length] = '\0';
+    if (strncmp(target, "/proc/", 6U) == 0 ||
+        strncmp(target, "/dev/fd/", 8U) == 0 ||
+        (fcntl(trampoline, F_GETFD) & FD_CLOEXEC) != 0 || close(trampoline) != 0) {
+      return 5;
+    }
+  }
   if (write_executable(direct, "#!/bin/sh\n", 0700) != 0 ||
       write_executable(env_script, "#!/usr/bin/env sh\n", 0700) != 0 ||
       write_executable(env_split, "#!/usr/bin/env -S 'sh' -e\n", 0700) != 0 ||

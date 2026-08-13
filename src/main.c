@@ -460,7 +460,7 @@ static int ct_host_exec(int argument_count, char **arguments)
     struct ct_nested_request request;
     int dispatch_result;
     enum ct_nested_pre_dispatch_failure dispatch_failure;
-    trampoline_descriptor = open("/proc/self/exe", O_RDONLY);
+    trampoline_descriptor = ct_executable_trampoline_open();
     control_descriptor = ct_executable_control_open(CT_BUILD_IDENTITY);
     if (trampoline_descriptor < 0 || control_descriptor < 0) {
       if (trampoline_descriptor >= 0) (void)close(trampoline_descriptor);
@@ -637,7 +637,7 @@ static int ct_host_doctor(int argument_count, char **arguments)
     goto invalid;
   }
   inherited_descriptor = ct_host_inherited_descriptor();
-  trampoline_descriptor = open("/proc/self/exe", O_RDONLY);
+  trampoline_descriptor = ct_executable_trampoline_open();
   control_descriptor = ct_executable_control_open(CT_BUILD_IDENTITY);
   if (trampoline_descriptor < 0 || control_descriptor < 0) {
     ct_cli_diagnostic("host doctor", "trampoline",
