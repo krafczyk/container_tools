@@ -31,6 +31,8 @@ int main(void)
   const char *const shell_arguments[] = {"shell", "--", "image"};
   const char *const instance_exec_arguments[] = {"instance", "exec", "--", "image", "command"};
   const char *const instance_identity_arguments[] = {"instance", "identity"};
+  const char *const instance_inspect_arguments[] = {"instance", "inspect", "--json", "--ct-instance-root", "/private/root", "0123456789abcdef0123456789abcdef"};
+  const char *const instance_profile_inspect_arguments[] = {"instance", "profile", "inspect", "--json"};
   const char *const mount_detect_arguments[] = {"mount", "detect"};
   const char *const mount_args_arguments[] = {"mount", "args", "path with spaces"};
   const char *const mount_plan_inspect_arguments[] = {"mount", "plan", "inspect", "--json"};
@@ -54,6 +56,8 @@ int main(void)
   expect_command(shell_arguments, 3, CT_COMMAND_SHELL);
   expect_command(instance_exec_arguments, 5, CT_COMMAND_INSTANCE_EXEC);
   expect_command(instance_identity_arguments, 2, CT_COMMAND_INSTANCE_IDENTITY);
+  expect_command(instance_inspect_arguments, 6, CT_COMMAND_INSTANCE_INSPECT);
+  expect_command(instance_profile_inspect_arguments, 4, CT_COMMAND_INSTANCE_PROFILE_INSPECT);
   expect_command(mount_detect_arguments, 2, CT_COMMAND_MOUNT_DETECT);
   expect_command(mount_args_arguments, 3, CT_COMMAND_MOUNT_ARGS);
   expect_command(mount_plan_inspect_arguments, 4, CT_COMMAND_MOUNT_PLAN_INSPECT);

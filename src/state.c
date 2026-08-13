@@ -213,6 +213,48 @@ int ct_state_identity_write(const char *root, const char *name, const char *imag
   return 0;
 }
 
+int ct_state_identity_read(const char *root, const char *name, char profile[65])
+{
+  static const char *const prefixes[] = {"name=", "image=", "identity=", "profile="};
+  char path[CT_STATE_PATH_MAX], contents[5120], *line, *next;
+  struct stat root_status, status;
+  int descriptor = -1;
+  size_t used = 0U, index;
+  const char *values[4];
+  if (!ct_state_root_valid(root) || !ct_state_name(name) || profile == NULL ||
+      ct_storage_timeout_lstat(root, &root_status) != 0 ||
+      !S_ISDIR(root_status.st_mode) || S_ISLNK(root_status.st_mode) ||
+      root_status.st_uid != geteuid() || (root_status.st_mode & 0777U) != 0700U ||
+      snprintf(path, sizeof(path), "%s/%s.identity", root, name) >= (int)sizeof(path) ||
+      (descriptor = ct_storage_timeout_open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC, 0)) < 0 ||
+      ct_storage_timeout_fstat(descriptor, &status) != 0 || !S_ISREG(status.st_mode) ||
+      status.st_uid != geteuid() || (status.st_mode & 0777U) != 0600U ||
+      status.st_size < 1 || status.st_size >= (off_t)sizeof(contents)) goto bad;
+  if (ct_state_read_exact(descriptor, contents, (size_t)status.st_size) != 0)
+    goto bad;
+  used = (size_t)status.st_size;
+  if (ct_storage_timeout_close(descriptor) != 0) return 1;
+  descriptor = -1;
+  contents[used] = '\0';
+  line = contents;
+  for (index = 0U; index < sizeof(prefixes) / sizeof(prefixes[0]); ++index) {
+    const size_t prefix_length = strlen(prefixes[index]);
+    next = strchr(line, '\n');
+    if (next == NULL || strncmp(line, prefixes[index], prefix_length) != 0 ||
+        line[prefix_length] == '\0') return 1;
+    *next = '\0';
+    values[index] = line + prefix_length;
+    line = next + 1;
+  }
+  if (line[0] != '\0' || strcmp(values[0], name) != 0 ||
+      !ct_state_hex(values[3], 64U)) return 1;
+  memcpy(profile, values[3], 65U);
+  return 0;
+bad:
+  if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
+  return 1;
+}
+
 enum ct_state_lock_status ct_state_lock(const char *root, const char *name,
                                         int *descriptor)
 {

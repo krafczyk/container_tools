@@ -55,12 +55,18 @@ if [[ ${1:-} == instance && ${2:-} == start ]]; then
   name=${!#}
   identity_source=
   mount_plan_source=
+  profile_manifest_source=
+  profile_manifest_count=0
   for ((index = 0; index < ${#args[@]} - 1; index++)); do
     if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-identity:ro ]]; then
       identity_source=${args[index + 1]%:/.container-tools-instance-identity:ro}
     fi
     if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-mount-plan:ro ]]; then
       mount_plan_source=${args[index + 1]%:/.container-tools-mount-plan:ro}
+    fi
+    if [[ ${args[index]} == --bind && ${args[index + 1]} == *:/.container-tools-instance-profile:ro ]]; then
+      profile_manifest_source=${args[index + 1]%:/.container-tools-instance-profile:ro}
+      profile_manifest_count=$((profile_manifest_count + 1))
     fi
   done
   mapfile -t identity_fields 2>/dev/null < "$identity_source" || exit 68
@@ -82,6 +88,21 @@ if [[ ${1:-} == instance && ${2:-} == start ]]; then
     mount_plan_bytes=$((mount_plan_bytes + ${#mount_plan_field} + 1))
   done
   (( mount_plan_bytes == $(stat -c '%s' -- "$mount_plan_source") )) || exit 68
+  [[ $profile_manifest_count -eq 1 && -f $profile_manifest_source && ! -L $profile_manifest_source \
+    && $(stat -c '%a' -- "$profile_manifest_source") == 600 ]] || exit 68
+  mapfile -d '' -t profile_fields < "$profile_manifest_source" || exit 68
+  [[ ${profile_fields[0]} == ct-instance-profile-v1 && ${profile_fields[2]} == "${identity_fields[1]}" \
+    && ${profile_fields[3]} == "$name" && ${profile_fields[19]} =~ ^[0-9]+$ ]] || exit 68
+  (( ${#profile_fields[@]} >= 21 + 10#${profile_fields[19]} )) || exit 68
+  expected_groups=()
+  for group in ${CT_HOST_PROJECTION_GROUPS}; do
+    [[ $group == "$MKCHAD_TEST_PRIMARY_GROUP" ]] || expected_groups+=("$group")
+  done
+  mapfile -t expected_groups < <(printf '%s\n' "${expected_groups[@]}" | sort -n -u)
+  (( ${#expected_groups[@]} == 10#${profile_fields[19]} )) || exit 68
+  for ((index = 0; index < ${#expected_groups[@]}; index++)); do
+    [[ ${profile_fields[20 + index]} == "${expected_groups[index]}" ]] || exit 68
+  done
   [[ ${MKCHAD_TEST_HANG_START:-} != 1 ]] || sleep 10
   sleep "${MKCHAD_TEST_START_DELAY:-0}"
   [[ ! -e $MKCHAD_TEST_INSTANCES/$name ]] || exit 42
@@ -164,7 +185,7 @@ chmod 755 "$fake/id"
 
 export HOME="$home"
 export PATH="$fake:$PATH"
-printf '%s\n' '--exclude-path /.container-tools-instance-identity' > "$work/mount-config"
+printf '%s\n' '--exclude-path /.container-tools-instance-identity' '--exclude-path /.container-tools-instance-profile' > "$work/mount-config"
 export CT_MOUNT_CFG="$work/mount-config"
 # Avoid inheriting the enclosing container's identity mount in this fake test.
 export MKCHAD_TEST_CALLS="$calls"
@@ -174,6 +195,7 @@ export MKCHAD_TEST_INSTANCES="$instances"
 export MKCHAD_TEST_HIDE_INSTANCE_LIST=1
 MKCHAD_TEST_GROUPS="$($real_id -G)"
 export MKCHAD_TEST_GROUPS
+export MKCHAD_TEST_PRIMARY_GROUP="$($real_id -g)"
 
 # Seed the projection selection record so persistent warm-path assertions do
 # not need a capability runtime probe. The instance helper must consume this
@@ -358,6 +380,14 @@ if [[ $start_has_mount_plan -ne 1 ]]; then
   printf '%s\n' 'instance start omitted the stable mount-plan bind' >&2
   exit 1
 fi
+start_has_profile_manifest=0
+while IFS= read -r start_argument; do
+  [[ $start_argument != "$instance_root/profiles/${name#mkchad-}"*:/.container-tools-instance-profile:ro ]] || start_has_profile_manifest=1
+done < "$calls/2"
+if [[ $start_has_profile_manifest -ne 1 ]]; then
+  printf '%s\n' 'instance start omitted the stable profile-manifest bind' >&2
+  exit 1
+fi
 contains_line "$calls/4" "instance://$name" || { printf '%s\n' 'payload did not enter the created instance' >&2; exit 1; }
 contains_line "$calls/4" '/.container-tools-bootstrap' || { printf '%s\n' 'payload omitted the bootstrap' >&2; exit 1; }
 mapfile -t payload < "$calls/4"
@@ -399,6 +429,21 @@ set -e
   && $(<"$work/reserved-identity.err") == *'persistent instance request: reserved-bind:'* \
   && $(<"$work/reserved-identity.err") != *"$reserved_source"* ]] || {
   printf '%s\n' 'caller bind reached or replaced the reserved instance identity path' >&2
+  exit 1
+}
+
+calls_before=$(<"$work/call-count")
+set +e
+"$helper" --apptainer --ct-instance-root "$instance_root" \
+  --ct-bind "$reserved_source:/.container-tools-instance-profile" \
+  -- "$image_path" /bin/fake-command reserved-profile-manifest \
+  >"$work/reserved-profile-manifest.out" 2>"$work/reserved-profile-manifest.err"
+reserved_profile_manifest_status=$?
+set -e
+[[ $reserved_profile_manifest_status -eq 1 && $(<"$work/call-count") -eq "$calls_before" \
+  && $(<"$work/reserved-profile-manifest.err") == *'persistent instance request: reserved-bind:'* \
+  && $(<"$work/reserved-profile-manifest.err") != *"$reserved_source"* ]] || {
+  printf '%s\n' 'persistent caller bind reached the reserved profile-manifest path' >&2
   exit 1
 }
 

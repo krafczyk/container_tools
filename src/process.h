@@ -94,7 +94,20 @@ int ct_process_run_operation_capture(char *const arguments[], const char *operat
 
 /** Capture bounded standard output while discarding operation diagnostics. */
 int ct_process_run_operation_capture_quiet(char *const arguments[],
-                                           const char *operation, char output[],
-                                           size_t output_size);
+                                            const char *operation, char output[],
+                                            size_t output_size);
+/**
+ * Capture bounded binary standard output and return its exact byte length.
+ *
+ * @param arguments Null-terminated external argv.
+ * @param operation Named deadline operation.
+ * @param output Destination byte buffer.
+ * @param output_size Destination capacity.
+ * @param output_length Receives the captured byte count on success.
+ * @return The operation result, or 125 for overflow or capture failure.
+ */
+int ct_process_run_operation_capture_quiet_length(
+    char *const arguments[], const char *operation, unsigned char output[],
+    size_t output_size, size_t *output_length);
 
 #endif

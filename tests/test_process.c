@@ -183,6 +183,7 @@ int main(void)
   const char *const invalid[] = {"nan", "NaN", "inf", "-inf", "1x", "0", NULL};
   char *const noisy[] = {"/bin/sh", "-c",
                          "printf control-out; printf control-err >&2", NULL};
+  char *const oversized[] = {"/bin/sh", "-c", "while :; do printf 0123456789abcdef; done", NULL};
   char captured[64];
   char stdout_path[] = "/tmp/mkchad-v1/container-tools-c11/process-stdout.XXXXXX";
   char stderr_path[] = "/tmp/mkchad-v1/container-tools-c11/process-stderr.XXXXXX";
@@ -215,10 +216,12 @@ int main(void)
       ct_process_run_operation_quiet(noisy, "probe") != 0 ||
       fstat(stdout_file, &stdout_status) != 0 || stdout_status.st_size != 0 ||
       fstat(stderr_file, &stderr_status) != 0 || stderr_status.st_size != 0 ||
-      ct_process_run_operation_capture_quiet(noisy, "probe", captured,
-                                             sizeof(captured)) != 0 ||
-      strcmp(captured, "control-out") != 0 ||
-      fstat(stderr_file, &stderr_status) != 0 || stderr_status.st_size != 0 ||
+       ct_process_run_operation_capture_quiet(noisy, "probe", captured,
+                                              sizeof(captured)) != 0 ||
+       strcmp(captured, "control-out") != 0 ||
+       ct_process_run_operation_capture_quiet(oversized, "probe", captured,
+                                              sizeof(captured)) != 125 ||
+       fstat(stderr_file, &stderr_status) != 0 || stderr_status.st_size != 0 ||
       ct_process_run_operation_stdout_to_stderr(noisy, "probe") != 0 ||
       fstat(stdout_file, &stdout_status) != 0 || stdout_status.st_size != 0 ||
       fstat(stderr_file, &stderr_status) != 0 || stderr_status.st_size == 0 ||

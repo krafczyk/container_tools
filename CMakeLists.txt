@@ -93,6 +93,7 @@ set(CONTAINER_TOOLS_CORE_SOURCES
   src/cli.c src/package.c src/config.c src/storage.c src/storage_timeout.c src/mount.c
   src/process.c src/runtime.c src/backend_outer.c src/host_projection.c src/mount_plan.c src/sha256.c
   src/mount_plan_report.c
+  src/instance_profile_manifest.c src/instance_profile_report.c
   src/profile.c src/state.c src/instance.c src/host_config.c src/path_map.c src/executable.c src/elf.c
   src/shebang.c src/supervisor.c src/supervisor_process.c ${CONTAINER_TOOLS_NESTED_FILES})
 add_library(container_tools_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
@@ -166,6 +167,24 @@ if(BUILD_TESTING)
   add_dependencies(test_mount_plan_cli container-tools-mount-plan-test)
   container_tools_enable_warnings(test_mount_plan_cli)
   add_test(NAME container_tools_mount_plan_cli COMMAND test_mount_plan_cli)
+
+  add_executable(test_instance_profile_manifest tests/test_instance_profile_manifest.c)
+  target_link_libraries(test_instance_profile_manifest PRIVATE container_tools_test_core)
+  target_include_directories(test_instance_profile_manifest PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  container_tools_enable_warnings(test_instance_profile_manifest)
+  add_test(NAME container_tools_instance_profile_manifest COMMAND test_instance_profile_manifest)
+
+  add_executable(test_instance_profile_cli tests/test_instance_profile_cli.c)
+  target_link_libraries(test_instance_profile_cli PRIVATE container_tools_test_core)
+  target_include_directories(test_instance_profile_cli PRIVATE src vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  add_executable(container-tools-instance-profile-test src/main.c)
+  target_link_libraries(container-tools-instance-profile-test PRIVATE container_tools_test_core)
+  target_include_directories(container-tools-instance-profile-test PRIVATE src "${CMAKE_CURRENT_BINARY_DIR}/generated")
+  container_tools_enable_warnings(container-tools-instance-profile-test)
+  target_compile_definitions(test_instance_profile_cli PRIVATE CT_INSTANCE_PROFILE_CLI="$<TARGET_FILE:container-tools-instance-profile-test>")
+  add_dependencies(test_instance_profile_cli container-tools-instance-profile-test)
+  container_tools_enable_warnings(test_instance_profile_cli)
+  add_test(NAME container_tools_instance_profile_cli COMMAND test_instance_profile_cli)
 
   configure_file(tests/test_diagnostics.cmake.in
     "${CMAKE_CURRENT_BINARY_DIR}/test_diagnostics.cmake" @ONLY)

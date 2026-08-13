@@ -376,10 +376,12 @@ enum ct_process_output {
 static int ct_process_run_operation_internal(char *const arguments[],
                                              const char *operation,
                                              enum ct_process_output output,
-                                             int capture_output)
+                                             char capture[], size_t capture_size,
+                                             size_t *capture_length)
 {
   pid_t child;
   int ready[2] = {-1, -1};
+  int captured[2] = {-1, -1};
   int status = 0;
   char group_ready;
   long milliseconds;
@@ -391,16 +393,31 @@ static int ct_process_run_operation_internal(char *const arguments[],
   int cleanup_failed = 0;
   int restore_failed = 0;
   int interrupted = 0;
+  int capture_failed = 0;
+  size_t capture_used = 0U;
   struct timespec cleanup_deadline;
 
-  if (arguments == NULL || arguments[0] == NULL || ct_process_operation_timeout(operation, &milliseconds) != 0 ||
+  if (arguments == NULL || arguments[0] == NULL ||
+      ((output == CT_PROCESS_OUTPUT_CAPTURE ||
+        output == CT_PROCESS_OUTPUT_CAPTURE_QUIET) &&
+       (capture == NULL || capture_size < 2U)) ||
+      ct_process_operation_timeout(operation, &milliseconds) != 0 ||
       clock_gettime(CLOCK_MONOTONIC, &deadline) != 0) return 125;
   deadline.tv_sec += milliseconds / 1000L;
   deadline.tv_nsec += (milliseconds % 1000L) * 1000000L;
   if (deadline.tv_nsec >= 1000000000L) { ++deadline.tv_sec; deadline.tv_nsec -= 1000000000L; }
   if (sigemptyset(&blocked) != 0 || sigaddset(&blocked, SIGINT) != 0 || sigaddset(&blocked, SIGTERM) != 0 ||
       sigprocmask(SIG_BLOCK, &blocked, &old_mask) != 0) return 125;
-  if (pipe(ready) != 0) {
+  if (pipe(ready) != 0 ||
+      ((output == CT_PROCESS_OUTPUT_CAPTURE ||
+        output == CT_PROCESS_OUTPUT_CAPTURE_QUIET) &&
+       (pipe(captured) != 0 ||
+        fcntl(captured[0], F_SETFL,
+              fcntl(captured[0], F_GETFL) | O_NONBLOCK) != 0))) {
+    if (ready[0] >= 0) (void)close(ready[0]);
+    if (ready[1] >= 0) (void)close(ready[1]);
+    if (captured[0] >= 0) (void)close(captured[0]);
+    if (captured[1] >= 0) (void)close(captured[1]);
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
     return 125;
   }
@@ -409,6 +426,7 @@ static int ct_process_run_operation_internal(char *const arguments[],
     const char setup_status = setpgid(0, 0) == 0 ? 0 : 1;
     int null_descriptor = -1;
     (void)close(ready[0]);
+    if (captured[0] >= 0) (void)close(captured[0]);
     if (output == CT_PROCESS_OUTPUT_QUIET ||
         output == CT_PROCESS_OUTPUT_CAPTURE_QUIET) {
       null_descriptor = open("/dev/null", O_WRONLY | O_CLOEXEC);
@@ -416,7 +434,7 @@ static int ct_process_run_operation_internal(char *const arguments[],
     if (ct_process_write_byte(ready[1], setup_status) != 0 || close(ready[1]) != 0 || setup_status != 0 ||
         ((output == CT_PROCESS_OUTPUT_CAPTURE ||
           output == CT_PROCESS_OUTPUT_CAPTURE_QUIET) &&
-         (dup2(capture_output, STDOUT_FILENO) < 0 || close(capture_output) != 0)) ||
+         (dup2(captured[1], STDOUT_FILENO) < 0 || close(captured[1]) != 0)) ||
         (output == CT_PROCESS_OUTPUT_STDOUT_TO_STDERR &&
          dup2(STDERR_FILENO, STDOUT_FILENO) < 0) ||
         ((output == CT_PROCESS_OUTPUT_QUIET ||
@@ -430,18 +448,20 @@ static int ct_process_run_operation_internal(char *const arguments[],
     execvp(arguments[0], arguments);
     _exit(errno == ENOENT ? 127 : 126);
   }
-  if (child < 0) { (void)close(ready[0]); (void)close(ready[1]); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125; }
+  if (child < 0) { (void)close(ready[0]); (void)close(ready[1]); if (captured[0] >= 0) (void)close(captured[0]); if (captured[1] >= 0) (void)close(captured[1]); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125; }
   (void)close(ready[1]);
+  if (captured[1] >= 0) { (void)close(captured[1]); captured[1] = -1; }
   if (ct_process_read_byte(ready[0], &group_ready) != 0 || close(ready[0]) != 0 || group_ready != 0) {
-    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
+    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); if (captured[0] >= 0) (void)close(captured[0]); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
   }
   memset(&action, 0, sizeof(action));
   action.sa_handler = ct_process_forward_signal;
   if (sigemptyset(&action.sa_mask) != 0 || sigaction(SIGINT, &action, &old_interrupt) != 0) {
-    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
+    (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status); if (captured[0] >= 0) (void)close(captured[0]); (void)sigprocmask(SIG_SETMASK, &old_mask, NULL); return 125;
   }
   if (sigaction(SIGTERM, &action, &old_terminate) != 0) {
     (void)kill(-child, SIGKILL); (void)ct_process_wait(child, &status);
+    if (captured[0] >= 0) (void)close(captured[0]);
     (void)sigaction(SIGINT, &old_interrupt, NULL);
     (void)sigprocmask(SIG_SETMASK, &old_mask, NULL);
     return 125;
@@ -451,17 +471,33 @@ static int ct_process_run_operation_internal(char *const arguments[],
   if (sigprocmask(SIG_SETMASK, &old_mask, NULL) != 0) {
     (void)kill(-child, SIGKILL);
     (void)ct_process_wait(child, &status);
+    if (captured[0] >= 0) (void)close(captured[0]);
     (void)sigaction(SIGTERM, &old_terminate, NULL);
     (void)sigaction(SIGINT, &old_interrupt, NULL);
     return 125;
   }
   while (!child_done) {
+    if (captured[0] >= 0) {
+      char buffer[4096];
+      ssize_t received;
+      while ((received = read(captured[0], buffer, sizeof(buffer))) > 0) {
+        const size_t available = capture_size - capture_used - 1U;
+        if ((size_t)received > available) {
+          capture_failed = 1;
+          break;
+        }
+        memcpy(capture + capture_used, buffer, (size_t)received);
+        capture_used += (size_t)received;
+      }
+      if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+          errno != EINTR) capture_failed = 1;
+    }
     const pid_t waited = waitpid(child, &status, WNOHANG);
     if (waited == child) child_done = 1;
     else if (waited < 0 && errno != EINTR) timed_out = 1;
     if (!child_done && ct_process_interrupted != 0) interrupted = (int)ct_process_interrupted;
     if (!child_done && interrupted == 0 && ct_process_sleep_until(&deadline) != 0) timed_out = 1;
-    if (timed_out || interrupted != 0) {
+    if (timed_out || interrupted != 0 || capture_failed) {
       (void)kill(-child, interrupted != 0 ? interrupted : SIGTERM);
       break;
     }
@@ -475,6 +511,25 @@ static int ct_process_run_operation_internal(char *const arguments[],
     if (waited == child) child_done = 1;
     else if (waited < 0 && errno != EINTR) { cleanup_failed = 1; break; }
   }
+  if (captured[0] >= 0) {
+    char buffer[4096];
+    ssize_t received = 0;
+    while (!capture_failed &&
+           (received = read(captured[0], buffer, sizeof(buffer))) > 0) {
+      const size_t available = capture_size - capture_used - 1U;
+      if ((size_t)received > available) {
+        capture_failed = 1;
+        break;
+      }
+      memcpy(capture + capture_used, buffer, (size_t)received);
+      capture_used += (size_t)received;
+    }
+    if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+        errno != EINTR) capture_failed = 1;
+    if (close(captured[0]) != 0) capture_failed = 1;
+    capture[capture_used] = '\0';
+    if (capture_length != NULL) *capture_length = capture_used;
+  }
   ct_process_child_group = 0;
   if (sigaction(SIGTERM, &old_terminate, NULL) != 0) restore_failed = 1;
   if (sigaction(SIGINT, &old_interrupt, NULL) != 0) restore_failed = 1;
@@ -486,6 +541,7 @@ static int ct_process_run_operation_internal(char *const arguments[],
     return 128 + interrupted;
   }
   if (timed_out) return 124;
+  if (capture_failed) return 125;
   if (!child_done || cleanup_failed) return 125;
   if (WIFEXITED(status)) return WEXITSTATUS(status);
   if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
@@ -495,45 +551,38 @@ static int ct_process_run_operation_internal(char *const arguments[],
 int ct_process_run_operation(char *const arguments[], const char *operation)
 {
   return ct_process_run_operation_internal(arguments, operation,
-                                           CT_PROCESS_OUTPUT_INHERIT, -1);
+                                           CT_PROCESS_OUTPUT_INHERIT, NULL, 0U,
+                                           NULL);
 }
 
 int ct_process_run_operation_quiet(char *const arguments[], const char *operation)
 {
   return ct_process_run_operation_internal(arguments, operation,
-                                           CT_PROCESS_OUTPUT_QUIET, -1);
+                                           CT_PROCESS_OUTPUT_QUIET, NULL, 0U,
+                                           NULL);
 }
 
 int ct_process_run_operation_stdout_to_stderr(char *const arguments[],
                                               const char *operation)
 {
   return ct_process_run_operation_internal(
-      arguments, operation, CT_PROCESS_OUTPUT_STDOUT_TO_STDERR, -1);
+      arguments, operation, CT_PROCESS_OUTPUT_STDOUT_TO_STDERR, NULL, 0U, NULL);
 }
 
 static int ct_process_run_operation_capture_internal(
     char *const arguments[], const char *operation, char output[],
-    size_t output_size, enum ct_process_output output_policy)
+    size_t output_size, enum ct_process_output output_policy, size_t *output_length)
 {
-  int descriptors[2] = {-1, -1};
-  int result;
-  ssize_t received;
-  size_t used = 0U;
-  if (output == NULL || output_size < 2U || pipe(descriptors) != 0) return 125;
-  result = ct_process_run_operation_internal(arguments, operation, output_policy,
-                                             descriptors[1]);
-  if (close(descriptors[1]) != 0) result = 125;
-  while (used + 1U < output_size && (received = read(descriptors[0], output + used, output_size - used - 1U)) > 0) used += (size_t)received;
-  if (received < 0 || close(descriptors[0]) != 0 || (received > 0 && used + 1U == output_size)) return 125;
-  output[used] = '\0';
-  return result;
+  if (output == NULL || output_size < 2U) return 125;
+  return ct_process_run_operation_internal(arguments, operation, output_policy,
+                                           output, output_size, output_length);
 }
 
 int ct_process_run_operation_capture(char *const arguments[], const char *operation,
                                      char output[], size_t output_size)
 {
   return ct_process_run_operation_capture_internal(
-      arguments, operation, output, output_size, CT_PROCESS_OUTPUT_CAPTURE);
+      arguments, operation, output, output_size, CT_PROCESS_OUTPUT_CAPTURE, NULL);
 }
 
 int ct_process_run_operation_capture_quiet(char *const arguments[],
@@ -542,5 +591,16 @@ int ct_process_run_operation_capture_quiet(char *const arguments[],
 {
   return ct_process_run_operation_capture_internal(
       arguments, operation, output, output_size,
-      CT_PROCESS_OUTPUT_CAPTURE_QUIET);
+      CT_PROCESS_OUTPUT_CAPTURE_QUIET, NULL);
+}
+
+int ct_process_run_operation_capture_quiet_length(
+    char *const arguments[], const char *operation, unsigned char output[],
+    size_t output_size, size_t *output_length)
+{
+  if (output_length == NULL) return 125;
+  *output_length = 0U;
+  return ct_process_run_operation_capture_internal(
+      arguments, operation, (char *)output, output_size,
+      CT_PROCESS_OUTPUT_CAPTURE_QUIET, output_length);
 }

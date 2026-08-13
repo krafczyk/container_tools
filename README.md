@@ -17,7 +17,7 @@ then dispatches exactly once through Bubblewrap, PRoot, or explicitly weak
 rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
-`instance identity`, `mount detect`, `mount args`, `mount plan inspect`, `mount
+`instance identity`, `instance inspect`, `instance profile inspect`, `mount detect`, `mount args`, `mount plan inspect`, `mount
 plan compare`, `mount plan clear`, `mount plan location`, `host exec`, and
 `host doctor`. `--help`, `--version`, and
 `--version --json` are global. Version
@@ -76,6 +76,29 @@ installation is the supported host installation interface; this runtime product
 does not build, verify, or install archives.
 
 ## Persistent Instance Identity
+
+`container-tools instance profile inspect [--json] [--ct-instance-root ROOT]
+[--] [PATH|DIGEST]` validates and reports a bounded, hash-verifiable
+`ct-instance-profile-v1` manifest. With no path it reads
+`/.container-tools-instance-profile`. A bare lowercase 64-hex digest requires
+`--ct-instance-root` and resolves to `ROOT/profiles/DIGEST.manifest`; prefix it
+with `./` to select an explicit same-named path. Inspection does not create the
+root. JSON uses the closed `container-tools.instance-profile-inspect/v1` schema
+and the mount-plan report's lossless `backslash-escaped-bytes` path encoding.
+Valid records exit 0, usage failures exit 64, and read, validation, or output
+failures exit 125. See `protocols/ct-instance-profile-v1.md` for the canonical
+record grammar and the identity inputs it records.
+
+`container-tools instance inspect [--json] (--ct-instance-root ROOT |
+--apptainer | --singularity) NAME_OR_HASH` reports the same manifest. Root mode
+is offline: it strictly reads the private `NAME.identity` index and its exact
+profile record without contacting a backend. Backend mode contacts only the
+requested managed name and reads `/.container-tools-instance-profile`; it never
+lists or scans runtime instances. `NAME_OR_HASH` accepts `mkchad-` plus 32
+lowercase hex characters or the bare 32-hex shorthand. Usage failures exit 64;
+unavailable, malformed, or mismatched records exit 125 without output.
+Output-destination failures also exit 125 but may leave bytes already accepted
+by that destination.
 
 `container-tools instance identity BACKEND --ct-instance-root ROOT [INSTANCE
 OPTIONS] -- IMAGE COMMAND...` performs the same bounded profile preparation as
@@ -387,8 +410,12 @@ with the recorded nonce, and recovery never signals or stops a runtime
 instance. `CT_DRY_RUN` prints a representative persistent exec command without
 creating an instance root, projection cache, or pending journal.
 
-`/.container-tools-instance-identity` is reserved for this internal read-only
-record and cannot be an explicit bind destination. Identity-transport version
+`/.container-tools-instance-identity` and
+`/.container-tools-instance-profile` are reserved for internal read-only
+records and cannot be explicit bind destinations (including descendants). The
+v4 profile grammar hashes the runtime argument only as `absent` or its SHA-256
+digest and publishes an immutable private profile manifest before instance
+contact. Identity-transport version
 changes select a new instance profile rather than attempting to adopt an
 instance created under an older verification contract.
 

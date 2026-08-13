@@ -1,6 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0 OR MIT */
 #include "cli.h"
 #include "instance.h"
+#include "instance_profile_manifest.h"
+#include "instance_profile_report.h"
+#include "state.h"
+#include "config.h"
+#include "storage.h"
+#include "process.h"
 #include "host_config.h"
 #include "mount_plan.h"
 #include "mount_plan_report.h"
@@ -923,6 +929,180 @@ complete:
   return ct_mount_plan_command_output_end(&output) != 0 ? 125 : result;
 }
 
+static int ct_instance_profile_inspect(int argument_count, char **arguments)
+{
+  struct ct_instance_profile_manifest manifest;
+  const char *path = "/.container-tools-instance-profile";
+  const char *requested = NULL;
+  char root[4096] = "", manifest_path[4096];
+  int json = 0, separator = 0, result = 125;
+  enum ct_instance_profile_manifest_read_status status;
+
+  memset(&manifest, 0, sizeof(manifest));
+
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    if (fprintf(stdout, "usage: container-tools instance profile inspect [--json] [--ct-instance-root ROOT] [--] [PATH|DIGEST]\n") < 0 || fflush(stdout) != 0 || ferror(stdout) != 0) return 125;
+    return 0;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--json") == 0) { json = 1; ++arguments; --argument_count; }
+  if (argument_count >= 2 && strcmp(arguments[0], "--ct-instance-root") == 0) {
+    if (ct_instance_profile_manifest_normalize_root(arguments[1], root) != 0) {
+      ct_cli_diagnostic("instance profile inspect", "usage", "use an absolute instance root without ':', ',' or newlines, then retry");
+      return CT_EXIT_USAGE;
+    }
+    arguments += 2; argument_count -= 2;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--") == 0) { separator = 1; ++arguments; --argument_count; }
+  if (argument_count > 1 || (argument_count == 1 && (arguments[0][0] == '\0' || (separator == 0 && strncmp(arguments[0], "--", 2U) == 0)))) {
+    ct_cli_diagnostic("instance profile inspect", "usage", "use 'container-tools instance profile inspect [--json] [--ct-instance-root ROOT] [--] [PATH|DIGEST]'");
+    return CT_EXIT_USAGE;
+  }
+  if (argument_count == 1) {
+    path = arguments[0];
+    if (ct_mount_plan_is_digest(path)) {
+      requested = path;
+      if (root[0] == '\0' || snprintf(manifest_path, sizeof(manifest_path), "%s/profiles/%s.manifest", root, path) >= (int)sizeof(manifest_path)) {
+        ct_cli_diagnostic("instance profile inspect", "configuration", "provide a safe absolute instance root for digest lookup, then retry");
+        return root[0] == '\0' ? CT_EXIT_USAGE : 125;
+      }
+      path = manifest_path;
+    }
+  }
+  status = requested != NULL
+               ? ct_instance_profile_manifest_read_private(root, requested,
+                                                           &manifest)
+               : ct_instance_profile_manifest_read(path, &manifest);
+  if (status != CT_INSTANCE_PROFILE_MANIFEST_READ_OK || (requested != NULL && strcmp(manifest.profile_digest, requested) != 0)) {
+    ct_instance_profile_manifest_destroy(&manifest);
+    ct_cli_diagnostic("instance profile inspect", "profile-manifest", "select a valid stable profile manifest and retry");
+    return 125;
+  }
+  if ((json != 0 ? ct_instance_profile_report_write_json(stdout, &manifest) : ct_instance_profile_report_write_human(stdout, &manifest)) != 0) {
+    ct_instance_profile_manifest_destroy(&manifest);
+    ct_cli_diagnostic("instance profile inspect", "report", "restore the output destination and retry");
+    return 125;
+  }
+  ct_instance_profile_manifest_destroy(&manifest);
+  result = 0;
+  return result;
+}
+
+static int ct_instance_inspect_name(const char *value, char name[40])
+{
+  size_t index;
+  if (value == NULL) return 1;
+  if (strlen(value) == 32U) {
+    for (index = 0U; index < 32U; ++index) if (!((value[index] >= '0' && value[index] <= '9') || (value[index] >= 'a' && value[index] <= 'f'))) return 1;
+    return snprintf(name, 40U, "mkchad-%s", value) >= 40;
+  }
+  if (strlen(value) != 39U || strncmp(value, "mkchad-", 7U) != 0) return 1;
+  for (index = 7U; index < 39U; ++index) if (!((value[index] >= '0' && value[index] <= '9') || (value[index] >= 'a' && value[index] <= 'f'))) return 1;
+  memcpy(name, value, 40U);
+  return 0;
+}
+
+static int ct_instance_report_atomic(const struct ct_instance_profile_manifest *manifest, int json)
+{
+  FILE *stream = tmpfile();
+  struct sigaction ignored, previous;
+  unsigned char buffer[4096];
+  size_t got;
+  int output_guard = 0, result = 125;
+  if (stream == NULL || (json ? ct_instance_profile_report_write_json(stream, manifest) : ct_instance_profile_report_write_human(stream, manifest)) != 0 || fseek(stream, 0L, SEEK_SET) != 0) goto done;
+  memset(&ignored, 0, sizeof(ignored));
+  ignored.sa_handler = SIG_IGN;
+  if (sigemptyset(&ignored.sa_mask) != 0 ||
+      sigaction(SIGPIPE, &ignored, &previous) != 0) goto done;
+  output_guard = 1;
+  while ((got = fread(buffer, 1U, sizeof(buffer), stream)) != 0U) if (fwrite(buffer, 1U, got, stdout) != got) goto done;
+  if (ferror(stream) != 0 || fflush(stdout) != 0 || ferror(stdout) != 0) goto done;
+  result = 0;
+done:
+  if (output_guard != 0 && sigaction(SIGPIPE, &previous, NULL) != 0)
+    result = 125;
+  if (stream != NULL) (void)fclose(stream);
+  return result;
+}
+
+static int ct_instance_inspect(int argument_count, char **arguments)
+{
+  struct ct_instance_profile_manifest manifest;
+  char name[40], profile[65], root[4096] = "", uri[64];
+  unsigned char *output = NULL;
+  size_t output_length = 0U;
+  const char *backend = NULL;
+  const char *selector;
+  int json = 0, root_mode = 0, result = 125;
+  enum ct_instance_profile_manifest_read_status status;
+
+  memset(&manifest, 0, sizeof(manifest));
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    return fprintf(stdout, "usage: container-tools instance inspect [--json] (--ct-instance-root ROOT | --apptainer | --singularity) NAME_OR_HASH\n") < 0 || fflush(stdout) != 0 || ferror(stdout) != 0 ? 125 : 0;
+  }
+  if (argument_count > 0 && strcmp(arguments[0], "--json") == 0) {
+    json = 1;
+    ++arguments;
+    --argument_count;
+  }
+  if (argument_count == 3 && strcmp(arguments[0], "--ct-instance-root") == 0) {
+    if (ct_instance_profile_manifest_normalize_root(arguments[1], root) != 0) goto usage;
+    root_mode = 1; selector = arguments[2];
+  } else if (argument_count == 2 &&
+             (strcmp(arguments[0], "--apptainer") == 0 ||
+              strcmp(arguments[0], "--singularity") == 0)) {
+    backend = arguments[0] + 2; selector = arguments[1];
+  } else goto usage;
+  if (ct_instance_inspect_name(selector, name) != 0) goto usage;
+  if (root_mode) {
+    if (ct_state_identity_read(root, name, profile) != 0 || strncmp(name + 7U, profile, 32U) != 0) goto failed;
+    status = ct_instance_profile_manifest_read_private(root, profile, &manifest);
+  } else {
+    struct ct_runtime_config config;
+    char *command[8];
+    const char *runtime_argument = getenv("CT_SINGULARITY_ARGS");
+    size_t command_count = 0U;
+    if (ct_runtime_config_load_environment(&config) != CT_CONFIG_OK || ct_storage_select_runtime(backend, &config) != 0 || snprintf(uri, sizeof(uri), "instance://%s", name) >= (int)sizeof(uri)) goto failed;
+    output = malloc(CT_INSTANCE_PROFILE_MANIFEST_MAX_BYTES + 1U);
+    if (output == NULL) goto failed;
+    command[command_count++] = (char *)backend;
+    if (runtime_argument != NULL && runtime_argument[0] != '\0')
+      command[command_count++] = (char *)runtime_argument;
+    command[command_count++] = "exec";
+    command[command_count++] = uri;
+    command[command_count++] = "/bin/cat";
+    command[command_count++] = "/.container-tools-instance-profile";
+    command[command_count] = NULL;
+    result = ct_process_run_operation_capture_quiet_length(
+        command, "instance-probe", output,
+        CT_INSTANCE_PROFILE_MANIFEST_MAX_BYTES + 1U, &output_length);
+    if (result == 128 + SIGINT || result == 128 + SIGTERM) {
+      free(output);
+      return result;
+    }
+    if (result != 0) goto failed;
+    status = ct_instance_profile_manifest_parse_read(output, output_length, &manifest);
+    free(output);
+    output = NULL;
+  }
+  if (status != CT_INSTANCE_PROFILE_MANIFEST_READ_OK ||
+      strcmp(manifest.instance_name, name) != 0 ||
+      strncmp(name + 7U, manifest.profile_digest, 32U) != 0 ||
+      (!root_mode && strcmp(manifest.backend, backend) != 0)) {
+    ct_instance_profile_manifest_destroy(&manifest);
+    goto failed;
+  }
+  result = ct_instance_report_atomic(&manifest, json);
+  ct_instance_profile_manifest_destroy(&manifest);
+  return result;
+usage:
+  ct_cli_diagnostic("instance inspect", "usage", "use 'container-tools instance inspect [--json] (--ct-instance-root ROOT | --apptainer | --singularity) NAME_OR_HASH'");
+  return CT_EXIT_USAGE;
+failed:
+  free(output);
+  ct_cli_diagnostic("instance inspect", "profile-manifest", "select a valid stable managed instance profile and retry");
+  return 125;
+}
+
 static int ct_mount_plan_compare(int argument_count, char **arguments)
 {
   struct ct_mount_plan_report left, right;
@@ -1053,6 +1233,12 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_INSTANCE_IDENTITY) {
     return ct_instance_command(argument_count - 3, arguments + 3, 1);
+  }
+  if (parsed.command == CT_COMMAND_INSTANCE_INSPECT) {
+    return ct_instance_inspect(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_INSTANCE_PROFILE_INSPECT) {
+    return ct_instance_profile_inspect(argument_count - 4, arguments + 4);
   }
   if (parsed.command == CT_COMMAND_HOST_EXEC) {
     return ct_host_exec(argument_count - 3, arguments + 3);

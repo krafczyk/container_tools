@@ -18,6 +18,7 @@ export MKCHAD_TEST_INSTANCES="$work/instances"
 export MKCHAD_TEST_HIDE_INSTANCE_LIST=1
 MKCHAD_TEST_GROUPS=$($real_id -G)
 export MKCHAD_TEST_GROUPS
+export MKCHAD_TEST_PRIMARY_GROUP="$($real_id -g)"
 export CT_HOST_PROJECTION_GROUPS="$MKCHAD_TEST_GROUPS"
 export CT_HOST_PROJECTION_CACHE_ROOT="$work/projection-cache"
 export CT_MOUNT_PLAN_STATE_ROOT="$work/mount-plans"
