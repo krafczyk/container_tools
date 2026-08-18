@@ -20,7 +20,6 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <grp.h>
-#include <pwd.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -601,13 +600,12 @@ static int ct_instance_groups(const char **fields, size_t *field_count,
 
 static int ct_instance_user(char output[256])
 {
-  struct passwd record;
-  struct passwd *result = NULL;
-  char buffer[4096];
-  if (getpwuid_r(geteuid(), &record, buffer, sizeof(buffer), &result) != 0 ||
-      result == NULL || result->pw_name == NULL ||
-      snprintf(output, 256U, "%s", result->pw_name) >= 256) return 1;
-  return 0;
+  const char *user = getenv("USER");
+  if (user != NULL && user[0] != '\0' && strchr(user, '\n') == NULL &&
+      strchr(user, '\r') == NULL && snprintf(output, 256U, "%s", user) < 256) {
+    return 0;
+  }
+  return snprintf(output, 256U, "%lu", (unsigned long)geteuid()) >= 256;
 }
 
 static int ct_instance_state_root(char output[CT_INSTANCE_PATH_MAX])

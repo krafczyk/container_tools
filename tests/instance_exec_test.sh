@@ -185,6 +185,7 @@ chmod 755 "$fake/id"
 
 export HOME="$home"
 export PATH="$fake:$PATH"
+export USER=portable-test-user
 printf '%s\n' '--exclude-path /.container-tools-instance-identity' '--exclude-path /.container-tools-instance-profile' > "$work/mount-config"
 export CT_MOUNT_CFG="$work/mount-config"
 # Avoid inheriting the enclosing container's identity mount in this fake test.
@@ -360,6 +361,9 @@ mapfile -t start_call < "$calls/2"
 name=${start_call[-1]}
 [[ $name =~ ^mkchad-[0-9a-f]{32}$ && ${start_call[-2]} == "$image_path" ]] || { printf '%s\n' 'instance profile name or image changed' >&2; exit 1; }
 contains_line "$calls/2" "$bind_source:$work/container bind" || { printf '%s\n' 'instance start omitted the literal bind' >&2; exit 1; }
+contains_line "$calls/2" 'SINGULARITYENV_USER=portable-test-user' || {
+  printf '%s\n' 'instance start did not preserve the inherited user name' >&2; exit 1;
+}
 contains_line "$calls/2" "type=bind,src=$bind_source,dst=/host$bind_source" || {
   printf '%s\n' 'instance start omitted the selected generated host bind' >&2; exit 1;
 }
@@ -389,6 +393,9 @@ if [[ $start_has_profile_manifest -ne 1 ]]; then
 fi
 contains_line "$calls/4" "instance://$name" || { printf '%s\n' 'payload did not enter the created instance' >&2; exit 1; }
 contains_line "$calls/4" '/.container-tools-bootstrap' || { printf '%s\n' 'payload omitted the bootstrap' >&2; exit 1; }
+contains_line "$calls/4" 'SINGULARITYENV_USER=portable-test-user' || {
+  printf '%s\n' 'instance payload did not preserve the inherited user name' >&2; exit 1;
+}
 mapfile -t payload < "$calls/4"
 uri_index=0
 for index in "${!payload[@]}"; do
@@ -790,10 +797,11 @@ set -e
 dry_root="$work/dry instance root"
 dry_cache="$work/dry projection cache"
 dry_mount_plans="$work/dry mount plans"
-CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT="$dry_mount_plans" "$helper" --apptainer \
+USER= CT_DRY_RUN=1 CT_HOST_PROJECTION_CACHE_ROOT="$dry_cache" CT_MOUNT_PLAN_STATE_ROOT="$dry_mount_plans" "$helper" --apptainer \
   --ct-instance-root "$dry_root" -- "$image_path" /bin/fake-command dry >"$work/dry.out"
 [[ ! -e $dry_root && ! -e $dry_cache && ! -e $dry_mount_plans \
-  && $(<"$work/dry.out") == *'instance://dry-run'* ]] || {
+  && $(<"$work/dry.out") == *'instance://dry-run'* \
+  && $(<"$work/dry.out") == *"SINGULARITYENV_USER=$($real_id -u)"* ]] || {
   printf '%s\n' 'persistent dry run mutated runtime state' >&2; exit 1;
 }
 
