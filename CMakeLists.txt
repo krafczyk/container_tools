@@ -116,6 +116,9 @@ if(CONTAINER_TOOLS_STATIC)
 endif()
 
 if(BUILD_TESTING)
+  set(THREADS_PREFER_PTHREAD_FLAG TRUE)
+  find_package(Threads REQUIRED)
+
   # The forced-timeout seam is isolated from the production executable.
   add_library(container_tools_test_core STATIC ${CONTAINER_TOOLS_CORE_SOURCES})
   target_include_directories(container_tools_test_core PRIVATE vendor/tomlc17 vendor/yyjson "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -204,6 +207,7 @@ if(BUILD_TESTING)
     container_tools_enable_warnings(test_${test_name})
     add_test(NAME container_tools_${test_name} COMMAND test_${test_name})
   endforeach()
+  target_link_libraries(test_supervisor PRIVATE Threads::Threads)
   target_compile_definitions(test_host_projection PRIVATE CT_STORAGE_TIMEOUT_TEST_SEAM=1)
   target_include_directories(test_doctor PRIVATE vendor/yyjson)
   target_compile_definitions(test_backend_nested PRIVATE
