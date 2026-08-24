@@ -189,7 +189,7 @@ static int ct_copy(char destination[CT_HOST_PATH_MAX], const char *source)
 static int ct_projection_omittable_error(int error)
 {
   return error == EACCES || error == EPERM || error == ENOENT ||
-         error == ENOTDIR || error == ELOOP;
+         error == ENOTDIR || error == ELOOP || error == ENOTCONN;
 }
 
 static int ct_unescape_mountinfo(char *value)
@@ -245,6 +245,7 @@ static int ct_mountinfo_read(struct ct_mountinfo mounts[CT_HOST_CACHE_MAX_PAIRS]
 
 static int ct_entry_add(struct ct_host_projection *selection, const char *source)
 {
+  struct stat status;
   char resolved[CT_HOST_PATH_MAX];
   const char *root = getenv("CT_HOST_PROJECTION_SOURCE_ROOT");
   const char *relative;
@@ -255,6 +256,8 @@ static int ct_entry_add(struct ct_host_projection *selection, const char *source
       ct_root_relative(source, root, &relative) != 0) { (void)snprintf(selection->completeness, sizeof(selection->completeness), "partial"); return 0; }
   target = realpath(source, resolved);
   if (target == NULL) return ct_projection_omittable_error(errno) ? 0 : 1;
+  if (ct_storage_timeout_stat(source, &status) != 0)
+    return ct_projection_omittable_error(errno) ? 0 : 1;
   if (!ct_host_projection_source_is_eligible(target, NULL)) return 0;
   for (index = 0U; index < selection->entry_count; ++index) if (strcmp(selection->entries[index].source, source) == 0) return 0;
   if (ct_copy(selection->entries[selection->entry_count].source, source) != 0 || ct_copy(selection->entries[selection->entry_count].target, target) != 0 ||
@@ -376,8 +379,10 @@ static int ct_probe_sources_current(const struct ct_host_projection *selection)
 {
   size_t index;
   for (index = 0U; index < selection->entry_count; ++index) {
+    struct stat status;
     char resolved[CT_HOST_PATH_MAX];
     if (realpath(selection->entries[index].source, resolved) == NULL ||
+        ct_storage_timeout_stat(selection->entries[index].source, &status) != 0 ||
         strcmp(resolved, selection->entries[index].target) != 0 ||
         !ct_host_projection_source_is_eligible(selection->entries[index].source, NULL) ||
         !ct_host_projection_source_is_eligible(resolved, NULL)) return 1;

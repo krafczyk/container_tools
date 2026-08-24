@@ -152,12 +152,20 @@ int main(void)
       strcmp(selection.strategy, "fallback") != 0 ||
       strcmp(selection.completeness, "complete") != 0 ||
       selection.entry_count != 1U ||
-      strcmp(selection.entries[0].source, visible) != 0 || rmdir(visible) != 0 ||
+      strcmp(selection.entries[0].source, visible) != 0) return 1;
+  if (setenv("CT_TEST_STORAGE_STAT_ENOTCONN", visible, 1) != 0 ||
       ct_host_projection_prepare("docker", "fallback-image", "required", 0,
                                  &selection) != 0 ||
       strcmp(selection.strategy, "fallback") != 0 ||
       strcmp(selection.completeness, "partial") != 0 ||
-      selection.entry_count != 0U ||
+      selection.entry_count != 0U) {
+    (void)fprintf(stderr,
+                  "disconnected cached source survived: strategy=%s completeness=%s entries=%zu\n",
+                  selection.strategy, selection.completeness,
+                  selection.entry_count);
+    return 1;
+  }
+  if (unsetenv("CT_TEST_STORAGE_STAT_ENOTCONN") != 0 || rmdir(visible) != 0 ||
       setenv("CT_TEST_STORAGE_OPENDIR_TIMEOUT", "1", 1) != 0 ||
       ct_host_projection_prepare("docker", "fallback-timeout-image", "auto", 1,
                                  &selection) != 0 ||

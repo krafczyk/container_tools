@@ -217,6 +217,15 @@ int ct_storage_timeout_lstat(const char *path, struct stat *status)
 
 int ct_storage_timeout_stat(const char *path, struct stat *status)
 {
+#ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
+  {
+    const char *forced_path = getenv("CT_TEST_STORAGE_STAT_ENOTCONN");
+    if (forced_path != NULL && strcmp(forced_path, path) == 0) {
+      errno = ENOTCONN;
+      return -1;
+    }
+  }
+#endif
   CT_STORAGE_TIMEOUT_INT_CALL(
       stat(path, status) == 0 ? (ct_storage_timeout_present_stat(status), 0) : -1);
 }
