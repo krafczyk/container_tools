@@ -103,7 +103,7 @@ static int ct_host_parse_profile(toml_datum_t table, const char *name, struct ct
       ct_host_string(table, "root", profile->root, sizeof(profile->root), 1) != 0 || ct_host_path_validate(profile->root) != 0 ||
       ct_host_string(table, "root_access", profile->root_access, sizeof(profile->root_access), 1) != 0 || ct_host_enum(profile->root_access, "inherit", "read-only") != 0 ||
       ct_host_string(table, "semantics", profile->semantics, sizeof(profile->semantics), 1) != 0 || ct_host_enum(profile->semantics, "full-root", "rewrite") != 0 ||
-      ct_host_string(table, "cwd_unmapped", profile->cwd_unmapped, sizeof(profile->cwd_unmapped), 1) != 0 || ct_host_enum(profile->cwd_unmapped, "error", "root") != 0 ||
+      ct_host_string(table, "cwd_unmapped", profile->cwd_unmapped, sizeof(profile->cwd_unmapped), 1) != 0 || ct_host_enum(profile->cwd_unmapped, "same-path", "root") != 0 ||
       ct_host_parse_path_array(table, "path", profile->path, &profile->path_count, CT_HOST_MAX_PATHS) != 0 || profile->path_count == 0U) return 1;
   if (ct_host_string(table, "mount_plan", profile->mount_plan, sizeof(profile->mount_plan), 0) != 0) return 1;
   profile->mount_plan_configured = profile->mount_plan[0] != '\0';

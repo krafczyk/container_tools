@@ -6,7 +6,7 @@ root = "/host"
 root_access = "inherit"
 semantics = "full-root"
 mount_plan = "/.container-tools-mount-plan"
-cwd_unmapped = "error"
+cwd_unmapped = "same-path"
 path = ["/usr/local/bin", "/usr/bin", "/bin"]
 environment_remove = ["LD_PRELOAD"]
 

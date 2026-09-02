@@ -76,10 +76,12 @@ int ct_path_map_sort(struct ct_path_map *map);
 /**
  * Map an absolute caller cwd by longest visible-prefix match.
  *
- * Overlays take precedence over the lower root. `unmapped_policy` is `error`
- * or `root`; the destination is written only on success.
+ * Overlays take precedence over the lower root. `unmapped_policy` is
+ * `same-path` or `root`; same-path preserves an unmatched absolute cwd without
+ * probing it, while root maps it to `/`. The destination is written only on
+ * success.
  *
- * @return Zero on success or nonzero for malformed or unmapped input.
+ * @return Zero on success or nonzero for malformed input or an oversized result.
  */
 int ct_path_map_cwd(const struct ct_path_map *map, const char *cwd, const char *unmapped_policy, char target[CT_HOST_PATH_MAX]);
 /**

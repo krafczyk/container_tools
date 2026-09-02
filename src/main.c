@@ -71,7 +71,7 @@ static void ct_host_default_profile(struct ct_host_profile *profile)
   (void)snprintf(profile->root_access, sizeof(profile->root_access), "%s", "inherit");
   (void)snprintf(profile->semantics, sizeof(profile->semantics), "%s", "full-root");
   (void)snprintf(profile->mount_plan, sizeof(profile->mount_plan), "%s", "/.container-tools-mount-plan");
-  (void)snprintf(profile->cwd_unmapped, sizeof(profile->cwd_unmapped), "%s", "error");
+  (void)snprintf(profile->cwd_unmapped, sizeof(profile->cwd_unmapped), "%s", "same-path");
   (void)snprintf(profile->path[0], sizeof(profile->path[0]), "%s", "/usr/local/bin");
   (void)snprintf(profile->path[1], sizeof(profile->path[1]), "%s", "/usr/bin");
   (void)snprintf(profile->path[2], sizeof(profile->path[2]), "%s", "/bin");
@@ -430,7 +430,7 @@ static int ct_host_exec(int argument_count, char **arguments)
                       workspace->profile.cwd_unmapped,
                       workspace->target_cwd) != 0) {
     ct_cli_diagnostic("host exec", "cwd",
-                      "run from a mapped directory or set cwd_unmapped to root, then retry");
+                      "use a working directory available in the selected root, then retry");
     ct_path_map_destroy(&map);
     free(workspace);
     return 126;

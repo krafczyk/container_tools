@@ -311,9 +311,9 @@ file(CHMOD "${u7_root}/usr/bin/cargo" "${u7_root}/usr/bin/rustc" "${u7_root}/usr
            "${u7_backend_dir}/bwrap"
   PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE)
 file(WRITE "${u7_config}"
-  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
 file(WRITE "${u7_read_only_config}"
-  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"read-only\"\nsemantics = \"full-root\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n")
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"read-only\"\nsemantics = \"full-root\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n")
 function(run_u7_host command payload_argument expected_result expected_output)
   file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
   execute_process(
@@ -419,7 +419,7 @@ if(NOT u7_current_manifest_contents MATCHES "ct-mount-plan-v1")
   message(FATAL_ERROR "U7 producer did not publish the current manifest grammar")
 endif()
 file(WRITE "${u7_manifest_config}"
-  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_current_manifest}\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_current_manifest}\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
 file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
 execute_process(
   COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
@@ -435,7 +435,7 @@ if(NOT u7_consumer_result EQUAL 0 OR NOT u7_consumer_output MATCHES "cargo cwd=$
 endif()
 execute_process(COMMAND /usr/bin/printf "ct-mount-plan-v2\\0" OUTPUT_FILE "${u7_future_manifest}")
 file(WRITE "${u7_future_config}"
-  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_future_manifest}\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\"]\n")
+  "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_future_manifest}\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n")
 file(REMOVE "${u7_backend_log}")
 execute_process(
   COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"

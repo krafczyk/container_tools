@@ -13,22 +13,23 @@ int main(void)
     "version = 1\n"
     "default_profile = \"host\"\n"
     "[profiles.host]\nroot = \"/host\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\n"
-    "mount_plan = \"/.container-tools-mount-plan\"\ncwd_unmapped = \"error\"\npath = [\"/usr/bin\", \"/bin\"]\n"
+    "mount_plan = \"/.container-tools-mount-plan\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\", \"/bin\"]\n"
     "environment_remove = [\"LD_PRELOAD\"]\n[profiles.host.environment]\nSLURM_CONF = \"/etc/slurm/slurm.conf\"\n"
     "[[profiles.host.projections]]\nvisible = \"/workspace\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n";
   static struct ct_host_profile profile;
   const char *const invalid[] = {
     "version = 2\ndefault_profile = \"x\"\n[profiles.x]\n",
     "version = 1\ndefault_profile = \"x\"\nunknown = 1\n[profiles.x]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"relative\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/a/../b\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n[profiles.x.environment]\nPATH=\"/bad\"\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\nenvironment_remove=[\"PATH\"]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\nextra=true\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/safe:/bin\"]\n",
-    "version = 1\ndefault_profile = \"missing\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n",
-    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n[profiles.bad]\nroot=\"relative\"\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"error\"\npath=[\"/bin\"]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"relative\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/a/../b\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\n[profiles.x.environment]\nPATH=\"/bad\"\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\nenvironment_remove=[\"PATH\"]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\nextra=true\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/safe:/bin\"]\n",
+    "version = 1\ndefault_profile = \"missing\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\n",
+    "version = 1\ndefault_profile = \"x\"\n[profiles.x]\nroot=\"/\"\nroot_access=\"inherit\"\nsemantics=\"full-root\"\ncwd_unmapped=\"same-path\"\npath=[\"/bin\"]\n[profiles.bad]\nroot=\"relative\"\n",
     NULL
   };
   char work[] = "/tmp/mkchad-v1/container-tools-c11/host-config.XXXXXX";

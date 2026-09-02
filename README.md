@@ -49,6 +49,10 @@ no backend is usable; unusable manifests are reported without backend probing.
 Invalid configuration or incomplete report construction exits 125 without
 partial JSON. Doctor `--verbose` writes its bounded backend-order selection
 diagnostic to stderr; JSON stdout remains machine-only.
+The default host profile preserves an unmatched absolute caller cwd and lets
+selected-root planning or backend setup report an unavailable path. Explicit
+profiles may select `cwd_unmapped = "same-path"` or map unmatched cwd values to
+`/` with `cwd_unmapped = "root"`.
 
 Nested backend lookup uses the caller PATH and freezes the selected Bubblewrap
 or PRoot executable to an absolute caller-namespace path before probing or

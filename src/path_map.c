@@ -162,7 +162,8 @@ int ct_path_map_cwd(const struct ct_path_map *map, const char *cwd, const char *
 {
   size_t index, selected = CT_PATH_MAP_MAX_ENTRIES, selected_length = 0U;
   if (map == NULL || target == NULL || ct_host_path_validate(cwd) != 0 ||
-      unmapped_policy == NULL) return 1;
+      (strcmp(unmapped_policy, "same-path") != 0 &&
+       strcmp(unmapped_policy, "root") != 0)) return 1;
   for (index = 0U; index < map->count; ++index) {
     const size_t length = strlen(map->entries[index].visible);
     if (ct_path_matches(cwd, map->entries[index].visible) != 0 &&
@@ -188,8 +189,8 @@ int ct_path_map_cwd(const struct ct_path_map *map, const char *cwd, const char *
     return suffix[0] == '\0' ? ct_host_copy_bounded(target, CT_HOST_PATH_MAX, "/")
                               : ct_host_copy_bounded(target, CT_HOST_PATH_MAX, suffix);
   }
-  if (strcmp(unmapped_policy, "root") != 0) return 1;
-  return ct_host_copy_bounded(target, CT_HOST_PATH_MAX, "/");
+  return ct_host_copy_bounded(target, CT_HOST_PATH_MAX,
+                              strcmp(unmapped_policy, "root") == 0 ? "/" : cwd);
 }
 
 int ct_path_map_root_path(const char *root, const char *target, char result[CT_HOST_PATH_MAX])

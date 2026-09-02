@@ -24,9 +24,9 @@ int main(void)
       ct_path_map_sort(&map) != 0 || strcmp(map.entries[0].target, "/workspace") != 0 ||
       strcmp(map.entries[1].target, "/unrelated") != 0 ||
       strcmp(map.entries[2].target, "/src") != 0 ||
-      ct_path_map_cwd(&map, "/workspace/source/file", "error", cwd) != 0 ||
+      ct_path_map_cwd(&map, "/workspace/source/file", "same-path", cwd) != 0 ||
       strcmp(cwd, "/src/file") != 0 ||
-      ct_path_map_cwd(&map, "/host/usr/bin", "error", cwd) != 0 ||
+      ct_path_map_cwd(&map, "/host/usr/bin", "same-path", cwd) != 0 ||
       strcmp(cwd, "/usr/bin") != 0) { ct_path_map_destroy(&map); return 1; }
   if (ct_path_map_visible(&map, "/src", visible) != 0 ||
       strcmp(visible, "/workspace/source") != 0 ||
@@ -35,9 +35,13 @@ int main(void)
       ct_path_map_visible(&map, "/usr/bin", visible) != 0 ||
       strcmp(visible, "/host/usr/bin") != 0) { ct_path_map_destroy(&map); return 2; }
   if (
-      ct_path_map_cwd(&map, "/outside", "error", cwd) == 0 ||
+      ct_path_map_cwd(&map, "/outside", "same-path", cwd) != 0 ||
+      strcmp(cwd, "/outside") != 0 ||
       ct_path_map_cwd(&map, "/outside", "root", cwd) != 0 ||
-      strcmp(cwd, "/") != 0) { ct_path_map_destroy(&map); return 1; }
+      strcmp(cwd, "/") != 0 ||
+      ct_path_map_cwd(&map, "/workspace", "error", cwd) == 0) {
+    ct_path_map_destroy(&map); return 1;
+  }
   {
     const int result = ct_path_map_add(&map, "/duplicate", "/src", "inherit", 1U, 3U) != 0 ? 0 : 1;
     ct_path_map_destroy(&map);
@@ -46,7 +50,7 @@ int main(void)
   ct_path_map_init(&map);
   if (ct_path_map_set_root(&map, "/") != 0 ||
       ct_path_map_add(&map, "/", "/all", "inherit", 0U, 0U) != 0 ||
-      ct_path_map_cwd(&map, "/some/path", "error", cwd) != 0 ||
+      ct_path_map_cwd(&map, "/some/path", "same-path", cwd) != 0 ||
       strcmp(cwd, "/all/some/path") != 0) return 4;
   ct_path_map_destroy(&map);
   memset(&profile, 0, sizeof(profile));

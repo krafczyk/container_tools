@@ -82,6 +82,11 @@ profile requires `root`, `root_access`, `semantics`, `cwd_unmapped`, and
 are optional. Unknown fields, malformed enums, non-normalized paths, duplicate
 targets, and excessive counts fail before a backend probe.
 
+`cwd_unmapped = "same-path"` preserves an absolute caller cwd when no composed
+mapping matches and leaves existence and compatibility checks to selected-root
+planning and backend setup. `cwd_unmapped = "root"` instead runs such commands
+from `/`.
+
 Discovery order is explicit `--config`, `CONTAINER_TOOLS_HOST_CONFIG`,
 `$XDG_CONFIG_HOME/container-tools/host.toml`, then
 `$HOME/.config/container-tools/host.toml`. The current directory is never a
@@ -91,8 +96,8 @@ through. Ordinary symlinks and caller permissions remain authoritative.
 The lower `root` maps to target `/`. Manifest-derived caller-data overlays and
 configured projections are merged into one parent-before-child order.
 Unrelated manifest entries precede configured projections and declaration
-order is retained within each source. Cwd and executable mapping use the
-longest composed prefix. Environment operations remove configured names, set
+order is retained within each source. Mapped cwd and executable resolution use
+the longest composed prefix. Environment operations remove configured names, set
 the profile-derived `PATH`, then apply configured string values. A configured
 PATH element is one absolute path and cannot contain `:`.
 
