@@ -18,8 +18,8 @@ rewrite execution without launching an outer container runtime.
 
 The closed native command hierarchy is `exec`, `shell`, `instance exec`,
 `instance identity`, `instance inspect`, `instance profile inspect`, `mount detect`, `mount args`, `mount plan inspect`, `mount
-plan compare`, `mount plan clear`, `mount plan location`, `host exec`, and
-`host doctor`. `--help`, `--version`, and
+plan compare`, `mount plan clear`, `mount plan location`, `host exec`, `host
+doctor`, and `host projection clear`. `--help`, `--version`, and
 `--version --json` are global. Version
 output is compiled into the executable and reports the product version, source
 commit, architecture, and supported mount-plan grammar. Compatibility scripts
@@ -280,6 +280,13 @@ last value. Automatic launches warn and retain the existing launch behavior
 when a projection is unavailable or partial. Explicit remote Docker/Podman
 endpoint selectors are intentionally unavailable because their daemon host is
 not local.
+`container-tools host projection clear` removes all managed selection records
+from the effective host-projection cache while retaining its synchronization
+files. An absent cache succeeds. The command refuses unexpected names, symlinks,
+or file types without deleting cache records and serializes with current cache
+readers and publishers. The next local launcher invocation performs a cold
+projection proof and publishes a fresh mount plan; already-running containers
+retain the plan bound when they started.
 `--ct-host-root disabled` deliberately emits no generated `/host` projection
 while retaining the local semantic manifest for the remaining launcher mounts.
 Top-level kernel API exclusions are complete by definition and do not produce

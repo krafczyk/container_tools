@@ -29,8 +29,11 @@ extern char *realpath(const char *restrict path, char *restrict resolved_path);
 #define CT_HOST_PROBE_MAX_ARGS (CT_HOST_PROJECTION_MAX_ENTRIES * 2U + 16U)
 #define CT_HOST_FALLBACK_MAX_VISITED 4096U
 #define CT_HOST_CACHE_MAX_TEMPORARIES 32U
+#define CT_HOST_CACHE_GLOBAL_LOCK ".cache.lock"
 
 static unsigned long ct_cache_temporary_sequence;
+
+struct ct_cache_locks { int global; int key; };
 
 struct ct_mountinfo { char path[CT_HOST_PATH_MAX]; char filesystem[32]; };
 
@@ -512,6 +515,159 @@ static int ct_cache_root(char output[CT_HOST_PATH_MAX])
   return home == NULL || home[0] != '/' || snprintf(output, CT_HOST_PATH_MAX, "%s/.cache/container-tools/host-projection-v1", home) >= (int)CT_HOST_PATH_MAX;
 }
 
+static int ct_cache_path_is_safe(const char *path)
+{
+  size_t length;
+  if (path == NULL || path[0] != '/' || (length = strlen(path)) < 2U ||
+      length >= CT_HOST_PATH_MAX || path[length - 1U] == '/' ||
+      strstr(path, "//") != NULL || strstr(path, "/./") != NULL ||
+      strstr(path, "/../") != NULL || strcmp(path + length - 2U, "/.") == 0 ||
+      (length >= 3U && strcmp(path + length - 3U, "/..") == 0) ||
+      strchr(path, ':') != NULL || strchr(path, ',') != NULL ||
+      strchr(path, '\n') != NULL) return 0;
+  return 1;
+}
+
+static int ct_cache_hex_key(const char *name)
+{
+  size_t index;
+  if (name == NULL || strlen(name) != 64U) return 0;
+  for (index = 0U; index < 64U; ++index) {
+    if (!((name[index] >= '0' && name[index] <= '9') ||
+          (name[index] >= 'a' && name[index] <= 'f'))) return 0;
+  }
+  return 1;
+}
+
+static int ct_cache_temporary_name(const char *name)
+{
+  char key[65];
+  if (name == NULL || strlen(name) < 70U) return 0;
+  memcpy(key, name, 64U); key[64] = '\0';
+  return ct_cache_hex_key(key) && strncmp(name + 64U, ".tmp.", 5U) == 0 &&
+         name[69U] != '\0';
+}
+
+static int ct_cache_lock_name(const char *name)
+{
+  char key[65];
+  if (name == NULL) return 0;
+  if (strcmp(name, CT_HOST_CACHE_GLOBAL_LOCK) == 0) return 1;
+  if (strlen(name) != 69U || strcmp(name + 64U, ".lock") != 0) return 0;
+  memcpy(key, name, 64U); key[64] = '\0';
+  return ct_cache_hex_key(key);
+}
+
+static int ct_cache_real_file(const char *path)
+{
+  struct stat status;
+  return ct_storage_timeout_lstat(path, &status) == 0 &&
+         S_ISREG(status.st_mode) && !S_ISLNK(status.st_mode) ? 0 : 1;
+}
+
+static int ct_cache_real_directory(const char *path)
+{
+  struct stat status;
+  return ct_storage_timeout_lstat(path, &status) == 0 &&
+         S_ISDIR(status.st_mode) && !S_ISLNK(status.st_mode) ? 0 : 1;
+}
+
+static int ct_cache_scan(const char *root, int locks, int remove)
+{
+  DIR *directory;
+  struct dirent *entry;
+  size_t count = 0U;
+  int result = 1;
+  directory = ct_storage_timeout_opendir(root);
+  if (directory == NULL) return 1;
+  errno = 0;
+  while ((entry = ct_storage_timeout_readdir(directory)) != NULL) {
+    char path[CT_HOST_PATH_MAX];
+    int valid;
+    if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+    if (++count > CT_HOST_CACHE_MAX_PAIRS + 1U ||
+        snprintf(path, sizeof(path), "%s/%s", root, entry->d_name) >=
+            (int)sizeof(path)) goto done;
+    if (locks != 0) {
+      valid = ct_cache_lock_name(entry->d_name) && ct_cache_real_file(path) == 0;
+    } else if (strcmp(entry->d_name, ".locks") == 0) {
+      valid = ct_cache_real_directory(path) == 0;
+    } else {
+      valid = (ct_cache_hex_key(entry->d_name) ||
+               ct_cache_temporary_name(entry->d_name)) &&
+              ct_cache_real_file(path) == 0;
+    }
+    if (!valid || (remove != 0 && locks == 0 &&
+                   strcmp(entry->d_name, ".locks") != 0 &&
+                   ct_storage_timeout_unlink(path) != 0)) goto done;
+  }
+  result = errno == 0 ? 0 : 1;
+done:
+  return ct_storage_timeout_closedir(directory) == 0 && result == 0 ? 0 : 1;
+}
+
+static int ct_cache_lock_open(const char *path, int shared)
+{
+  struct stat path_status, descriptor_status;
+  int descriptor = ct_storage_timeout_open(
+      path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
+  if (descriptor < 0 || ct_storage_timeout_lstat(path, &path_status) != 0 ||
+      ct_storage_timeout_fstat(descriptor, &descriptor_status) != 0 ||
+      !S_ISREG(path_status.st_mode) || S_ISLNK(path_status.st_mode) ||
+      descriptor_status.st_dev != path_status.st_dev ||
+      descriptor_status.st_ino != path_status.st_ino ||
+      (shared != 0 ? ct_storage_timeout_flock_shared(descriptor)
+                   : ct_storage_timeout_flock_lock(descriptor)) != 0) {
+    if (descriptor >= 0) (void)ct_storage_timeout_close(descriptor);
+    return -1;
+  }
+  return descriptor;
+}
+
+static void ct_cache_locks_release(struct ct_cache_locks *locks)
+{
+  if (locks == NULL) return;
+  if (locks->key >= 0) {
+    (void)ct_storage_timeout_flock_unlock(locks->key);
+    (void)ct_storage_timeout_close(locks->key);
+    locks->key = -1;
+  }
+  if (locks->global >= 0) {
+    (void)ct_storage_timeout_flock_unlock(locks->global);
+    (void)ct_storage_timeout_close(locks->global);
+    locks->global = -1;
+  }
+}
+
+int ct_host_projection_cache_clear(void)
+{
+  char root[CT_HOST_PATH_MAX], locks[CT_HOST_PATH_MAX], global[CT_HOST_PATH_MAX];
+  struct stat status;
+  int descriptor = -1;
+  int locks_present;
+  int result = 1;
+  size_t root_length;
+  if (ct_cache_root(root) != 0) return 1;
+  root_length = strlen(root);
+  while (root_length > 1U && root[root_length - 1U] == '/') root[--root_length] = '\0';
+  if (!ct_cache_path_is_safe(root) ||
+      snprintf(locks, sizeof(locks), "%s/.locks", root) >= (int)sizeof(locks) ||
+      snprintf(global, sizeof(global), "%s/%s", locks,
+               CT_HOST_CACHE_GLOBAL_LOCK) >= (int)sizeof(global)) return 1;
+  if (ct_storage_timeout_lstat(root, &status) != 0) return errno == ENOENT ? 0 : 1;
+  if (ct_cache_real_directory(root) != 0 || ct_cache_scan(root, 0, 0) != 0) return 1;
+  locks_present = ct_storage_timeout_lstat(locks, &status) == 0;
+  if ((!locks_present && errno != ENOENT) ||
+      (locks_present && ct_cache_scan(locks, 1, 0) != 0) ||
+      ct_storage_ensure_directory(locks) != 0 ||
+      (descriptor = ct_cache_lock_open(global, 0)) < 0) return 1;
+  if (ct_cache_scan(root, 0, 0) == 0 && ct_cache_scan(locks, 1, 0) == 0 &&
+      ct_cache_scan(root, 0, 1) == 0) result = 0;
+  if (ct_storage_timeout_flock_unlock(descriptor) != 0 ||
+      ct_storage_timeout_close(descriptor) != 0) result = 1;
+  return result;
+}
+
 #ifdef CT_STORAGE_TIMEOUT_TEST_SEAM
 int ct_host_projection_test_cache_root(char output[CT_HOST_PATH_MAX])
 {
@@ -702,24 +858,19 @@ static int ct_cache_path(const char *key, char output[CT_HOST_PATH_MAX])
   return ct_cache_root(root) != 0 || ct_storage_ensure_directory(root) != 0 || snprintf(output, CT_HOST_PATH_MAX, "%s/%s", root, key) >= (int)CT_HOST_PATH_MAX;
 }
 
-static int ct_cache_lock(const char *key, int *descriptor)
+static int ct_cache_lock(const char *key, struct ct_cache_locks *lock)
 {
-  char root[CT_HOST_PATH_MAX], locks[CT_HOST_PATH_MAX], path[CT_HOST_PATH_MAX];
-  struct stat path_status, descriptor_status;
-  if (descriptor == NULL || ct_cache_root(root) != 0 || ct_storage_ensure_directory(root) != 0 ||
+  char root[CT_HOST_PATH_MAX], locks[CT_HOST_PATH_MAX], global[CT_HOST_PATH_MAX], path[CT_HOST_PATH_MAX];
+  if (lock == NULL || ct_cache_root(root) != 0 || ct_storage_ensure_directory(root) != 0 ||
       snprintf(locks, sizeof(locks), "%s/.locks", root) >= (int)sizeof(locks) ||
       ct_storage_ensure_directory(locks) != 0 ||
+      snprintf(global, sizeof(global), "%s/%s", locks,
+               CT_HOST_CACHE_GLOBAL_LOCK) >= (int)sizeof(global) ||
       snprintf(path, sizeof(path), "%s/%s.lock", locks, key) >= (int)sizeof(path)) return 1;
-  *descriptor = ct_storage_timeout_open(
-      path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0600);
-  if (*descriptor < 0 || ct_storage_timeout_lstat(path, &path_status) != 0 ||
-      ct_storage_timeout_fstat(*descriptor, &descriptor_status) != 0 || !S_ISREG(path_status.st_mode) ||
-      S_ISLNK(path_status.st_mode) ||
-      descriptor_status.st_dev != path_status.st_dev || descriptor_status.st_ino != path_status.st_ino ||
-      ct_storage_timeout_flock_lock(*descriptor) != 0) {
-    (void)ct_storage_timeout_close(*descriptor);
-    *descriptor = -1;
-    return 1;
+  lock->global = -1; lock->key = -1;
+  lock->global = ct_cache_lock_open(global, 1);
+  if (lock->global < 0 || (lock->key = ct_cache_lock_open(path, 0)) < 0) {
+    ct_cache_locks_release(lock); return 1;
   }
   return 0;
 }
@@ -855,14 +1006,14 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
   char key[65];
   int cache_hit = 0;
   int cache_status;
-  int lock_descriptor = -1;
+  struct ct_cache_locks locks = {-1, -1};
   int terminal_failure = 0;
   if (backend == NULL || image == NULL || mode == NULL || selection == NULL || (strcmp(mode, "auto") != 0 && strcmp(mode, "required") != 0 && strcmp(mode, "disabled") != 0)) return 1;
   memset(selection, 0, sizeof(*selection)); ct_group_mode(backend, selection->group_mode);
   if (strcmp(mode, "disabled") == 0) return ct_host_projection_set_none(backend, selection);
   if (!ct_host_projection_endpoint_is_local(backend)) return 1;
   if (ct_host_projection_cache_key(backend, image, key) != 0) return 1;
-  if (ct_cache_lock(key, &lock_descriptor) != 0) return 1;
+  if (ct_cache_lock(key, &locks) != 0) return 1;
   cache_status = refresh ? 1 : ct_cache_read(key, selection);
   /* Cache bytes are advisory. An unrecognized record becomes a cold miss and
    * remains untouched until a complete current selection is ready to publish. */
@@ -889,11 +1040,9 @@ int ct_host_projection_prepare(const char *backend, const char *image, const cha
         ct_host_projection_set_none(backend, selection) != 0) goto failed;
     if (ct_probe_sources_current(selection) != 0 || ct_cache_write(key, selection) != 0) goto failed;
   }
-  (void)ct_storage_timeout_flock_unlock(lock_descriptor);
-  (void)ct_storage_timeout_close(lock_descriptor);
+  ct_cache_locks_release(&locks);
   return 0;
 failed:
-  (void)ct_storage_timeout_flock_unlock(lock_descriptor);
-  (void)ct_storage_timeout_close(lock_descriptor);
+  ct_cache_locks_release(&locks);
   return terminal_failure ? 2 : 1;
 }

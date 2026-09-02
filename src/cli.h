@@ -22,6 +22,7 @@ enum ct_command {
   CT_COMMAND_MOUNT_PLAN_LOCATION,
   CT_COMMAND_HOST_EXEC,
   CT_COMMAND_HOST_DOCTOR,
+  CT_COMMAND_HOST_PROJECTION_CLEAR,
 };
 
 /** Parse status values returned before any package or backend access. */

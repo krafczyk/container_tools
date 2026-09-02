@@ -33,6 +33,19 @@ int ct_host_projection_source_is_eligible(const char *path, const char *filesyst
 int ct_host_projection_cache_key(const char *backend, const char *image,
                                  char output[65]);
 /**
+ * Remove all managed host-projection selection records from the selected cache.
+ *
+ * An absent cache succeeds without creating it. Clearing serializes with cache
+ * readers and publishers, retains synchronization files, and refuses to remove
+ * anything when the cache contains an unexpected name, symlink, or file type.
+ *
+ * @return Zero when the selected cache is absent or fully cleared; otherwise
+ *         nonzero for invalid configuration or unsafe/unavailable storage.
+ * @sideeffect Removes managed selection and interrupted-publication records so
+ *             a following launcher invocation performs a cold projection proof.
+ */
+int ct_host_projection_cache_clear(void);
+/**
  * Initialize a complete selection that exposes no host projection.
  *
  * Clears all prior entries and derives the group mode from `backend`. Returns

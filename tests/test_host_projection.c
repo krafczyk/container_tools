@@ -11,7 +11,7 @@
 int main(void)
 {
   char work[] = "/tmp/mkchad-v1/container-tools-c11/native-host-projection.XXXXXX";
-  char root[4096], fallback_root[4096], empty_root[4096], blocked[4096], unresolved[4096], visible[4096], cache[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_locks[4096], cache_lock[4096], cache_lock_target[4096], cache_temporary[4096], other_temporary[4096];
+  char root[4096], fallback_root[4096], empty_root[4096], blocked[4096], unresolved[4096], visible[4096], cache[4096], cache_with_slash[4096], mountinfo[4096], fake[4096], executable[4096], log[4096], config[4096], path[8192], contents[16384], cache_record[4096], cache_locks[4096], cache_lock[4096], cache_lock_target[4096], cache_temporary[4096], other_temporary[4096], unexpected[4096];
   FILE *stream;
   DIR *directory;
   struct dirent *entry;
@@ -63,9 +63,10 @@ int main(void)
   stream = fopen(mountinfo, "w");
   if (stream == NULL || fprintf(stream, "1 0 0:1 / / rw - ext4 root rw\n") < 0 || fclose(stream) != 0 ||
       setenv("CT_HOST_PROJECTION_SOURCE_ROOT", root, 1) != 0 || setenv("CT_HOST_PROJECTION_MOUNTINFO", mountinfo, 1) != 0 ||
-        setenv("CT_HOST_PROJECTION_CACHE_ROOT", cache, 1) != 0 || setenv("CT_NATIVE_PROJECTION_LOG", log, 1) != 0 || setenv("PATH", path, 1) != 0 ||
-        setenv("CT_RUNTIME_OPERATION_TIMEOUT", "0.05", 1) != 0 ||
-       ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
+         setenv("CT_HOST_PROJECTION_CACHE_ROOT", cache, 1) != 0 || setenv("CT_NATIVE_PROJECTION_LOG", log, 1) != 0 || setenv("PATH", path, 1) != 0 ||
+         setenv("CT_RUNTIME_OPERATION_TIMEOUT", "0.05", 1) != 0 ||
+        ct_host_projection_cache_clear() != 0 || access(cache, F_OK) == 0 ||
+        ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 || strcmp(selection.strategy, "direct") != 0 ||
        strcmp(selection.completeness, "complete") != 0 || selection.entry_count != 1U ||
        snprintf(contents, sizeof(contents), "/host%s", root) >= (int)sizeof(contents) ||
        strcmp(selection.entries[0].destination, contents) != 0) return 1;
@@ -86,6 +87,17 @@ int main(void)
     if (entry->d_name[0] != '.' && snprintf(cache_lock, sizeof(cache_lock), "%s/%s", cache_locks, entry->d_name) >= (int)sizeof(cache_lock)) return 1;
   }
   if (directory == NULL || closedir(directory) != 0 || cache_lock[0] == '\0' ||
+      ct_host_projection_cache_clear() != 0 || access(cache_record, F_OK) == 0 ||
+      access(cache_locks, F_OK) != 0 || access(cache_lock, F_OK) != 0) return 1;
+  stream = fopen(log, "w");
+  if (stream == NULL || fclose(stream) != 0 ||
+      ct_host_projection_prepare("docker", "fixture-image", "required", 0, &selection) != 0 ||
+      strcmp(selection.strategy, "direct") != 0) return 1;
+  stream = fopen(log, "r");
+  if (stream == NULL || (bytes = fread(contents, 1U, sizeof(contents) - 1U, stream)) == 0U ||
+      fclose(stream) != 0) return 1;
+  contents[bytes] = '\0';
+  if (strstr(contents, "create") == NULL || access(cache_record, F_OK) != 0 ||
       snprintf(cache_lock_target, sizeof(cache_lock_target), "%s/dangling-lock-target", work) >=
           (int)sizeof(cache_lock_target) || unlink(cache_lock) != 0 ||
       symlink(cache_lock_target, cache_lock) != 0 ||
@@ -176,7 +188,22 @@ int main(void)
                                  &selection) != 0 ||
       strcmp(selection.strategy, "none") != 0 ||
       unsetenv("CT_TEST_STORAGE_OPENDIR_FAIL") != 0 ||
-      unsetenv("CT_NATIVE_PROJECTION_FORCE_FALLBACK") != 0) return 1;
+      unsetenv("CT_NATIVE_PROJECTION_FORCE_FALLBACK") != 0 ||
+      unlink(other_temporary) != 0 ||
+      snprintf(cache_with_slash, sizeof(cache_with_slash), "%s/", cache) >=
+          (int)sizeof(cache_with_slash)) return 1;
+  stream = fopen(cache_temporary, "w");
+  if (stream == NULL || fputs("stale", stream) == EOF || fclose(stream) != 0 ||
+      setenv("CT_HOST_PROJECTION_CACHE_ROOT", cache_with_slash, 1) != 0 ||
+      ct_host_projection_cache_clear() != 0 || access(cache_record, F_OK) == 0 ||
+      access(cache_temporary, F_OK) == 0 ||
+      setenv("CT_HOST_PROJECTION_CACHE_ROOT", cache, 1) != 0 ||
+      snprintf(unexpected, sizeof(unexpected), "%s/unexpected", cache) >=
+          (int)sizeof(unexpected)) return 1;
+  stream = fopen(unexpected, "w");
+  if (stream == NULL || fputs("keep", stream) == EOF || fclose(stream) != 0 ||
+      ct_host_projection_cache_clear() == 0 || access(unexpected, F_OK) != 0 ||
+      unlink(unexpected) != 0 || ct_host_projection_cache_clear() != 0) return 1;
   stream = fopen(config, "w");
    if (stream == NULL || fputs("{\"currentContext\":\"remote-context\"}", stream) == EOF || fclose(stream) != 0 ||
         setenv("DOCKER_CONFIG", work, 1) != 0 || unsetenv("DOCKER_CONTEXT") != 0 || ct_host_projection_endpoint_is_local("docker") != 0) return 1;

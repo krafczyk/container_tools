@@ -15,8 +15,16 @@ After profile, manifest, path, cwd, environment, and executable planning,
 PRoot, then rewrite. `--backend bubblewrap|proot|rewrite` forces one backend
 and never falls back. A full-root profile may use rewrite only with
 `--allow-degraded=rewrite`; `semantics = "rewrite"` is already eligible. A
-failed selected launch is never retried with another backend. Host operations
-never invoke Docker, Podman, SingularityCE, or Apptainer.
+failed selected launch is never retried with another backend. Host execution
+and diagnosis never invoke Docker, Podman, SingularityCE, or Apptainer.
+
+`container-tools host projection clear [--help]` clears managed cached
+host-projection selections. It does not alter the immutable mount plan already
+bound into a running container. After clearing, the next local foreground or
+persistent launcher invocation performs a cold projection proof and publishes a
+fresh mount plan. An absent cache succeeds; unexpected entries, symlinks, or
+file types fail without deleting selection records. Clearing serializes with
+cache readers and publishers and retains synchronization files.
 
 Unknown, empty, missing, and duplicate `--backend` values fail with usage
 status before configuration, manifest, allocation, or backend access.

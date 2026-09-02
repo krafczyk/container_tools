@@ -68,6 +68,21 @@ if(NOT instance_result EQUAL 0 OR EXISTS "${CMAKE_BINARY_DIR}/dry-instance-root"
   message(FATAL_ERROR "installed persistent command did not support mutation-free dry execution")
 endif()
 expect_success(mount detect --help)
+expect_success(host projection clear --help)
+set(host_projection_clear_cache "${CMAKE_BINARY_DIR}/host-projection-clear-cache")
+file(REMOVE_RECURSE "${host_projection_clear_cache}")
+execute_process(
+  COMMAND "@CMAKE_COMMAND@" -E env
+          "CT_HOST_PROJECTION_CACHE_ROOT=${host_projection_clear_cache}"
+          "${prefix}/bin/container-tools" host projection clear
+  RESULT_VARIABLE host_projection_clear_result
+  ERROR_VARIABLE host_projection_clear_error
+)
+if(NOT host_projection_clear_result EQUAL 0 OR
+   EXISTS "${host_projection_clear_cache}")
+  message(FATAL_ERROR
+    "installed host projection clear failed: ${host_projection_clear_error}")
+endif()
 file(WRITE "${CMAKE_BINARY_DIR}/mount args.conf" "--exclude-path /one path --add-path /two\n")
 expect_success(mount args "${CMAKE_BINARY_DIR}/mount args.conf" --exclude-path /three)
 file(WRITE "${CMAKE_BINARY_DIR}/host.toml"

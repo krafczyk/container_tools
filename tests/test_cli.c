@@ -41,6 +41,7 @@ int main(void)
   const char *const mount_plan_location_arguments[] = {"mount", "plan", "location"};
   const char *const host_exec_arguments[] = {"host", "exec", "--", "command"};
   const char *const host_doctor_arguments[] = {"host", "doctor", "--json"};
+  const char *const host_projection_clear_arguments[] = {"host", "projection", "clear"};
   const char *const invalid_subcommand[] = {"instance", "destroy"};
   const char *const invalid_option[] = {"--unknown"};
   const char *const duplicate_version[] = {"--version", "--version"};
@@ -66,6 +67,7 @@ int main(void)
   expect_command(mount_plan_location_arguments, 3, CT_COMMAND_MOUNT_PLAN_LOCATION);
   expect_command(host_exec_arguments, 4, CT_COMMAND_HOST_EXEC);
   expect_command(host_doctor_arguments, 3, CT_COMMAND_HOST_DOCTOR);
+  expect_command(host_projection_clear_arguments, 3, CT_COMMAND_HOST_PROJECTION_CLEAR);
   expect_command(non_utf8_arguments, 3, CT_COMMAND_EXEC);
   expect_invalid(invalid_subcommand, 2);
   expect_invalid(invalid_option, 1);

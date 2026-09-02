@@ -8,6 +8,7 @@
 #include "storage.h"
 #include "process.h"
 #include "host_config.h"
+#include "host_projection.h"
 #include "mount_plan.h"
 #include "mount_plan_report.h"
 #include "path_map.h"
@@ -839,6 +840,33 @@ complete:
   return ct_mount_plan_command_output_end(&output) != 0 ? 125 : result;
 }
 
+static int ct_host_projection_clear_command(int argument_count, char **arguments)
+{
+  if (argument_count == 1 && strcmp(arguments[0], "--help") == 0) {
+    if (fprintf(stdout,
+                "usage: container-tools host projection clear [--help]\n") < 0 ||
+        fflush(stdout) != 0 || ferror(stdout) != 0) {
+      ct_cli_diagnostic("host projection clear", "report",
+                        "restore the output destination and retry");
+      return 125;
+    }
+    return 0;
+  }
+  if (argument_count != 0) {
+    ct_cli_diagnostic(
+        "host projection clear", "usage",
+        "use 'container-tools host projection clear [--help]'");
+    return CT_EXIT_USAGE;
+  }
+  if (ct_host_projection_cache_clear() != 0) {
+    ct_cli_diagnostic(
+        "host projection clear", "cleanup",
+        "repair the managed host-projection cache layout and retry");
+    return 125;
+  }
+  return 0;
+}
+
 static int ct_mount_plan_inspect(int argument_count, char **arguments)
 {
   struct ct_mount_plan_report report;
@@ -1297,6 +1325,9 @@ int main(int argument_count, char **arguments)
   }
   if (parsed.command == CT_COMMAND_HOST_DOCTOR) {
     return ct_host_doctor(argument_count - 3, arguments + 3);
+  }
+  if (parsed.command == CT_COMMAND_HOST_PROJECTION_CLEAR) {
+    return ct_host_projection_clear_command(argument_count - 4, arguments + 4);
   }
   return CT_EXIT_USAGE;
 }
