@@ -221,11 +221,6 @@ file(REMOVE_RECURSE "${u7_root}" "${u7_workspace}" "${u7_slurm}" "${u7_run}" "${
 file(MAKE_DIRECTORY "${u7_root}/usr/bin" "${u7_root}/workspace" "${u7_root}/etc/slurm"
                     "${u7_root}/run/slurm" "${u7_workspace}" "${u7_slurm}" "${u7_run}"
                     "${u7_backend_dir}" "${u7_root}/proc")
-file(CREATE_LINK "/bin" "${u7_root}/bin" SYMBOLIC)
-file(CREATE_LINK "/lib" "${u7_root}/lib" SYMBOLIC)
-file(CREATE_LINK "/lib64" "${u7_root}/lib64" SYMBOLIC)
-file(CREATE_LINK "/usr/lib" "${u7_root}/usr/lib" SYMBOLIC)
-file(CREATE_LINK "/usr/lib64" "${u7_root}/usr/lib64" SYMBOLIC)
 file(WRITE "${u7_workspace}/Cargo.toml" "[package]\nname = \"u7-fixture\"\n")
 file(WRITE "${u7_slurm}/slurm.conf" "ClusterName=u7-fixture\n")
 file(WRITE "${u7_run}/slurmctld.sock" "synthetic socket endpoint\n")
@@ -267,6 +262,7 @@ while [ "$#" -gt 0 ]; do
     --bind|--ro-bind)
       printf '%s:%s:%s\n' "$1" "$2" "$3" >> "$CT_U7_ARGUMENT_LOG"
       if [ "$3" = /usr ]; then root=${2%/usr}; root_mode=$1; fi
+      if [ "$3" = /usr/bin ]; then root=${2%/usr/bin}; root_mode=$1; fi
       if [ "$3" = /workspace ]; then workspace=$2; fi
       shift 3 ;;
     --remount-ro)
@@ -314,6 +310,20 @@ file(WRITE "${u7_config}"
   "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
 file(WRITE "${u7_read_only_config}"
   "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"read-only\"\nsemantics = \"full-root\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n")
+# Interpreter symlinks resolve inside the selected namespace, so absolute
+# links back to /bin or /lib would loop. Project canonical host directories
+# explicitly while retaining the fixture's selected /usr/bin commands.
+set(u7_system_projections "")
+foreach(system_directory /bin /lib /lib64 /usr/lib /usr/lib64)
+  if(IS_DIRECTORY "${system_directory}")
+    file(REAL_PATH "${system_directory}" system_source)
+    string(APPEND u7_system_projections
+      "[[profiles.root.projections]]\nvisible = \"${system_source}\"\ntarget = \"${system_directory}\"\naccess = \"read-only\"\nrequired = true\n")
+  endif()
+endforeach()
+foreach(config "${u7_config}" "${u7_read_only_config}")
+  file(APPEND "${config}" "${u7_system_projections}")
+endforeach()
 function(run_u7_host command payload_argument expected_result expected_output)
   file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
   execute_process(
@@ -420,6 +430,7 @@ if(NOT u7_current_manifest_contents MATCHES "ct-mount-plan-v1")
 endif()
 file(WRITE "${u7_manifest_config}"
   "version = 1\ndefault_profile = \"root\"\n[profiles.root]\nroot = \"${u7_root}\"\nroot_access = \"inherit\"\nsemantics = \"full-root\"\nmount_plan = \"${u7_current_manifest}\"\ncwd_unmapped = \"same-path\"\npath = [\"/usr/bin\"]\n[profiles.root.environment]\nCT_U7_ROOT = \"${u7_root}\"\nCT_U7_WORKSPACE = \"${u7_workspace}\"\nCT_U7_SLURM = \"${u7_slurm}\"\nCT_U7_RUN = \"${u7_run}\"\n[[profiles.root.projections]]\nvisible = \"${u7_workspace}\"\ntarget = \"/workspace\"\naccess = \"inherit\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_slurm}\"\ntarget = \"/etc/slurm\"\naccess = \"read-only\"\nrequired = true\n[[profiles.root.projections]]\nvisible = \"${u7_run}\"\ntarget = \"/run/slurm\"\naccess = \"inherit\"\nrequired = true\n")
+file(APPEND "${u7_manifest_config}" "${u7_system_projections}")
 file(REMOVE "${u7_backend_log}" "${u7_argument_log}")
 execute_process(
   COMMAND "@CMAKE_COMMAND@" -E env "PATH=${u7_backend_dir}:$ENV{PATH}"
