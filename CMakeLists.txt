@@ -219,6 +219,8 @@ if(BUILD_TESTING)
     "${CMAKE_CURRENT_BINARY_DIR}/test_compatibility.cmake")
   find_program(CONTAINER_TOOLS_BASH bash)
   if(CONTAINER_TOOLS_BASH)
+    add_test(NAME container_tools_gpu
+      COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/gpu_test.sh" "$<TARGET_FILE:container-tools>")
     add_test(NAME container_tools_runtime_report
       COMMAND "${CONTAINER_TOOLS_BASH}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/container_tools_runtime_test.sh" --self-test)
     set_tests_properties(container_tools_runtime_report PROPERTIES SKIP_RETURN_CODE 77)

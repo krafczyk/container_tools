@@ -48,6 +48,7 @@ if [[ ! ( ${MKCHAD_TEST_HIDE_INSTANCE_LIST:-} == 1 && ${1:-} == instance && ${2:
 fi
 
 if [[ ${1:-} == instance && ${2:-} == start ]]; then
+  [[ ${MKCHAD_TEST_NVIDIA_FAIL:-} != 1 || ${3:-} != --nv ]] || exit 9
   args=("$@")
   for argument in "$@"; do
     [[ $argument != --pwd ]] || exit 67
@@ -1067,5 +1068,63 @@ set -e
   printf '%s\n' 'malformed pending journal reached the runtime' >&2
   exit 1
 }
+
+export MKCHAD_TEST_HIDE_INSTANCE_LIST=1
+gpu_invoke() {
+  "$helper" "--$gpu_backend" --ct-instance-root "$gpu_root" --ct-gpu "$1" \
+    -- "$image_path" /bin/fake-command gpu-test
+}
+for gpu_backend in apptainer singularity; do
+  gpu_root="$work/gpu-$gpu_backend"
+  calls_before=$(<"$work/call-count")
+  set +e
+  gpu_invoke none
+  cpu_status=$?
+  set -e
+  [[ $cpu_status == 23 && $(<"$work/call-count") == $((calls_before + 4)) ]] || exit 1
+  mapfile -t cpu_start < "$calls/$((calls_before + 2))"
+  cpu_name=${cpu_start[-1]}
+  ! contains_line "$calls/$((calls_before + 2))" --nv || exit 1
+
+  calls_before=$(<"$work/call-count")
+  set +e
+  gpu_invoke nvidia
+  gpu_status=$?
+  set -e
+  [[ $gpu_status == 23 && $(<"$work/call-count") == $((calls_before + 4)) ]] || exit 1
+  mapfile -t gpu_start < "$calls/$((calls_before + 2))"
+  gpu_name=${gpu_start[-1]}
+  [[ ${gpu_start[0]} == instance && ${gpu_start[1]} == start && ${gpu_start[2]} == --nv \
+    && $gpu_name != "$cpu_name" && -e $instances/$cpu_name ]] || exit 1
+  mapfile -t gpu_payload < "$calls/$((calls_before + 4))"
+  [[ ${gpu_payload[0]} == exec && ${gpu_payload[1]} == --nv ]] || exit 1
+  contains_line "$calls/$((calls_before + 4))" "instance://$gpu_name" || exit 1
+  mapfile -d '' -t gpu_profile < "$gpu_root/profiles/$(<"$instances/$gpu_name.profile").manifest"
+  [[ ${gpu_profile[5]} == ct-instance-profile-v4-nvidia ]] || exit 1
+
+  calls_before=$(<"$work/call-count")
+  set +e
+  gpu_invoke nvidia
+  warm_gpu_status=$?
+  gpu_invoke none
+  warm_cpu_status=$?
+  set -e
+  [[ $warm_gpu_status == 23 && $warm_cpu_status == 23 \
+    && $(<"$work/call-count") == $((calls_before + 4)) ]] || exit 1
+  contains_line "$calls/$((calls_before + 2))" "instance://$gpu_name" || exit 1
+  contains_line "$calls/$((calls_before + 4))" "instance://$cpu_name" || exit 1
+  ! contains_line "$calls/$((calls_before + 4))" --nv || exit 1
+
+  gpu_root="$work/gpu-failure-$gpu_backend"
+  calls_before=$(<"$work/call-count")
+  set +e
+  MKCHAD_TEST_NVIDIA_FAIL=1 gpu_invoke nvidia >/dev/null 2>"$work/gpu-failure.err"
+  failed_gpu_status=$?
+  set -e
+  [[ $failed_gpu_status == 1 && $(<"$work/call-count") == $((calls_before + 3)) ]] || exit 1
+  contains_line "$calls/$((calls_before + 2))" --nv || exit 1
+  contains_line "$calls/$((calls_before + 3))" --nv || exit 1
+  ! contains_line "$calls/$((calls_before + 3))" /bin/fake-command || exit 1
+done
 
 printf '%s\n' 'container instance executor tests passed'

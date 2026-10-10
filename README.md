@@ -465,6 +465,32 @@ to the image; only the canonical managed `neovim.sif` selector is eligible for
 selected-image identity. PPC64LE images intentionally do not ship OpenCode and
 therefore do not provide this OpenCode baseline manifest contract.
 
+## NVIDIA GPU passthrough
+
+`exec`, `shell`, and `instance exec|identity` accept the singleton option
+`--ct-gpu none|nvidia`. The generic default is `none`. `nvidia` is supported by
+SingularityCE and Apptainer and adds `--nv` after `exec`, `shell`, or
+`instance start`, before the image/instance URI. Other backends reject NVIDIA
+mode rather than silently omitting GPU support. Missing, unknown, and duplicate
+mode values fail before runtime dispatch. For example:
+
+```sh
+container-tools exec --apptainer --ct-gpu nvidia -- image.sif nvidia-smi
+ct_instance_exec.sh --singularity --ct-instance-root /path/to/instances \
+  --ct-gpu nvidia -- image.sif nvidia-smi
+```
+
+GPU profiles use `ct-instance-profile-v4-nvidia`; CPU profiles retain
+`ct-instance-profile-v4`. The grammar is part of the finalized identity and the
+inspectable manifest, so switching modes creates/selects a distinct instance
+without stopping the other mode's instance. GPU mode does not use the global
+`CT_SINGULARITY_ARGS` argument. Driver binding and device availability remain
+native-runtime responsibilities; failures propagate without CPU fallback.
+On CPU-only hosts the runtime may warn about missing NVIDIA libraries/devices;
+select `none` to avoid GPU setup. No GPU allocation or CUDA application toolkit
+is installed or requested by this flag. Respect scheduler allocations and device
+restrictions on cluster hosts.
+
 ## Bootstrap hooks
 
 Use `--ct-bootstrap HOST_PATH` when environment setup must run inside the

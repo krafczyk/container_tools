@@ -26,8 +26,12 @@ full existing profile identity, and `instance_name` must be exactly
 rejects malformed, future-major, oversized, internally tampered, or semantically
 inconsistent records.
 
-The profile grammar is currently `ct-instance-profile-v4`; the record grammar
-does not redefine the lifecycle identity. `runtime_argument_digest` is either
+The CPU profile grammar remains `ct-instance-profile-v4`. NVIDIA passthrough
+uses `ct-instance-profile-v4-nvidia`, with the same field sequence and NVIDIA
+`--nv` options on native start/exec commands. The grammar participates in the
+profile digest, so CPU and NVIDIA modes cannot reuse each other's instances;
+inspection exposes the selected mode without changing the record format.
+The record grammar does not redefine the lifecycle identity. `runtime_argument_digest` is either
 `absent` or a lowercase SHA-256 digest, never its raw argument. Bootstrap path
 and identity are both `absent`, or are both populated. Mount `source_identity`
 is `absent` only when it has no profile effect. Paths in manifests remain raw

@@ -52,6 +52,7 @@ struct ct_instance_bind {
 struct ct_instance_request {
   const char *backend;
   const char *runtime_argument;
+  int nvidia;
   char root[CT_INSTANCE_PATH_MAX];
   const char *image;
   const char *bootstrap;
@@ -228,7 +229,7 @@ static int ct_instance_parse(int argument_count, char *const arguments[],
                              struct ct_instance_request *request)
 {
   int index;
-  int host_root_seen = 0, shell_seen = 0;
+  int host_root_seen = 0, shell_seen = 0, gpu_seen = 0;
 
   if (argument_count < 6 || arguments == NULL || request == NULL ||
       !ct_instance_backend(arguments[0]) ||
@@ -241,6 +242,7 @@ static int ct_instance_parse(int argument_count, char *const arguments[],
     request->runtime_argument = NULL;
   }
   request->image = NULL;
+  request->nvidia = 0;
   request->bootstrap = NULL;
   request->host_root = "auto";
   request->container_shell = "/bin/sh";
@@ -286,6 +288,13 @@ static int ct_instance_parse(int argument_count, char *const arguments[],
           request->environment_count == CT_INSTANCE_ENVIRONMENT_MAX ||
           !ct_instance_environment(arguments[index])) return 1;
       request->environment[request->environment_count++] = arguments[index];
+      continue;
+    }
+    if (strcmp(arguments[index], "--ct-gpu") == 0) {
+      if (gpu_seen || ++index >= argument_count ||
+          (strcmp(arguments[index], "none") != 0 && strcmp(arguments[index], "nvidia") != 0)) return 1;
+      gpu_seen = 1;
+      request->nvidia = strcmp(arguments[index], "nvidia") == 0;
       continue;
     }
     if (strcmp(arguments[index], "--ct-bootstrap") == 0) {
@@ -656,6 +665,7 @@ static enum ct_instance_prepare_status ct_instance_prepare(
   char bootstrap_identity[CT_INSTANCE_PATH_MAX + 257U] = "";
   char home_real[CT_INSTANCE_PATH_MAX], state_root[CT_INSTANCE_PATH_MAX];
   const char *home = getenv("HOME");
+  const char *profile_grammar = request->nvidia ? "ct-instance-profile-v4-nvidia" : "ct-instance-profile-v4";
   size_t field_count = 0U, projection_count = 0U, entry_count = 0U;
   size_t group_count = 0U, index;
   enum ct_instance_prepare_status result = CT_INSTANCE_PREPARE_INTERNAL;
@@ -825,7 +835,7 @@ static enum ct_instance_prepare_status ct_instance_prepare(
                                prepared->image_identity) != 0 ||
       ct_instance_field_append(fields, &field_count, bootstrap_identity) != 0 ||
       ct_instance_field_append(fields, &field_count,
-                                "ct-instance-profile-v4") != 0 ||
+                               profile_grammar) != 0 ||
       ct_instance_field_append(fields, &field_count,
                                "ct-host-projection-profile-v1") != 0) {
     goto done;
@@ -894,7 +904,7 @@ static enum ct_instance_prepare_status ct_instance_prepare(
     }
     for (index = 0U; index < group_count; ++index)
       manifest_groups[index] = group_values[index];
-    profile = (struct ct_instance_profile_manifest){"", "", prepared->name, request->backend, "ct-instance-profile-v4", runtime_argument_digest, uid, gid, host, home, request->root, prepared->image_real, prepared->image_identity, request->bootstrap == NULL ? "absent" : bootstrap_real, request->bootstrap == NULL ? "absent" : bootstrap_identity, "ct-host-projection-profile-v1", projection_digest, projection.group_mode, manifest_groups, group_count, metadata.digest, mounts, prepared->mount_count};
+    profile = (struct ct_instance_profile_manifest){"", "", prepared->name, request->backend, profile_grammar, runtime_argument_digest, uid, gid, host, home, request->root, prepared->image_real, prepared->image_identity, request->bootstrap == NULL ? "absent" : bootstrap_real, request->bootstrap == NULL ? "absent" : bootstrap_identity, "ct-host-projection-profile-v1", projection_digest, projection.group_mode, manifest_groups, group_count, metadata.digest, mounts, prepared->mount_count};
     (void)snprintf(profile.profile_digest, sizeof(profile.profile_digest), "%s",
                    prepared->digest);
     if (ct_instance_profile_manifest_publish(request->root, &profile,
@@ -1059,6 +1069,7 @@ static int ct_instance_probe(const struct ct_instance_request *request,
   size_t count = ct_instance_runtime_prefix(request, command);
   if (snprintf(uri, sizeof(uri), "instance://%s", name) >= (int)sizeof(uri)) return 125;
   command[count++] = "exec";
+  if (request->nvidia) command[count++] = "--nv";
   command[count++] = uri;
   command[count++] = "/bin/sh";
   command[count++] = "-c";
@@ -1217,6 +1228,7 @@ static int ct_instance_start(const struct ct_instance_request *request,
   count = ct_instance_runtime_prefix(request, command);
   command[count++] = "instance";
   command[count++] = "start";
+  if (request->nvidia) command[count++] = "--nv";
   for (index = 0U; index < prepared->mount_count; ++index) {
     command[count++] = prepared->mounts[index].generated ? "--mount" : "--bind";
     command[count++] = prepared->mounts[index].descriptor;
@@ -1272,6 +1284,7 @@ static int ct_instance_payload(const struct ct_instance_request *request,
   }
   count = ct_instance_runtime_prefix(request, command);
   command[count++] = "exec";
+  if (request->nvidia) command[count++] = "--nv";
   command[count++] = "--pwd";
   command[count++] = (char *)prepared->cwd;
   command[count++] = "--env";

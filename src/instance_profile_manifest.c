@@ -206,7 +206,8 @@ int ct_instance_profile_manifest_validate(const struct ct_instance_profile_manif
       m->runtime_argument_digest == NULL || m->bootstrap_path == NULL ||
       m->bootstrap_identity == NULL || m->projection_grammar == NULL ||
       !ct_ipm_digest(m->profile_digest) || !ct_ipm_one_of(m->backend, backends, 2U) ||
-      strcmp(m->profile_grammar, "ct-instance-profile-v4") != 0 ||
+      (strcmp(m->profile_grammar, "ct-instance-profile-v4") != 0 &&
+       strcmp(m->profile_grammar, "ct-instance-profile-v4-nvidia") != 0) ||
       !(strcmp(m->runtime_argument_digest, "absent") == 0 || ct_ipm_digest(m->runtime_argument_digest)) ||
       !ct_ipm_scalar(m->uid) || !ct_ipm_scalar(m->gid) || !ct_ipm_scalar(m->hostname) || !ct_ipm_path(m->home) ||
       ct_instance_profile_manifest_normalize_root(m->instance_root, normalized) != 0 || strcmp(normalized, m->instance_root) != 0 ||

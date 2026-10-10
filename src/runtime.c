@@ -188,7 +188,7 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   char *command[CT_RUNTIME_MAX_ARGUMENTS] = {NULL};
   size_t bind_count = 0U, environment_count = 0U, entry_count = 0U, mask_count = 0U, mount_string_count = CT_RUNTIME_MAX_ENTRIES, payload_index = 1U, index, command_count = 0U;
   int delimited = 0, dry, remote, refresh = 0, host_root_seen = 0;
-  int container_shell_seen = 0, result = 125;
+  int container_shell_seen = 0, result = 125, gpu_seen = 0, nvidia = 0;
   const char *operation = shell_mode != 0 ? "shell" : "exec";
 
   if (argument_count < 2 || arguments == NULL || !ct_runtime_backend(arguments[0])) {
@@ -198,6 +198,15 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   for (index = 1U; index < (size_t)argument_count; ) {
     const char *option = arguments[index];
     if (strcmp(option, "--") == 0) { delimited = 1; payload_index = index + 1U; break; }
+    if (strcmp(option, "--ct-gpu") == 0) {
+      if (gpu_seen || index + 1U >= (size_t)argument_count ||
+          (strcmp(arguments[index + 1U], "none") != 0 && strcmp(arguments[index + 1U], "nvidia") != 0)) return ct_runtime_usage(shell_mode);
+      gpu_seen = 1;
+      nvidia = strcmp(arguments[index + 1U], "nvidia") == 0;
+      if (nvidia && strcmp(backend, "apptainer") != 0 && strcmp(backend, "singularity") != 0) return ct_runtime_usage(shell_mode);
+      index += 2U;
+      continue;
+    }
     if (strcmp(option, "--ct-bind") == 0) {
       const char *separator, *mode;
       size_t target_length;
@@ -298,7 +307,8 @@ int ct_runtime_foreground_command(int argument_count, char *const arguments[], i
   if (snprintf(uid_gid, sizeof(uid_gid), "%lu:%lu", (unsigned long)geteuid(), (unsigned long)getegid()) >= (int)sizeof(uid_gid)) return ct_runtime_failure(125, operation, "launcher", "retry the launch; if it persists, report the launcher failure");
   if (ct_runtime_append(command, &command_count, (char *)backend) != 0 || ct_runtime_append(command, &command_count, shell_mode != 0 && (strcmp(backend, "singularity") == 0 || strcmp(backend, "apptainer") == 0) && bootstrap == NULL ? "shell" : (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0 ? "run" : "exec")) != 0) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry");
   if (strcmp(backend, "docker") == 0 || strcmp(backend, "podman") == 0) { if (ct_runtime_append(command, &command_count, "--rm") != 0 || (shell_mode != 0 && ct_runtime_append(command, &command_count, "-it") != 0) || (strcmp(backend, "podman") == 0 && ct_runtime_append(command, &command_count, "--userns=keep-id") != 0) || ct_runtime_append(command, &command_count, "--user") != 0 || ct_runtime_append(command, &command_count, uid_gid) != 0 || ct_runtime_append(command, &command_count, "-w") != 0 || ct_runtime_append(command, &command_count, cwd) != 0) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry"); }
-  else if (ct_runtime_append(command, &command_count, "--pwd") != 0 || ct_runtime_append(command, &command_count, cwd) != 0) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry");
+  if (nvidia && ct_runtime_append(command, &command_count, "--nv") != 0) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry");
+  if (strcmp(backend, "docker") != 0 && strcmp(backend, "podman") != 0 && (ct_runtime_append(command, &command_count, "--pwd") != 0 || ct_runtime_append(command, &command_count, cwd) != 0)) return ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry");
   for (index = 0U; index < environment_count; ++index) if (ct_runtime_append(command, &command_count, "--env") != 0 || ct_runtime_append(command, &command_count, (char *)environment[index]) != 0) { result = ct_runtime_failure(125, operation, "launcher-capacity", "reduce launcher options and retry"); goto cleanup; }
   for (index = 0U; index < projection.entry_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_backend_outer_projection_mount(backend, projection.entries[index].source, projection.entries[index].destination, mount_strings[mount_string_count], sizeof(mount_strings[mount_string_count]), &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) { result = ct_runtime_failure(125, operation, "mount", "reduce conflicting mounts and retry"); goto cleanup; } }
   for (index = 0U; index < bind_count; ++index) { const char *flag; if (mount_string_count == CT_RUNTIME_STRING_SLOTS || ct_runtime_mount_descriptor(backend, &binds[index], binds[index].read_only, mount_strings[mount_string_count], &flag) != 0 || ct_runtime_append(command, &command_count, (char *)flag) != 0 || ct_runtime_append(command, &command_count, mount_strings[mount_string_count++]) != 0) { result = ct_runtime_failure(125, operation, "bind", "use supported absolute bind paths and retry"); goto cleanup; } }

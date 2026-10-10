@@ -8,6 +8,9 @@
  * Singleton launcher options reject duplicate occurrences before runtime or
  * state access. Explicit binds accept writable `HOST:CONTAINER` and read-only
  * `HOST:CONTAINER:ro` values.
+ * `--ct-gpu none|nvidia` defaults to none; nvidia adds --nv to SingularityCE
+ * or Apptainer exec/shell options and is rejected for other backends. Device
+ * availability and driver binding failures are reported by the native runtime.
  *
  * @param argument_count Number of launcher arguments in `arguments`.
  * @param arguments Mutable launcher argument vector beginning with a backend.

@@ -21,6 +21,10 @@ enum ct_instance_runtime_selector_status {
  * execution mode safely creates or reuses the matching instance and returns the
  * payload status. Returns nonzero on invalid input, incomplete preparation,
  * ambiguous liveness, state mismatch, timeout, or runtime failure.
+ * `--ct-gpu none|nvidia` defaults to none. NVIDIA mode adds --nv to native
+ * instance start and exec commands and selects a distinct, inspectable profile
+ * grammar; none retains existing CPU profiles. Runtime GPU failures propagate
+ * without falling back to a CPU instance.
  */
 int ct_instance_command(int argument_count, char *const arguments[], int identity_only);
 /**

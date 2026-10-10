@@ -70,6 +70,8 @@ enum ct_instance_profile_manifest_selector_status {
 
 /**
  * Validate ct-instance-profile-v1 scalar grammar, ordering, and bounds.
+ * Supports the v4 CPU and v4-nvidia lifecycle grammars; both retain the v1
+ * record format, and their different grammar scalars select distinct identities.
  *
  * @param manifest Borrowed manifest fields to validate.
  * @return Zero for a complete valid manifest; nonzero for malformed input.
